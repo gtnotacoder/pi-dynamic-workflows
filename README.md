@@ -80,5 +80,3 @@ The sandbox intentionally does not expose Node APIs like `fs`, `require`, or imp
 npm install
 npm test
 ```
-
-Smoke tests run Pi in RPC mode and verify the workflow and structured-output paths.

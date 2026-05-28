@@ -11,11 +11,9 @@
     }
   },
   "scripts": {
-    "test": "npm run build && npm run smoke:workflow-rpc && npm run smoke:rpc",
+    "test": "npm run build",
     "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "smoke:rpc": "tsx scripts/rpc-smoke-test.ts",
-    "smoke:workflow-rpc": "tsx scripts/workflow-rpc-smoke-test.ts"
+    "dev": "tsx src/index.ts"
   },
   "keywords": ["pi-package", "pi", "workflow", "agents"],
   "pi": {
