@@ -4,3 +4,6 @@ dist/
 .env
 .DS_Store
 *.log
+
+# Local-only npm clean-room install verifier (not part of the package)
+scripts/verify-npm-install.sh
