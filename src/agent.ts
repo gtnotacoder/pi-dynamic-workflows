@@ -1,4 +1,4 @@
-import type { AssistantMessage, TextContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import {
   type CreateAgentSessionOptions,
   createAgentSession,
@@ -7,7 +7,7 @@ import {
   SessionManager,
   SettingsManager,
   type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
@@ -57,13 +57,16 @@ export class WorkflowAgent {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
     }
 
+    const agentDir = getAgentDir();
     const { session } = await createAgentSession({
       cwd: this.cwd,
-      agentDir: getAgentDir(),
+      agentDir,
       sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory({
-        compaction: { enabled: false },
-      }),
+      // Use real SettingsManager to inherit user's default provider/model settings.
+      // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
+      // would fall back to the first available model (e.g. openai-codex) which may
+      // not have valid auth, causing silent empty responses.
+      settingsManager: SettingsManager.create(this.cwd, agentDir),
       customTools,
       ...this.sessionOptions,
     });
