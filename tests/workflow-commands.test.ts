@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 
@@ -98,4 +99,49 @@ test("registerWorkflowCommands is idempotent (skips when already registered)", (
   };
   registerWorkflowCommands(pi, {} as any);
   assert.equal(registrations, 0);
+});
+
+test("/workflows status watches a running run: live status bar + prints on completion", async () => {
+  const snapshot = {
+    name: "demo",
+    phases: ["Run"],
+    currentPhase: "Run",
+    logs: [],
+    agents: [{ id: 1, label: "a", status: "running", prompt: "x" }],
+    agentCount: 1,
+    runningCount: 1,
+    doneCount: 0,
+    errorCount: 0,
+  };
+  const manager: any = new EventEmitter();
+  manager.getRun = (id: string) => (id === "run-1" ? { runId: "run-1", status: "running", snapshot } : undefined);
+  manager.getSnapshot = () => null;
+  manager.listRuns = () => [];
+
+  const statusLine: Array<string | undefined> = [];
+  const printed: string[] = [];
+  let handler: ((a: string, c: any) => Promise<void>) | undefined;
+  const pi: any = {
+    getCommands: () => [],
+    registerCommand: (_n: string, o: any) => {
+      handler = o.handler;
+    },
+    sendMessage: async (m: any) => printed.push(m.content),
+  };
+  registerWorkflowCommands(pi, manager);
+  const ctx = { ui: { notify: () => {}, setStatus: (_k: string, t?: string) => statusLine.push(t) } };
+
+  assert.ok(handler);
+  await handler("status run-1", ctx);
+  assert.ok(
+    statusLine.some((s) => typeof s === "string"),
+    "sets a live status line",
+  );
+  assert.equal(printed.length, 0, "does not print until the run finishes");
+
+  // Mark done and emit completion -> watcher prints the final snapshot and clears status.
+  snapshot.agents[0].status = "done";
+  manager.emit("complete", { runId: "run-1" });
+  assert.equal(printed.length, 1, "prints final snapshot on completion");
+  assert.ok(statusLine.includes(undefined), "clears the status line");
 });

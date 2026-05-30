@@ -4,7 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { renderWorkflowText } from "./display.js";
+import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -20,7 +20,7 @@ const STATUS_ICON: Record<string, string> = {
 };
 
 const USAGE =
-  "Usage: /workflows [list] | status <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
+  "Usage: /workflows [list] | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
 
 function summarizeRun(run: PersistedRunState): string {
   const icon = STATUS_ICON[run.status] ?? "?";
@@ -28,6 +28,60 @@ function summarizeRun(run: PersistedRunState): string {
   const total = run.agents.length;
   const tokens = run.tokenUsage ? ` · ${run.tokenUsage.total.toLocaleString()} tok` : "";
   return `${icon} ${run.runId}  ${run.workflowName} [${run.status}] ${done}/${total} agents${tokens}`;
+}
+
+function oneLineProgress(snapshot: WorkflowSnapshot): string {
+  const total = snapshot.agents.length;
+  const done = snapshot.agents.filter((a) => a.status === "done").length;
+  const running = snapshot.agents.filter((a) => a.status === "running").length;
+  const errs = snapshot.agents.filter((a) => a.status === "error").length;
+  const phase = snapshot.currentPhase ? ` · ${snapshot.currentPhase}` : "";
+  return `◆ ${snapshot.name}: ${done}/${total} done${running ? `, ${running} running` : ""}${
+    errs ? `, ${errs} err` : ""
+  }${phase}`;
+}
+
+/**
+ * Subscribe to a running run's events and stream live progress to the status bar,
+ * printing the final snapshot when it finishes. Non-blocking: returns true if the
+ * run was active and is now being watched, false otherwise. Listeners clean up on
+ * completion so nothing leaks.
+ */
+function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionCommandContext, id: string): boolean {
+  const active = manager.getRun(id);
+  if (!active || active.status !== "running") return false;
+
+  const key = `wf:${id}`;
+  const update = () => {
+    const run = manager.getRun(id);
+    if (run) ctx.ui.setStatus(key, oneLineProgress(run.snapshot));
+  };
+  const onEvent = (e: { runId?: string }) => {
+    if (!e || e.runId === id) update();
+  };
+  let settled = false;
+  const progressEvents = ["agentStart", "agentEnd", "phase", "log"];
+  const finalEvents = ["complete", "error", "stopped", "paused"];
+  const finish = (e: { runId?: string }) => {
+    if (e && e.runId !== id) return;
+    if (settled) return;
+    settled = true;
+    for (const ev of progressEvents) manager.off(ev, onEvent);
+    for (const ev of finalEvents) manager.off(ev, finish);
+    ctx.ui.setStatus(key, undefined);
+    const run = manager.getRun(id);
+    if (run) {
+      void pi.sendMessage({
+        customType: "workflows",
+        content: renderWorkflowText(recomputeWorkflowSnapshot(run.snapshot), true),
+        display: true,
+      });
+    }
+  };
+  for (const ev of progressEvents) manager.on(ev, onEvent);
+  for (const ev of finalEvents) manager.on(ev, finish);
+  update();
+  return true;
 }
 
 function renderPersistedStatus(run: PersistedRunState): string {
@@ -81,14 +135,21 @@ export function registerWorkflowCommands(
           await print(["Workflow runs:", ...runs.map(summarizeRun), "", USAGE].join("\n"));
           return;
         }
+        case "watch":
         case "status": {
           if (!id) {
             ctx.ui.notify(USAGE, "warning");
             return;
           }
+          // A running run streams live progress to the status bar and prints the
+          // final snapshot when it finishes — no need to re-run the command.
+          if (watchRun(manager, pi, ctx, id)) {
+            ctx.ui.notify(`Watching ${id} — live progress in the status bar; result prints when it finishes.`, "info");
+            return;
+          }
           const live = manager.getSnapshot(id);
           if (live) {
-            await print(renderWorkflowText(live, false));
+            await print(renderWorkflowText(recomputeWorkflowSnapshot(live), false));
             return;
           }
           const run = manager.listRuns().find((r) => r.runId === id);

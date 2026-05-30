@@ -52,7 +52,7 @@ Ask for a background workflow (the model passes `background: true`) and it runs 
 
 ```text
 /workflows                 # list runs (default)
-/workflows status <id>     # show a run's progress
+/workflows status <id>     # watch a running run live (status bar), prints result when done
 /workflows stop <id>       # abort a running run
 /workflows pause <id>      # pause a running run
 /workflows resume <id>     # resume an interrupted run (replays cached results)
