@@ -2,6 +2,7 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
+import type { AgentUsage } from "./agent.js";
 import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
@@ -38,7 +39,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
   onAgentEnd?: (event: { label: string; phase?: string; result: unknown; tokens?: number }) => void;
-  onTokenUsage?: (usage: { input: number; output: number; total: number }) => void;
+  onTokenUsage?: (usage: { input: number; output: number; total: number; cost: number }) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -53,6 +54,7 @@ export interface WorkflowRunResult<T = unknown> {
     input: number;
     output: number;
     total: number;
+    cost: number;
   };
 }
 
@@ -77,6 +79,7 @@ interface RuntimeState {
     input: number;
     output: number;
     total: number;
+    cost: number;
   };
 }
 
@@ -107,7 +110,7 @@ export async function runWorkflow<T = unknown>(
     phases: [],
     agentCount: 0,
     spent: 0,
-    tokenUsage: { input: 0, output: 0, total: 0 },
+    tokenUsage: { input: 0, output: 0, total: 0, cost: 0 },
   };
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
@@ -169,6 +172,21 @@ export async function runWorkflow<T = unknown>(
 
       options.onAgentStart?.({ label, phase: assignedPhase, prompt });
 
+      // Captured from the subagent's real session usage; falls back to an
+      // estimate when the provider reports no usage (total === 0).
+      let usage: AgentUsage | undefined;
+      const recordTokens = (result: unknown): number => {
+        const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
+        if (usage) {
+          state.tokenUsage.input += usage.input;
+          state.tokenUsage.output += usage.output;
+          state.tokenUsage.cost += usage.cost;
+        }
+        state.tokenUsage.total += tokens;
+        state.spent += tokens;
+        return tokens;
+      };
+
       try {
         throwIfAborted();
 
@@ -179,6 +197,9 @@ export async function runWorkflow<T = unknown>(
             schema: agentOptions.schema,
             signal: options.signal,
             instructions: buildAgentInstructions(assignedPhase, agentOptions),
+            onUsage: (u: AgentUsage) => {
+              usage = u;
+            },
           } as any),
           timeout,
           `Agent "${label}" timed out after ${timeout}ms`,
@@ -186,11 +207,7 @@ export async function runWorkflow<T = unknown>(
 
         throwIfAborted();
 
-        // Estimate token usage
-        const tokens = estimateTokens(result) + estimateTokens(prompt);
-        state.spent += tokens;
-        state.tokenUsage.total += tokens;
-
+        const tokens = recordTokens(result);
         options.onAgentEnd?.({ label, phase: assignedPhase, result, tokens });
         return result;
       } catch (error) {
@@ -198,9 +215,8 @@ export async function runWorkflow<T = unknown>(
 
         const workflowError = wrapError(error, { agentLabel: label });
         logger.error(`agent ${label} failed: ${workflowError.message}`);
-        const errorTokens = estimateTokens(prompt);
-        state.tokenUsage.total += errorTokens;
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, tokens: errorTokens });
+        const tokens = recordTokens(null);
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, tokens });
 
         // Return null for recoverable errors
         if (workflowError.recoverable) {

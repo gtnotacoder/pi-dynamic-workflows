@@ -116,8 +116,9 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 
 - **Core runtime** — `agent` / `parallel` / `pipeline` / `phase` / `log` / `budget` in a sandboxed script
 - **Structured output** — JSON-Schema-validated subagent results
+- **Real token & cost accounting** — read from each subagent's SDK session (input / output / total / cost), with a character estimate only as fallback when a provider reports no usage; `budget` gates on the real total
 - **Safety limits** — 1000-agent cap (`maxAgents`), per-agent timeout (`agentTimeoutMs`), recoverable-vs-fatal error classification
-- **Live progress + token display**, `Esc` to abort
+- **Live progress + token/cost display**, `Esc` to abort
 - **Log persistence** to `.pi/workflows/runs/`
 
 ## Roadmap
@@ -125,7 +126,6 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 Tracked toward closer parity with Claude Code dynamic workflows:
 
 - **Real per-agent / per-phase model routing** (`opts.model`, `meta.phases[].model`)
-- **Real token accounting** via the SDK's session stats (today's display uses an estimate)
 - **Command surface** — `/workflows` (list / status / stop) and reachable background runs
 - **Resume** — journaled results, replay the unchanged prefix, run the rest live
 - **Worktree isolation** for parallel edits, and **bundled `/deep-research`**

@@ -32,6 +32,7 @@ export interface WorkflowSnapshot {
     input: number;
     output: number;
     total: number;
+    cost?: number;
   };
   runId?: string;
 }
@@ -143,8 +144,10 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
       : snapshot.runningCount > 0
         ? `, ${snapshot.runningCount} running`
         : "";
-  // Build header with token info
-  const tokenInfo = snapshot.tokenUsage ? ` · ${snapshot.tokenUsage.total.toLocaleString()} tokens` : "";
+  // Build header with token info (and cost when the provider reports it)
+  const usage = snapshot.tokenUsage;
+  const costInfo = usage?.cost ? ` · $${usage.cost.toFixed(4)}` : "";
+  const tokenInfo = usage ? ` · ${usage.total.toLocaleString()} tokens${costInfo}` : "";
   const lines = [
     `◆ Workflow: ${snapshot.name} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`,
   ];

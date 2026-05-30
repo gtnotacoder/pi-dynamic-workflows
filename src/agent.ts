@@ -21,12 +21,28 @@ export interface WorkflowAgentOptions {
   instructions?: string;
 }
 
+/** Real token/cost usage for a single subagent run, read from the SDK session. */
+export interface AgentUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  cost: number;
+}
+
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
   schema?: TSchemaDef;
   tools?: ToolDefinition[];
   instructions?: string;
   signal?: AbortSignal;
+  /**
+   * Called once with this subagent's real usage, read from the session right
+   * before disposal. Fires on both the success and error paths so partial
+   * usage is never lost. `total === 0` means the provider reported no usage.
+   */
+  onUsage?: (usage: AgentUsage) => void;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -93,6 +109,22 @@ export class WorkflowAgent {
       return this.lastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;
     } finally {
       removeAbortListener?.();
+      // Read real usage before disposing — dispose tears down the session state.
+      if (options.onUsage) {
+        try {
+          const { tokens, cost } = session.getSessionStats();
+          options.onUsage({
+            input: tokens.input,
+            output: tokens.output,
+            cacheRead: tokens.cacheRead,
+            cacheWrite: tokens.cacheWrite,
+            total: tokens.total,
+            cost,
+          });
+        } catch {
+          // Usage is best-effort; never let stats failure mask the real result/error.
+        }
+      }
       session.dispose();
     }
   }

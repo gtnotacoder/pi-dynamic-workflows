@@ -198,8 +198,12 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       snapshot = recomputeWorkflowSnapshot(snapshot);
       display.complete(snapshot);
 
-      // Format token usage
-      const tokenInfo = result.tokenUsage ? `\n\nToken usage: ${result.tokenUsage.total.toLocaleString()} tokens` : "";
+      // Format token usage (include cost when the provider reports it)
+      const tokenInfo = result.tokenUsage
+        ? `\n\nToken usage: ${result.tokenUsage.total.toLocaleString()} tokens${
+            result.tokenUsage.cost ? ` ($${result.tokenUsage.cost.toFixed(4)})` : ""
+          }`
+        : "";
 
       return {
         content: [
