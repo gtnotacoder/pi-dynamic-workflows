@@ -9,7 +9,10 @@ import {
   renderWorkflowText,
   type WorkflowSnapshot,
 } from "./display.js";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { WorkflowManager } from "./workflow-manager.js";
+import { createWorkflowStorage } from "./workflow-saved.js";
 
 const workflowToolSchema = Type.Object({
   script: Type.String({
@@ -23,11 +26,29 @@ const workflowToolSchema = Type.Object({
   args: Type.Optional(
     Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
   ),
+  background: Type.Optional(
+    Type.Boolean({
+      description: "Run the workflow in the background. Default: false. When true, returns immediately with a run ID.",
+    }),
+  ),
+  maxAgents: Type.Optional(
+    Type.Number({
+      description: "Maximum number of agents allowed in this run. Default: 1000.",
+    }),
+  ),
+  agentTimeoutMs: Type.Optional(
+    Type.Number({
+      description: "Timeout per agent in milliseconds. Default: 300000 (5 minutes).",
+    }),
+  ),
 });
 
 export type WorkflowToolInput = {
   script: string;
   args?: unknown;
+  background?: boolean;
+  maxAgents?: number;
+  agentTimeoutMs?: number;
 };
 
 export interface WorkflowToolOptions {
@@ -36,6 +57,9 @@ export interface WorkflowToolOptions {
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
+  const manager = new WorkflowManager({ cwd: options.cwd, concurrency: options.concurrency });
+  const _storage = createWorkflowStorage(options.cwd ?? process.cwd());
+
   return defineTool({
     name: "workflow",
     label: "Workflow",
@@ -59,6 +83,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
+      "For workflow, set background: true to run asynchronously. The workflow will return immediately with a run ID that can be used to check status later.",
     ],
     parameters: workflowToolSchema,
     prepareArguments(args) {
@@ -67,6 +92,27 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
+
+      // Background execution
+      if (params.background) {
+        const { runId } = manager.startInBackground(script, params.args);
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `Workflow "${parsed.meta.name}" started in background.`,
+                `Run ID: ${runId}`,
+                `Use /workflow status ${runId} to check progress.`,
+                `Use /workflow stop ${runId} to cancel.`,
+              ].join("\n"),
+            },
+          ],
+          details: { runId, background: true },
+        };
+      }
+
+      // Synchronous execution (blocking)
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
         key: "workflow",
@@ -88,6 +134,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           args: params.args,
           signal,
           concurrency: options.concurrency,
+          maxAgents: params.maxAgents,
+          agentTimeoutMs: params.agentTimeoutMs,
           onLog(message) {
             snapshot.logs.push(message);
             update();
@@ -118,9 +166,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
             }
             update();
           },
+          onTokenUsage(usage) {
+            snapshot.tokenUsage = usage;
+            update();
+          },
         });
       } catch (error) {
-        if (signal?.aborted || isAbortError(error)) {
+        if (signal?.aborted || (error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED)) {
           for (const agent of snapshot.agents) {
             if (agent.status === "running") {
               agent.status = "skipped";
@@ -145,11 +197,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       snapshot = recomputeWorkflowSnapshot(snapshot);
       display.complete(snapshot);
 
+      // Format token usage
+      const tokenInfo = result.tokenUsage ? `\n\nToken usage: ${result.tokenUsage.total.toLocaleString()} tokens` : "";
+
       return {
         content: [
           {
             type: "text",
-            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}`,
+            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}${tokenInfo}`,
           },
         ],
         details: {
@@ -159,6 +214,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           logs: result.logs,
           result: result.result,
           durationMs: result.durationMs,
+          tokenUsage: result.tokenUsage,
+          runId: result.runId,
         },
       };
     },
@@ -190,7 +247,7 @@ function normalizeWorkflowScript(script: string): string {
   return text;
 }
 
-function isAbortError(error: unknown): boolean {
+function _isAbortError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return /\babort(?:ed)?\b/i.test(error.message);
 }

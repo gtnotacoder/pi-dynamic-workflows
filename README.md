@@ -48,6 +48,40 @@ The model will write a workflow script and call the `workflow` tool. Live progre
 
 Press `Esc` to cancel a running workflow. Active subagents are aborted and surfaced as skipped.
 
+## Features
+
+### Phase 1: Stability & Safety ✅
+
+- **Agent limit**: Maximum 1000 agents per run (configurable via `maxAgents`)
+- **Agent timeout**: Default 5 minutes per agent (configurable via `agentTimeoutMs`)
+- **Error classification**: Distinguishes recoverable vs non-recoverable errors
+- **Log persistence**: Workflow logs saved to `.pi/workflows/runs/`
+
+### Phase 2: Background Execution & Management ✅
+
+- **Background mode**: Set `background: true` to run workflows asynchronously
+- **Run persistence**: Run state saved to disk for pause/resume support
+- **Run management**: List, pause, resume, stop running workflows
+
+### Phase 3: Workflow Reuse ✅
+
+- **Save workflows**: Save workflow scripts as reusable commands
+- **Storage locations**: Project-local (`.pi/workflows/saved/`) or user-wide (`~/.pi/workflows/saved/`)
+- **Parameterized workflows**: Support for workflow templates with parameters
+
+### Phase 4: Enhanced Experience ✅
+
+- **Token usage tracking**: Real-time token consumption display
+- **Pre-run approval**: (Planned) Show workflow plan before execution
+- **Agent detail drill-down**: (Planned) View agent prompts and results
+
+### Phase 5: Advanced Features (Planned)
+
+- **ultracode auto mode**: Automatically decide when to use workflows
+- **Per-stage model override**: Different models for different phases
+- **Adversarial review**: Agents cross-check each other's findings
+- **Deep research**: Built-in `/deep-research` workflow
+
 ## Workflow script shape
 
 A workflow is plain JavaScript. The first statement must export literal metadata:
@@ -88,6 +122,16 @@ return { inventory, summary }
 | `args` | Optional JSON value passed in via the tool's `args` parameter. |
 | `cwd`, `process.cwd()` | Current working directory for subagents. |
 | `budget` | `{ total, spent(), remaining() }` token budget tracker. |
+
+### Agent options
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `label` | string | Human-readable label for progress display |
+| `phase` | string | Override the current phase for this agent |
+| `schema` | object | JSON Schema for structured output |
+| `model` | string | Request a specific model |
+| `timeoutMs` | number | Override the default agent timeout |
 
 ### Determinism rules
 
@@ -143,6 +187,12 @@ Subagents run in fresh in-memory Pi sessions with the standard coding tools, so 
 | `src/agent.ts` | `WorkflowAgent`, an in-memory Pi subagent runner. |
 | `src/structured-output.ts` | Terminating structured-output tool backed by TypeBox/JSON Schema. |
 | `src/display.ts` | Workflow snapshots and compact text renderers. |
+| `src/config.ts` | Configuration constants and limits. |
+| `src/errors.ts` | Error types and classification. |
+| `src/logger.ts` | Workflow logger with file persistence. |
+| `src/run-persistence.ts` | Run state persistence for pause/resume. |
+| `src/workflow-manager.ts` | Background execution and run management. |
+| `src/workflow-saved.ts` | Save and load reusable workflow commands. |
 | `extensions/workflow.ts` | The Pi extension entrypoint. |
 
 ## Development
@@ -157,7 +207,7 @@ Parser unit tests live in `tests/workflow-parser.test.ts` and cover both accepte
 
 ## Status
 
-This is a prototype. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) but does not yet implement persisted or resumable runs, or a `/workflows` manager.
+This is an active development project. It implements the core workflow primitive (script, subagents, parallel/pipeline, phases, abort, structured output) plus Phase 1-4 features. Phase 5 features are planned.
 
 ## License
 

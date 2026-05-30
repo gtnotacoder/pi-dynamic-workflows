@@ -3,6 +3,9 @@ import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
 import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
+import { createWorkflowLogger } from "./logger.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -23,10 +26,19 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   concurrency?: number;
   tokenBudget?: number | null;
   signal?: AbortSignal;
+  /** Maximum number of agents allowed in this run. Default: 1000 */
+  maxAgents?: number;
+  /** Timeout per agent in milliseconds. Default: 5 minutes */
+  agentTimeoutMs?: number;
+  /** Whether to persist logs to disk. Default: true */
+  persistLogs?: boolean;
+  /** Run ID for persistence. Auto-generated if not provided. */
+  runId?: string;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
   onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onTokenUsage?: (usage: { input: number; output: number; total: number }) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -36,6 +48,12 @@ export interface WorkflowRunResult<T = unknown> {
   phases: string[];
   agentCount: number;
   durationMs: number;
+  runId?: string;
+  tokenUsage?: {
+    input: number;
+    output: number;
+    total: number;
+  };
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
@@ -45,6 +63,8 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   model?: string;
   isolation?: "worktree";
   agentType?: string;
+  /** Override timeout for this specific agent. */
+  timeoutMs?: number;
 }
 
 interface RuntimeState {
@@ -53,6 +73,11 @@ interface RuntimeState {
   phases: string[];
   agentCount: number;
   spent: number;
+  tokenUsage: {
+    input: number;
+    output: number;
+    total: number;
+  };
 }
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
@@ -65,18 +90,37 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
-  const state: RuntimeState = { logs: [], phases: [], agentCount: 0, spent: 0 };
+  const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
+  const agentTimeoutMs = options.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  const runId = options.runId ?? `run-${started.toString(36)}`;
+
+  // Initialize logger
+  const logger = createWorkflowLogger({
+    runId,
+    cwd: options.cwd ?? process.cwd(),
+    persist: options.persistLogs ?? true,
+    onLog: options.onLog,
+  });
+
+  const state: RuntimeState = {
+    logs: [],
+    phases: [],
+    agentCount: 0,
+    spent: 0,
+    tokenUsage: { input: 0, output: 0, total: 0 },
+  };
+
   const agentRunner = options.agent ?? new WorkflowAgent(options);
   const concurrency = Math.max(
     1,
-    Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), 16),
+    Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), MAX_CONCURRENCY),
   );
   const limiter = createLimiter(concurrency);
 
   const log = (message: string) => {
     const text = String(message);
     state.logs.push(text);
-    options.onLog?.(text);
+    logger.log(text);
   };
 
   const phase = (title: string) => {
@@ -92,35 +136,75 @@ export async function runWorkflow<T = unknown>(
   });
 
   const throwIfAborted = () => {
-    if (options.signal?.aborted) throw new Error("workflow aborted");
+    if (options.signal?.aborted) {
+      throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+    }
   };
 
   const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
     throwIfAborted();
-    if (budget.total !== null && budget.remaining() <= 0) throw new Error("workflow token budget exhausted");
+
+    // Check agent limit
+    if (state.agentCount >= maxAgents) {
+      throw new WorkflowError(
+        `Agent limit exceeded (${maxAgents}). Use maxAgents option to increase the limit.`,
+        WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
+        { recoverable: false },
+      );
+    }
+
+    if (budget.total !== null && budget.remaining() <= 0) {
+      throw new WorkflowError("workflow token budget exhausted", WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED, {
+        recoverable: false,
+      });
+    }
+
     const assignedPhase = agentOptions.phase ?? state.currentPhase;
     const requestedLabel = agentOptions.label?.trim();
+
     return limiter(async () => {
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
+      const timeout = agentOptions.timeoutMs ?? agentTimeoutMs;
+
       options.onAgentStart?.({ label, phase: assignedPhase, prompt });
+
       try {
         throwIfAborted();
-        const result = await agentRunner.run(prompt, {
-          label,
-          schema: agentOptions.schema,
-          signal: options.signal,
-          instructions: buildAgentInstructions(assignedPhase, agentOptions),
-        } as any);
+
+        // Run agent with timeout
+        const result = await withTimeout(
+          agentRunner.run(prompt, {
+            label,
+            schema: agentOptions.schema,
+            signal: options.signal,
+            instructions: buildAgentInstructions(assignedPhase, agentOptions),
+          } as any),
+          timeout,
+          `Agent "${label}" timed out after ${timeout}ms`,
+        );
+
         throwIfAborted();
-        state.spent += estimateTokens(result);
+
+        // Estimate token usage
+        const tokens = estimateTokens(result);
+        state.spent += tokens;
+        state.tokenUsage.total += tokens;
+
         options.onAgentEnd?.({ label, phase: assignedPhase, result });
         return result;
       } catch (error) {
         if (options.signal?.aborted) throw error;
-        log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+
+        const workflowError = wrapError(error, { agentLabel: label });
+        logger.error(`agent ${label} failed: ${workflowError.message}`);
         options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
-        return null;
+
+        // Return null for recoverable errors
+        if (workflowError.recoverable) {
+          return null;
+        }
+        throw workflowError;
       }
     });
   };
@@ -137,7 +221,8 @@ export async function runWorkflow<T = unknown>(
           return await thunk();
         } catch (error) {
           if (options.signal?.aborted) throw error;
-          log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
+          const workflowError = wrapError(error);
+          log(`parallel[${index}] failed: ${workflowError.message}`);
           return null;
         }
       }),
@@ -163,7 +248,8 @@ export async function runWorkflow<T = unknown>(
             throwIfAborted();
           } catch (error) {
             if (options.signal?.aborted) throw error;
-            log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
+            const workflowError = wrapError(error);
+            log(`pipeline[${index}] failed: ${workflowError.message}`);
             return null;
           }
         }
@@ -202,6 +288,16 @@ export async function runWorkflow<T = unknown>(
 
   const wrapped = `(async () => {\n${body}\n})()`;
   const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+
+  // Persist logs
+  const logFile = logger.persist();
+  if (logFile) {
+    log(`Logs persisted to ${logFile}`);
+  }
+
+  // Emit final token usage
+  options.onTokenUsage?.(state.tokenUsage);
+
   return {
     meta,
     result: result as T,
@@ -209,12 +305,18 @@ export async function runWorkflow<T = unknown>(
     phases: state.phases,
     agentCount: state.agentCount,
     durationMs: Date.now() - started,
+    runId,
+    tokenUsage: state.tokenUsage,
   };
 }
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
   if (DETERMINISM_BLOCKLIST.test(script)) {
-    throw new Error("Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable");
+    throw new WorkflowError(
+      "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
   }
 
   const ast = parse(script, {
@@ -227,22 +329,39 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
 
   const first = ast.body?.[0] as AnyNode | undefined;
   if (first?.type !== "ExportNamedDeclaration") {
-    throw new Error("`export const meta = { name, description, phases }` must be the first statement in the script");
+    throw new WorkflowError(
+      "`export const meta = { name, description, phases }` must be the first statement in the script",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
   }
 
   const declaration = first.declaration as AnyNode | null;
   if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") {
-    throw new Error("meta export must be `export const meta = ...`");
+    throw new WorkflowError(
+      "meta export must be `export const meta = ...`",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      {
+        recoverable: false,
+      },
+    );
   }
   if (declaration.declarations.length !== 1) {
-    throw new Error("meta export must declare only `meta`");
+    throw new WorkflowError("meta export must declare only `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
   }
 
   const declarator = declaration.declarations[0] as AnyNode;
   if (declarator.id?.type !== "Identifier" || declarator.id.name !== "meta") {
-    throw new Error("meta export must declare `meta`");
+    throw new WorkflowError("meta export must declare `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
   }
-  if (!declarator.init) throw new Error("meta must have a literal value");
+  if (!declarator.init)
+    throw new WorkflowError("meta must have a literal value", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
 
   const meta = evaluateLiteral(declarator.init, "meta");
   validateMeta(meta);
@@ -349,4 +468,23 @@ function buildAgentInstructions(phase: string | undefined, options: AgentOptions
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
+/**
+ * Run a promise with a timeout.
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new WorkflowError(message, WorkflowErrorCode.AGENT_TIMEOUT, { recoverable: true }));
+    }, ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }

@@ -26,6 +26,12 @@ export interface WorkflowSnapshot {
   errorCount: number;
   durationMs?: number;
   result?: unknown;
+  tokenUsage?: {
+    input: number;
+    output: number;
+    total: number;
+  };
+  runId?: string;
 }
 
 export interface WorkflowDisplay {
@@ -175,6 +181,12 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
   }
 
   for (const log of snapshot.logs.slice(-maxLogs)) lines.push(`  log: ${log}`);
+
+  // Token usage summary
+  if (snapshot.tokenUsage) {
+    lines.push(`  Tokens: ${snapshot.tokenUsage.total.toLocaleString()} total`);
+  }
+
   return lines;
 }
 
