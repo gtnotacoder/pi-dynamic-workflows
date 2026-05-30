@@ -163,6 +163,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
             if (agent) {
               agent.status = event.result === null ? "error" : "done";
               agent.resultPreview = preview(event.result);
+              agent.tokens = event.tokens;
             }
             update();
           },

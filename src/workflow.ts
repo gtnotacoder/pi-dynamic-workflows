@@ -37,7 +37,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; tokens?: number }) => void;
   onTokenUsage?: (usage: { input: number; output: number; total: number }) => void;
 }
 
@@ -187,18 +187,20 @@ export async function runWorkflow<T = unknown>(
         throwIfAborted();
 
         // Estimate token usage
-        const tokens = estimateTokens(result);
+        const tokens = estimateTokens(result) + estimateTokens(prompt);
         state.spent += tokens;
         state.tokenUsage.total += tokens;
 
-        options.onAgentEnd?.({ label, phase: assignedPhase, result });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result, tokens });
         return result;
       } catch (error) {
         if (options.signal?.aborted) throw error;
 
         const workflowError = wrapError(error, { agentLabel: label });
         logger.error(`agent ${label} failed: ${workflowError.message}`);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
+        const errorTokens = estimateTokens(prompt);
+        state.tokenUsage.total += errorTokens;
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, tokens: errorTokens });
 
         // Return null for recoverable errors
         if (workflowError.recoverable) {

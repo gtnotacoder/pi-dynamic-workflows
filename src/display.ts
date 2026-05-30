@@ -11,6 +11,8 @@ export interface WorkflowAgentSnapshot {
   status: WorkflowAgentStatus;
   resultPreview?: string;
   error?: string;
+  /** Tokens used by this agent. */
+  tokens?: number;
 }
 
 export interface WorkflowSnapshot {
@@ -141,7 +143,11 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
       : snapshot.runningCount > 0
         ? `, ${snapshot.runningCount} running`
         : "";
-  const lines = [`◆ Workflow: ${snapshot.name} (${snapshot.doneCount}/${snapshot.agentCount} done${state})`];
+  // Build header with token info
+  const tokenInfo = snapshot.tokenUsage ? ` · ${snapshot.tokenUsage.total.toLocaleString()} tokens` : "";
+  const lines = [
+    `◆ Workflow: ${snapshot.name} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`,
+  ];
 
   const phaseNames = snapshot.phases.length
     ? snapshot.phases
@@ -165,7 +171,8 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     for (const agent of visibleAgents) {
       const order = `#${agent.id}`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${result}`);
+      const agentTokens = agent.tokens ? ` [${agent.tokens.toLocaleString()} tok]` : "";
+      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
     }
     if (agents.length > visibleAgents.length)
       lines.push(`    … ${agents.length - visibleAgents.length} earlier agents`);
@@ -176,16 +183,12 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     lines.push("  Unphased");
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(`    #${agent.id} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${result}`);
+      const agentTokens = agent.tokens ? ` [${agent.tokens.toLocaleString()} tok]` : "";
+      lines.push(`    #${agent.id} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
     }
   }
 
   for (const log of snapshot.logs.slice(-maxLogs)) lines.push(`  log: ${log}`);
-
-  // Token usage summary
-  if (snapshot.tokenUsage) {
-    lines.push(`  Tokens: ${snapshot.tokenUsage.total.toLocaleString()} total`);
-  }
 
   return lines;
 }
