@@ -91,39 +91,53 @@ test("colorizeWorkflow flows: a tick shift changes the colors", () => {
   assert.ok(RAINBOW.length > 1);
 });
 
-test("buildForcedWorkflowPrompt keeps the user's text and adds the directive", () => {
+test("buildForcedWorkflowPrompt forces the `workflow` tool and forbids alternatives", () => {
   const out = buildForcedWorkflowPrompt("audit the routes");
   assert.match(out, /audit the routes/);
-  assert.match(out, /workflows mode/);
-  assert.match(out, /`workflow` tool/);
+  assert.match(out, /workflows mode/i);
+  assert.match(out, /MUST/);
+  assert.match(out, /tool named exactly `workflow`/);
+  // Explicitly rules out the fallbacks the model wrongly used before.
+  assert.match(out, /subagent/i);
+  assert.match(out, /pi-subagents/i);
 });
 
-test("installWorkflowEditor transforms interactive input only when armed", () => {
-  let inputHandler: ((e: any) => any) | undefined;
-  let editorFactory: unknown;
+test("installWorkflowEditor restricts tools to `workflow` while armed, then restores", () => {
+  const handlers: Record<string, (e: any) => any> = {};
+  let activeTools = ["read", "bash", "workflow", "subagent"];
   const pi: any = {
     on: (event: string, handler: any) => {
-      if (event === "input") inputHandler = handler;
+      handlers[event] = handler;
+    },
+    getActiveTools: () => activeTools,
+    setActiveTools: (t: string[]) => {
+      activeTools = t;
     },
   };
-  const ui: any = { setEditorComponent: (f: unknown) => (editorFactory = f) };
+  const ui: any = { setEditorComponent: () => {} };
 
   const state = installWorkflowEditor(pi, ui);
-  assert.equal(typeof editorFactory, "function", "registers a custom editor factory");
-  assert.equal(typeof inputHandler, "function", "registers an input hook");
+  assert.equal(typeof handlers.input, "function", "registers an input hook");
+  assert.equal(typeof handlers.turn_end, "function", "registers a turn_end hook");
 
-  // Disarmed → passthrough.
-  assert.deepEqual(inputHandler!({ source: "interactive", text: "hi" }), { action: "continue" });
+  // Disarmed → passthrough, tools untouched.
+  assert.deepEqual(handlers.input({ source: "interactive", text: "hi" }), { action: "continue" });
+  assert.deepEqual(activeTools, ["read", "bash", "workflow", "subagent"]);
 
-  // Armed → transform and consume the arm.
+  // Armed → transform, consume the arm, and restrict tools to just `workflow`.
   state.active = true;
-  const res = inputHandler!({ source: "interactive", text: "do it" });
+  const res = handlers.input({ source: "interactive", text: "do it" });
   assert.equal(res.action, "transform");
   assert.match(res.text, /do it/);
-  assert.match(res.text, /workflows mode/);
   assert.equal(state.active, false, "arm is consumed after submit");
+  assert.deepEqual(activeTools, ["workflow"], "only the workflow tool is active during the forced turn");
 
-  // Non-interactive sources are never transformed even if armed.
+  // turn_end restores the user's full tool set.
+  handlers.turn_end({});
+  assert.deepEqual(activeTools, ["read", "bash", "workflow", "subagent"], "tools restored after the turn");
+
+  // Non-interactive sources are never transformed/restricted even if armed.
   state.active = true;
-  assert.deepEqual(inputHandler!({ source: "rpc", text: "workflow" }), { action: "continue" });
+  assert.deepEqual(handlers.input({ source: "rpc", text: "workflow" }), { action: "continue" });
+  assert.deepEqual(activeTools, ["read", "bash", "workflow", "subagent"]);
 });

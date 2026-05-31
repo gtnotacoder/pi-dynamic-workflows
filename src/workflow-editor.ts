@@ -226,9 +226,19 @@ export function buildForcedWorkflowPrompt(text: string): string {
   return [
     text,
     "",
-    "[workflows mode] The user armed workflows mode for this message. Handle it by",
-    "running the `workflow` tool: decompose the request and orchestrate subagents",
-    "with a workflow script, rather than answering directly.",
+    "---",
+    "[workflows mode is ON for this message]",
+    "You MUST handle this request by calling the tool named exactly `workflow` (Pi's",
+    "deterministic JavaScript workflow-orchestration tool from pi-dynamic-workflows).",
+    "Write a workflow script that fans the task out across subagents via",
+    "agent()/parallel()/pipeline().",
+    "",
+    "The ONLY acceptable action is a `workflow` tool call. Do NOT instead:",
+    "- answer directly or in prose,",
+    "- call the `subagent` tool yourself,",
+    "- use any skill or command (e.g. pi-subagents, /code-review, deep-research),",
+    '- or interpret the word "workflow/workflows" loosely as some other parallel/audit approach.',
+    "Even for a small task, wrap it in a minimal `workflow` call with at least one agent().",
   ].join("\n");
 }
 
@@ -236,16 +246,42 @@ export function buildForcedWorkflowPrompt(text: string): string {
  * Install the workflows-mode editor and the submit-time forcing hook.
  * Call once with the UI context (e.g. in `session_start`).
  */
+/** The exact name of the workflow tool that workflows mode forces. */
+export const WORKFLOW_TOOL_NAME = "workflow";
+
 export function installWorkflowEditor(pi: ExtensionAPI, ui: ExtensionUIContext): WorkflowModeState {
   const state: WorkflowModeState = { active: false };
 
   ui.setEditorComponent((tui, theme, keybindings) => new WorkflowEditor(tui, theme, keybindings, state));
 
-  // When armed at submit time, rewrite the user's message to force a workflow.
+  // Active tools saved while a turn is restricted to `workflow`; restored on turn_end.
+  let savedTools: string[] | undefined;
+
+  // When armed at submit time, rewrite the user's message to force a workflow AND
+  // restrict this turn's tools to just `workflow`, so the model can't fall back to
+  // the subagent tool, a skill, or a direct answer. Restored at turn_end.
   pi.on("input", (event: { source?: string; text?: string }) => {
     if (event.source !== "interactive" || !state.active || !event.text) return { action: "continue" } as const;
     state.active = false; // consume the arm for this submission
+    try {
+      if (savedTools === undefined) savedTools = pi.getActiveTools?.();
+      pi.setActiveTools?.([WORKFLOW_TOOL_NAME]);
+    } catch {
+      // Tool restriction is best-effort; the directive still forces the workflow.
+    }
     return { action: "transform", text: buildForcedWorkflowPrompt(event.text) } as const;
+  });
+
+  // Restore the user's full tool set once the forced turn completes.
+  pi.on("turn_end", () => {
+    if (savedTools === undefined) return;
+    const restore = savedTools;
+    savedTools = undefined;
+    try {
+      pi.setActiveTools?.(restore);
+    } catch {
+      // ignore — nothing we can do if the host rejects the restore
+    }
   });
 
   return state;
