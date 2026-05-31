@@ -111,18 +111,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       if (params.background ?? true) {
         const { runId } = manager.startInBackground(script, params.args);
         return {
-          content: [
-            {
-              type: "text",
-              text: [
-                `Workflow "${parsed.meta.name}" started in the background.`,
-                `Run ID: ${runId}`,
-                "It will keep running while you do other things; its result will be",
-                "delivered back into the conversation when it finishes.",
-                `Track or cancel it with /workflows status ${runId} or /workflows stop ${runId}.`,
-              ].join("\n"),
-            },
-          ],
+          content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
           details: { runId, background: true },
         };
       }
@@ -215,6 +204,25 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return new Text(text?.type === "text" ? text.text : theme.fg("muted", "workflow"), 0, 0);
     },
   });
+}
+
+/**
+ * The tool result returned when a workflow starts in the background. It both
+ * informs the model and tells it to reassure the user: the run continues on its
+ * own and the conversation will resume automatically when it finishes, so the
+ * user can just wait here (or go do something else).
+ */
+export function backgroundStartedText(name: string, runId: string): string {
+  return [
+    `Workflow "${name}" started in the background.`,
+    `Run ID: ${runId}`,
+    "It keeps running on its own. When it finishes, the result is delivered back",
+    "here and the conversation continues automatically — the user does not need to",
+    "do anything. Tell the user they can simply wait here for it to finish (it will",
+    "resume the conversation by itself), or keep chatting / working on other things",
+    "in the meantime; either way the result will come back to this conversation.",
+    `They can also track or cancel it with /workflows status ${runId} or /workflows stop ${runId}.`,
+  ].join("\n");
 }
 
 function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {

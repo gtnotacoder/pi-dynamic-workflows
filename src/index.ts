@@ -74,7 +74,7 @@ export { WorkflowManager } from "./workflow-manager.js";
 export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 export { createWorkflowStorage } from "./workflow-saved.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
-export { createWorkflowTool } from "./workflow-tool.js";
+export { backgroundStartedText, createWorkflowTool } from "./workflow-tool.js";
 export {
   keyToAction,
   type NavAction,
