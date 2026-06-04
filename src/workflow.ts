@@ -160,7 +160,12 @@ export async function runWorkflow<T = unknown>(
 
   const state: RuntimeState = {
     logs: [],
-    phases: [],
+    // When the script declares meta.phases, default the current phase to the
+    // first one so agents created before any explicit phase() call still group
+    // under a declared phase instead of an orphan "(no phase)" bucket. An
+    // explicit phase() (or agent({ phase })) overrides this.
+    phases: meta.phases?.[0]?.title ? [meta.phases[0].title] : [],
+    currentPhase: meta.phases?.[0]?.title,
     callSeq: 0,
   };
 

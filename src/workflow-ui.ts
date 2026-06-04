@@ -327,11 +327,26 @@ export function renderNavigator(
   model: NavigatorModel,
   width: number,
   theme: ThemeLike = PLAIN,
+  viewportRows = 24,
 ): string[] {
   const lines: string[] = [];
   const sel = (i: number, text: string) =>
     i === state.cursor ? theme.fg("accent", theme.bold(`❯ ${text}`)) : `  ${text}`;
   const dim = (t: string) => theme.fg("dim", t);
+
+  // Render a detail body inside a FIXED-height viewport so j/k scrolls within a
+  // stable box (clamping state.scroll) instead of slicing to the end — which
+  // shrank the overlay and looked like it was collapsing.
+  const pushScrollable = (body: string[]) => {
+    const viewport = Math.max(5, viewportRows - 4); // reserve title + blank + footer + indicator
+    const maxScroll = Math.max(0, body.length - viewport);
+    state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
+    lines.push(...body.slice(state.scroll, state.scroll + viewport));
+    if (body.length > viewport) {
+      const end = Math.min(state.scroll + viewport, body.length);
+      lines.push(dim(`  [${state.scroll + 1}-${end} / ${body.length}]`));
+    }
+  };
 
   if (state.kind === "runs") {
     const runs = model.runs();
@@ -388,9 +403,7 @@ export function renderNavigator(
       body.push(...wrap(a.prompt ?? "", width));
       body.push("", dim("Result:"));
       body.push(...wrap(a.resultPreview ?? "(none)", width));
-      const maxScroll = Math.max(0, body.length - 1);
-      state.scroll = Math.min(state.scroll, maxScroll);
-      lines.push(...body.slice(state.scroll));
+      pushScrollable(body);
     }
   } else if (state.kind === "savedDetail" && state.savedName) {
     const saved = model.saved();
@@ -404,9 +417,7 @@ export function renderNavigator(
       if (w.parameters) body.push(dim("Parameters: ") + JSON.stringify(w.parameters));
       body.push("", dim("Script:"));
       body.push(...wrap(w.script, width));
-      const maxScroll = Math.max(0, body.length - 1);
-      state.scroll = Math.min(state.scroll, maxScroll);
-      lines.push(...body.slice(state.scroll));
+      pushScrollable(body);
     }
   }
 
@@ -630,7 +641,7 @@ export function openWorkflowNavigator(
       };
 
       const component: Component & { dispose?(): void } = {
-        render: (width: number) => renderNavigator(state, model, width, theme),
+        render: (width: number) => renderNavigator(state, model, width, theme, tui.terminal?.rows ?? 24),
         handleInput: (data: string) => act(data),
         invalidate: () => {},
         dispose: () => cleanup(),

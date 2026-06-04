@@ -238,6 +238,58 @@ test("NavigatorState cursor wraps and detail scroll clamps at 0", () => {
   assert.equal(state.scroll, 1);
 });
 
+function longDetailManager(): Pick<WorkflowManager, "listRuns" | "getRun"> {
+  const snapshot: WorkflowSnapshot = {
+    name: "wf",
+    phases: ["P"],
+    currentPhase: "P",
+    logs: [],
+    // Long single-token result so wrap() produces ~50 lines at width 40.
+    agents: [
+      { id: 1, label: "big", phase: "P", prompt: "p", status: "done", resultPreview: "Z".repeat(2000), tokens: 1 },
+    ],
+    agentCount: 1,
+    runningCount: 0,
+    doneCount: 1,
+    errorCount: 0,
+  };
+  return {
+    listRuns: () =>
+      [
+        { runId: "r", workflowName: "wf", status: "running", phases: ["P"], agents: snapshot.agents, logs: [] },
+      ] as unknown as PersistedRunState[],
+    getRun: (id: string) =>
+      id === "r" ? ({ runId: "r", status: "running", snapshot } as unknown as ManagedRun) : undefined,
+  };
+}
+
+test("detail view scrolls within a fixed viewport and does not collapse", () => {
+  const model = new NavigatorModel(longDetailManager());
+  const state = new NavigatorState();
+  state.drill(model); // runs -> phases
+  state.drill(model); // phases -> agents
+  state.drill(model); // agents -> detail
+  assert.equal(state.kind, "detail");
+
+  const vp = 14;
+  const top = renderNavigator(state, model, 40, undefined, vp);
+  state.move(5, 0); // scroll down within detail
+  const mid = renderNavigator(state, model, 40, undefined, vp);
+  state.move(1000, 0); // scroll past the end (clamped)
+  const end = renderNavigator(state, model, 40, undefined, vp);
+
+  // The box height stays stable while scrolling — the old slice-to-end code shrank it.
+  assert.equal(top.length, mid.length, "viewport height is stable while scrolling (no collapse)");
+  assert.equal(top.length, end.length, "still a full viewport at the bottom (clamped, not collapsed)");
+  // Scrolling actually changes the visible window.
+  assert.notDeepEqual(top, mid, "scroll shifts the visible window");
+  // A position indicator is shown when content overflows the viewport.
+  assert.ok(
+    end.some((l) => /\[\d+-\d+ \/ \d+\]/.test(l)),
+    "shows a scroll position indicator",
+  );
+});
+
 test("NavigatorState drill returns false when nothing to drill into", () => {
   const model = new NavigatorModel({
     listRuns: () => [] as PersistedRunState[],
