@@ -12,7 +12,31 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
+import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
+
+/**
+ * Resolve which concrete model spec a subagent should use. Precedence, most
+ * specific first:
+ *   1. options.model — an explicit per-agent model always wins.
+ *   2. options.tier  — resolved via the model-tiers config, falling back to the
+ *      session's main model when the tier has no configured entry.
+ * Returns undefined when neither is set, so the session default applies.
+ *
+ * `loadConfig` is injectable for testing; it defaults to reading from disk.
+ */
+export function resolveAgentModelSpec(
+  options: { model?: string; tier?: string },
+  mainModel: string | undefined,
+  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
+): string | undefined {
+  if (options.model) return options.model;
+  if (options.tier) {
+    const config = loadConfig();
+    return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
+  }
+  return undefined;
+}
 
 export interface WorkflowAgentOptions {
   cwd?: string;
@@ -22,6 +46,13 @@ export interface WorkflowAgentOptions {
   session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
+  /**
+   * The session's main model (`provider/modelId`). Used as a fallback when
+   * resolving opts.tier and no model-tiers.json config exists. Without this,
+   * a workflow using `{ tier: "small" }` would log a warning and fall through
+   * to the session default when no config is saved yet.
+   */
+  mainModel?: string;
 }
 
 /**
@@ -68,6 +99,15 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * a warning is logged. When omitted, the session default applies.
    */
   model?: string;
+  /**
+   * Model tier name (e.g. "small", "medium", "big"). When set (and no explicit
+   * `model` is given), the model is resolved from the user's model-tiers.json
+   * config before `run()` starts, falling back to the session's main model when
+   * the tier has no configured entry. An explicit `model` always takes priority,
+   * so workflow scripts can use `{ tier: "small" }` for coarse routing without
+   * caring which concrete model backs that tier.
+   */
+  tier?: string;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
@@ -83,6 +123,7 @@ export class WorkflowAgent {
   private readonly baseTools: ToolDefinition[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly instructions?: string;
+  private readonly mainModel?: string;
   /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
   private registry?: ModelRegistry;
 
@@ -91,6 +132,7 @@ export class WorkflowAgent {
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.sessionOptions = options.session ?? {};
     this.instructions = options.instructions;
+    this.mainModel = options.mainModel;
   }
 
   private getRegistry(): ModelRegistry {
@@ -133,15 +175,20 @@ export class WorkflowAgent {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
     }
 
+    // Resolve the model spec (explicit model > tier > session default). This
+    // composes with phase-based routing in workflow.ts, which only supplies
+    // options.model when a phase pattern matches — so an explicit model wins.
+    const modelSpec = resolveAgentModelSpec(options, this.mainModel);
+
     // Resolve a requested model spec to a Model object. A given-but-unresolved
     // spec falls back to the session default (with a warning) rather than failing.
     let resolvedModel: Model<any> | undefined;
-    if (options.model) {
-      resolvedModel = this.resolveModel(options.model);
+    if (modelSpec) {
+      resolvedModel = this.resolveModel(modelSpec);
       if (resolvedModel) {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
       } else {
-        console.warn(`[workflow] model "${options.model}" not found; using session default`);
+        console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
       }
     }
 

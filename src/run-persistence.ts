@@ -2,7 +2,7 @@
  * Workflow run state persistence for pause/resume support.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WORKFLOW_RUNS_DIR } from "./config.js";
 
@@ -59,12 +59,32 @@ export interface RunPersistence {
   getRunsDir(): string;
 }
 
-export function createRunPersistence(cwd: string): RunPersistence {
+/**
+ * Filesystem operations used by run persistence.
+ * Exposed for testing – pass overrides to inject mock implementations.
+ */
+export type FsLayer = {
+  existsSync: typeof existsSync;
+  mkdirSync: typeof mkdirSync;
+  readdirSync: typeof readdirSync;
+  readFileSync: typeof readFileSync;
+  unlinkSync: typeof unlinkSync;
+  writeFileSync: typeof writeFileSync;
+};
+
+export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>): RunPersistence {
+  const _existsSync = fsOverride?.existsSync ?? existsSync;
+  const _mkdirSync = fsOverride?.mkdirSync ?? mkdirSync;
+  const _readdirSync = fsOverride?.readdirSync ?? readdirSync;
+  const _readFileSync = fsOverride?.readFileSync ?? readFileSync;
+  const _unlinkSync = fsOverride?.unlinkSync ?? unlinkSync;
+  const _writeFileSync = fsOverride?.writeFileSync ?? writeFileSync;
+
   const runsDir = join(cwd, WORKFLOW_RUNS_DIR);
 
   const ensureDir = () => {
-    if (!existsSync(runsDir)) {
-      mkdirSync(runsDir, { recursive: true });
+    if (!_existsSync(runsDir)) {
+      _mkdirSync(runsDir, { recursive: true });
     }
   };
 
@@ -74,14 +94,14 @@ export function createRunPersistence(cwd: string): RunPersistence {
     save(state: PersistedRunState) {
       ensureDir();
       state.updatedAt = new Date().toISOString();
-      writeFileSync(runPath(state.runId), JSON.stringify(state, null, 2));
+      _writeFileSync(runPath(state.runId), JSON.stringify(state, null, 2));
     },
 
     load(runId: string): PersistedRunState | null {
       try {
         const path = runPath(runId);
-        if (!existsSync(path)) return null;
-        return JSON.parse(readFileSync(path, "utf-8")) as PersistedRunState;
+        if (!_existsSync(path)) return null;
+        return JSON.parse(_readFileSync(path, "utf-8")) as PersistedRunState;
       } catch {
         return null;
       }
@@ -90,11 +110,11 @@ export function createRunPersistence(cwd: string): RunPersistence {
     list(): PersistedRunState[] {
       ensureDir();
       try {
-        const files = readdirSync(runsDir).filter((f) => f.endsWith(".json"));
+        const files = _readdirSync(runsDir).filter((f) => f.endsWith(".json"));
         const runs: PersistedRunState[] = [];
         for (const file of files) {
           try {
-            const state = JSON.parse(readFileSync(join(runsDir, file), "utf-8")) as PersistedRunState;
+            const state = JSON.parse(_readFileSync(join(runsDir, file), "utf-8")) as PersistedRunState;
             runs.push(state);
           } catch {
             // Skip corrupted files
@@ -109,9 +129,8 @@ export function createRunPersistence(cwd: string): RunPersistence {
     delete(runId: string): boolean {
       try {
         const path = runPath(runId);
-        if (existsSync(path)) {
-          const { unlinkSync } = require("node:fs");
-          unlinkSync(path);
+        if (_existsSync(path)) {
+          _unlinkSync(path);
           return true;
         }
         return false;

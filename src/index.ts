@@ -36,6 +36,15 @@ export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
 export { buildModelRoutingInstructions, parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+export type { ModelTierConfig } from "./model-tier-config.js";
+export {
+  buildDefaultTierConfig,
+  getModelTierConfigPath,
+  loadModelTierConfig,
+  resolveTierModel,
+  saveModelTierConfig,
+  sortedTierNames,
+} from "./model-tier-config.js";
 export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
 export {
@@ -45,7 +54,7 @@ export {
 } from "./saved-commands.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
-export { installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
+export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
@@ -84,5 +93,6 @@ export {
   renderNavigator,
   type ViewKind,
 } from "./workflow-ui.js";
+export { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 export type { Worktree } from "./worktree.js";
 export { createWorktree, removeWorktree } from "./worktree.js";

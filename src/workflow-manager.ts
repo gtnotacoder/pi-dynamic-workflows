@@ -134,8 +134,13 @@ export class WorkflowManager extends EventEmitter {
       updatedAt: managed.startedAt.toISOString(),
     });
 
-    // Run workflow asynchronously
+    // Run workflow asynchronously.
+    // Attach a side-channel catch to prevent Node.js unhandled-rejection crashes
+    // when a workflow is aborted/paused/stopped — executeRun()'s catch block
+    // already records status/event/persist, but the promise still rejects.
+    // The original promise is returned so callers can await it in try/catch.
     const promise = this.executeRun(managed, script, args);
+    promise.catch(() => {});
 
     return { runId, promise };
   }
@@ -277,7 +282,10 @@ export class WorkflowManager extends EventEmitter {
             );
 
       if (managed.controller.signal.aborted) {
-        managed.status = "aborted";
+        // Intentional abort (pause/stop/Esc) — preserve status set by pause()/stop()
+        if (managed.status === "running") {
+          managed.status = "aborted";
+        }
       } else {
         managed.status = "failed";
       }
@@ -292,36 +300,43 @@ export class WorkflowManager extends EventEmitter {
   }
 
   private persistRun(managed: ManagedRun) {
-    this.persistence.save({
-      runId: managed.runId,
-      workflowName: managed.snapshot.name,
-      // Persist the real script + journal so the run can be resumed. Runs live
-      // under .pi/workflows/runs/ — protect via directory permissions, not blanking.
-      script: managed.script,
-      args: managed.args,
-      journal: managed.journal,
-      status: managed.status,
-      phases: managed.snapshot.phases,
-      currentPhase: managed.snapshot.currentPhase,
-      agents: managed.snapshot.agents.map((a) => ({
-        ...a,
+    try {
+      this.persistence.save({
+        runId: managed.runId,
+        workflowName: managed.snapshot.name,
+        // Persist the real script + journal so the run can be resumed. Runs live
+        // under .pi/workflows/runs/ — protect via directory permissions, not blanking.
+        script: managed.script,
+        args: managed.args,
+        journal: managed.journal,
+        status: managed.status,
+        phases: managed.snapshot.phases,
+        currentPhase: managed.snapshot.currentPhase,
+        agents: managed.snapshot.agents.map((a) => ({
+          ...a,
+          startedAt: managed.startedAt.toISOString(),
+          endedAt: new Date().toISOString(),
+        })),
+        logs: managed.snapshot.logs,
+        result: managed.result?.result,
+        tokenUsage: managed.snapshot.tokenUsage
+          ? {
+              input: managed.snapshot.tokenUsage.input,
+              output: managed.snapshot.tokenUsage.output,
+              total: managed.snapshot.tokenUsage.total,
+            }
+          : undefined,
         startedAt: managed.startedAt.toISOString(),
-        endedAt: new Date().toISOString(),
-      })),
-      logs: managed.snapshot.logs,
-      result: managed.result?.result,
-      tokenUsage: managed.snapshot.tokenUsage
-        ? {
-            input: managed.snapshot.tokenUsage.input,
-            output: managed.snapshot.tokenUsage.output,
-            total: managed.snapshot.tokenUsage.total,
-          }
-        : undefined,
-      startedAt: managed.startedAt.toISOString(),
-      updatedAt: new Date().toISOString(),
-      completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
-      durationMs: managed.result?.durationMs,
-    });
+        updatedAt: new Date().toISOString(),
+        completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
+        durationMs: managed.result?.durationMs,
+      });
+    } catch (err) {
+      // Persistence is best-effort: the run is still healthy in memory.
+      // Log so an operator debugging state-loss has a lead, but never crash
+      // the workflow over a disk-full situation.
+      console.warn("[workflow-manager] Persist run failed:", err);
+    }
   }
 
   /**
@@ -343,11 +358,14 @@ export class WorkflowManager extends EventEmitter {
    * and run the rest live. Returns false if there is nothing resumable.
    */
   async resume(runId: string): Promise<boolean> {
+    // Guard: refuse to resume a run that is already running, or one that was
+    // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
     const active = this.runs.get(runId);
-    if (active?.status === "running") return false; // already running
+    if (active?.status === "running") return false;
+    if (active?.status === "aborted") return false;
 
     const persisted = this.persistence.load(runId);
-    if (!persisted?.script || persisted.status === "completed") return false;
+    if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
 
     const controller = new AbortController();
     const managed: ManagedRun = {

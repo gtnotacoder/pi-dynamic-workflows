@@ -50,7 +50,7 @@ function oneLineProgress(snapshot: WorkflowSnapshot): string {
  */
 function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionCommandContext, id: string): boolean {
   const active = manager.getRun(id);
-  if (!active || active.status !== "running") return false;
+  if (active?.status !== "running") return false;
 
   const key = `wf:${id}`;
   const update = () => {
@@ -119,7 +119,8 @@ export function registerWorkflowCommands(
   }
 
   pi.registerCommand("workflows", {
-    description: "List and control background workflow runs",
+    description:
+      "Manage workflow runs — no args (opens navigator) | status/stop/pause/resume <id> | rm <id> | save <name> [runId]",
     async handler(args: string, ctx: ExtensionCommandContext) {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "list").toLowerCase();
@@ -200,6 +201,7 @@ export function registerWorkflowCommands(
           const name = id;
           if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
           if (!opts.storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
+          const storage = opts.storage;
           const runs = manager.listRuns();
           const runIdArg = parts[2];
           // Pick the named run, else the most recent run that still has its script.
@@ -208,13 +210,15 @@ export function registerWorkflowCommands(
             ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
             return;
           }
-          const saved = opts.storage.save({
+          const saved = storage.save({
             name,
             description: run.workflowName,
             script: run.script,
             location: "project",
           });
-          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved);
+          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
+            storage.list().some((w) => w.name === saved.name),
+          );
           ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
           return;
         }

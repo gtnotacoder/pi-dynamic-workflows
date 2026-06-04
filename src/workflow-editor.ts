@@ -258,14 +258,28 @@ export function installWorkflowEditor(pi: ExtensionAPI, ui: ExtensionUIContext):
   let savedTools: string[] | undefined;
 
   // When armed at submit time, rewrite the user's message to force a workflow AND
-  // restrict this turn's tools to just `workflow`, so the model can't fall back to
-  // the subagent tool, a skill, or a direct answer. Restored at turn_end.
+  // ensure the `workflow` tool is in the active tool set, so the model can call it.
+  // We keep all existing tools (bash, read, edit, write, web_search, etc.) because
+  // the model often needs them BEFORE writing the workflow script (e.g. exploring
+  // the codebase, reading files, searching for context). This only ADDS the
+  // workflow tool to the active set; no tools are removed (the original set is
+  // saved in `savedTools` and restored elsewhere).
+  //
+  // NOTE: we check event.text directly (hasTrigger) rather than state.active from
+  // the editor, because the editor's state is reset synchronously by submitValue()
+  // BEFORE the input event fires (the actual prompt processing is async).
   pi.on("input", (event: { source?: string; text?: string }) => {
-    if (event.source !== "interactive" || !state.active || !event.text) return { action: "continue" } as const;
-    state.active = false; // consume the arm for this submission
+    if (event.source !== "interactive" || !event.text || !hasTrigger(event.text))
+      return { action: "continue" } as const;
     try {
-      if (savedTools === undefined) savedTools = pi.getActiveTools?.();
-      pi.setActiveTools?.([WORKFLOW_TOOL_NAME]);
+      if (savedTools === undefined) {
+        savedTools = pi.getActiveTools?.() ?? [];
+        const current = [...savedTools];
+        if (!current.includes(WORKFLOW_TOOL_NAME)) {
+          current.push(WORKFLOW_TOOL_NAME);
+        }
+        pi.setActiveTools?.(current);
+      }
     } catch {
       // Tool restriction is best-effort; the directive still forces the workflow.
     }

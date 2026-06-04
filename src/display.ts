@@ -49,7 +49,6 @@ export interface WorkflowDisplayOptions {
   key?: string;
   placement?: "aboveEditor" | "belowEditor";
   maxAgents?: number;
-  maxLogs?: number;
   showStatus?: boolean;
   showResultPreviews?: boolean;
 }
@@ -138,7 +137,6 @@ export function createToolUpdateWorkflowDisplay(
 
 export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: WorkflowDisplayOptions = {}): string[] {
   const maxAgents = options.maxAgents ?? 8;
-  const maxLogs = options.maxLogs ?? 2;
   const showResultPreviews = options.showResultPreviews ?? false;
   const state =
     snapshot.errorCount > 0
@@ -174,7 +172,7 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
 
     const visibleAgents = agents.slice(-maxAgents);
     for (const agent of visibleAgents) {
-      const order = `#${agent.id}`;
+      const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? ` [${agent.tokens.toLocaleString()} tok]` : "";
       lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
@@ -189,11 +187,9 @@ export function renderWorkflowLines(snapshot: WorkflowSnapshot, options: Workflo
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? ` [${agent.tokens.toLocaleString()} tok]` : "";
-      lines.push(`    #${agent.id} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
+      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
     }
   }
-
-  for (const log of snapshot.logs.slice(-maxLogs)) lines.push(`  log: ${log}`);
 
   return lines;
 }

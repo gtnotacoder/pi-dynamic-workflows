@@ -8,6 +8,7 @@ import {
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
   registerWorkflowCommands,
+  registerWorkflowModelsCommand,
   WorkflowManager,
 } from "../src/index.js";
 
@@ -21,10 +22,9 @@ export default function extension(pi: ExtensionAPI) {
   const workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
   registerWorkflowCommands(pi, manager, { storage, cwd });
+  registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { cwd });
-  registerAllSavedWorkflows(pi, cwd, storage);
-  // Deliver a background run's result into the conversation when it finishes.
-  installResultDelivery(pi, manager);
+  registerAllSavedWorkflows(pi, cwd, storage, manager);
   // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
   // Backspace right after the word disarms it. Registers the `input` hook now;
   // the editor itself is installed once the UI is available (session_start).
@@ -38,6 +38,8 @@ export default function extension(pi: ExtensionAPI) {
     // Tell the manager the session's main model so "explore" agents auto-tier
     // down to a lighter same-family sibling (e.g. Claude → Haiku).
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
+    // Deliver a background run's result into the conversation when it finishes.
+    installResultDelivery(pi, manager);
     // Live "workflows running" panel below the input (focus + enter to open).
     installTaskPanel(pi, manager, ctx.ui, { storage, cwd });
     if (!editorInstalled) {

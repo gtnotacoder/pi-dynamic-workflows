@@ -154,10 +154,13 @@ return { inventory, summary }
 | `phase` | string | Override the current phase for this agent |
 | `schema` | object | JSON Schema → the subagent returns a validated object |
 | `model` | string | Run this agent on a specific model — `provider/modelId` or a bare `modelId` |
+| `tier` | `"small"` \| `"medium"` \| `"big"` | Coarse model routing — resolves to whatever model you mapped that tier to (see `/workflows-models`) |
 | `isolation` | `"worktree"` | Run this agent in its own throwaway git worktree (parallel edits without conflict) |
 | `timeoutMs` | number | Override the default 5-minute agent timeout |
 
-Models can also be set per phase via `meta.phases[].model`. Precedence: `opts.model` > phase model > session default; an unknown model logs a warning and falls back. The model each agent ran on is recorded and shown in the `/workflows` navigator.
+Models can also be set per phase via `meta.phases[].model`. Precedence: `opts.model` > `opts.tier` > phase model > session default; an unknown model logs a warning and falls back. An explicit `model` always wins over a `tier`. The model each agent ran on is recorded and shown in the `/workflows` navigator.
+
+**Tiers** let a script ask for coarse routing (`{ tier: 'small' }`) without naming a concrete model. Each tier maps to a single model in `~/.pi/workflows/model-tiers.json`; run **`/workflows-models`** to pick the model for each tier (small / medium / big). Until you configure them, every tier resolves to your current session model, so tiered scripts work with zero setup.
 
 **Model routing is decided by the assistant, not hardcoded.** When it writes a workflow, Pi is given the routing policy and the list of your currently authenticated models, and picks each agent's `model` accordingly: a lighter same-family model (one tier below your main model — e.g. Claude→Haiku, GPT→a mini) for exploration/search/gathering agents, and your main model for analysis/judgment/decision agents. If you name a specific model, that wins.
 

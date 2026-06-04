@@ -1,83 +1,168 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { parseCommandArgs, registerAllSavedWorkflows, registerSavedWorkflow } from "../src/saved-commands.js";
-import { registerWorkflowCommands } from "../src/workflow-commands.js";
+import { describe, it } from "node:test";
+import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
-test("parseCommandArgs splits key=value, collects positionals, applies defaults", () => {
-  const parsed = parseCommandArgs("hello world topic=birds depth=2", {
-    topic: { type: "string" },
-    angles: { type: "number", default: 4 },
-  });
-  assert.equal(parsed.topic, "birds");
-  assert.equal(parsed.depth, "2");
-  assert.equal(parsed._, "hello world");
-  assert.equal(parsed._raw, "hello world topic=birds depth=2");
-  assert.equal(parsed.angles, 4); // default filled in
-});
-
-function fakePi() {
-  const registered: string[] = [];
-  const pi: any = {
-    getCommands: () => registered.map((name) => ({ name })),
-    registerCommand: (name: string) => registered.push(name),
-    sendMessage: async () => {},
-  };
-  return { pi, registered };
+async function load() {
+  return import("../src/saved-commands.js");
 }
 
-test("registerSavedWorkflow registers a /<name> command", () => {
-  const { pi, registered } = fakePi();
-  registerSavedWorkflow(pi, process.cwd(), {
-    name: "myflow",
-    description: "demo",
-    script: "export const meta = { name: 'x', description: 'y' }\nawait agent('hi')",
-    location: "project",
-    path: "/tmp/x.json",
-    savedAt: "now",
+describe("parseCommandArgs", () => {
+  it("parses key=value pairs", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("foo=bar count=42");
+    assert.equal(result.foo, "bar");
+    assert.equal(result.count, "42");
   });
-  assert.deepEqual(registered, ["myflow"]);
+
+  it("collects positional args into _", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("hello world");
+    assert.equal(result._, "hello world");
+  });
+
+  it("handles mixed positional and key=value", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("task=test hello world");
+    assert.equal(result.task, "test");
+    assert.equal(result._, "hello world");
+  });
+
+  it("sets _raw to the trimmed input", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("  foo=bar  ");
+    assert.equal(result._raw, "foo=bar");
+  });
+
+  it("returns empty when input is empty", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("");
+    assert.equal(result._, "");
+    assert.equal(result._raw, "");
+  });
+
+  it("fills parameter defaults for missing keys", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("foo=bar", { foo: {}, limit: { default: 10 }, label: { default: "test" } });
+    assert.equal(result.foo, "bar");
+    assert.equal(result.limit, 10);
+    assert.equal(result.label, "test");
+  });
+
+  it("does NOT override explicit values with defaults", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("limit=5", { limit: { default: 10 } });
+    assert.equal(result.limit, "5");
+  });
+
+  it("handles value-only token as positional", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("hello key=value world");
+    assert.equal(result._, "hello world");
+    assert.equal(result.key, "value");
+  });
+
+  it("handles URLs as positional arguments", async () => {
+    const { parseCommandArgs } = await load();
+    const result = parseCommandArgs("https://example.com");
+    assert.equal(result._, "https://example.com");
+  });
 });
 
-test("registerAllSavedWorkflows registers every saved workflow", () => {
-  const { pi, registered } = fakePi();
-  const storage: any = {
-    list: () => [
-      { name: "a", description: "", script: "", location: "project", path: "", savedAt: "" },
-      { name: "b", description: "", script: "", location: "user", path: "", savedAt: "" },
-    ],
-  };
-  registerAllSavedWorkflows(pi, process.cwd(), storage);
-  assert.deepEqual(registered.sort(), ["a", "b"]);
-});
+describe("registerSavedWorkflow", () => {
+  it("registers a command with the workflow name", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = {
+      name: "test-workflow",
+      script: "export const meta = { name: 't', description: 't' };",
+      description: "A test",
+    };
 
-test("/workflows save persists a run's script and registers it as a command", async () => {
-  const { pi, registered } = fakePi();
-  const notified: Array<{ message: string; type?: string }> = [];
-  const saved: any[] = [];
-  let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
-  pi.registerCommand = (name: string, opts: any) => {
-    registered.push(name);
-    if (name === "workflows") handler = opts.handler;
-  };
+    registerSavedWorkflow(pi, "/cwd", wf);
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0].name, "test-workflow");
+  });
 
-  const manager: any = {
-    listRuns: () => [{ runId: "run-1", workflowName: "demo", status: "completed", script: "SCRIPT", agents: [] }],
-  };
-  const storage: any = {
-    save: (wf: any) => {
-      saved.push(wf);
-      return { ...wf, path: "/tmp/demo.json", savedAt: "now" };
-    },
-  };
+  it("is idempotent — second registration is skipped", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands } = makeCommandRegistryPi(["test-workflow"]);
+    const wf = { name: "test-workflow", script: "export const meta = { name: 't', description: 't' };" };
 
-  registerWorkflowCommands(pi, manager, { storage, cwd: process.cwd() });
-  const ctx = { ui: { notify: (message: string, type?: string) => notified.push({ message, type }) } };
-  assert.ok(handler, "workflows command registered");
-  await handler("save myflow", ctx);
+    registerSavedWorkflow(pi, "/cwd", wf);
+    assert.equal(commands.length, 0, "should not re-register when already present");
+  });
 
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].name, "myflow");
-  assert.equal(saved[0].script, "SCRIPT");
-  assert.ok(registered.includes("myflow"), "new command registered");
-  assert.match(notified.at(-1)?.message ?? "", /Saved \/myflow/);
+  it("registers multiple saved workflows", async () => {
+    const { registerAllSavedWorkflows } = await load();
+    const { pi, commands } = makeCommandRegistryPi();
+    const storage = {
+      list: () => [
+        { name: "wf1", script: "export..." },
+        { name: "wf2", script: "export..." },
+      ],
+    };
+
+    registerAllSavedWorkflows(pi, "/cwd", storage as never);
+    assert.deepEqual(
+      commands.map((c) => c.name),
+      ["wf1", "wf2"],
+    );
+  });
+
+  it("runs through WorkflowManager when provided", async () => {
+    const { registerSavedWorkflow } = await load();
+    let startedBackground = false;
+    const manager = {
+      startInBackground: (_script: string, _args: unknown) => {
+        startedBackground = true;
+        return { runId: "test-run", promise: Promise.resolve({ result: { report: "done" } }) };
+      },
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = { name: "run-via-manager", script: "export..." };
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("", ctx);
+
+    assert.equal(startedBackground, true, "should use startInBackground when manager provided");
+  });
+
+  it("falls back to runWorkflow (inline) when no manager is provided", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+
+    // A script with no agent() calls runs to completion inline without a manager.
+    const wf = {
+      name: "run-inline",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: 'done' };",
+    };
+    registerSavedWorkflow(pi, "/cwd", wf); // no manager
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("", ctx);
+
+    // The inline fallback ran to completion and delivered the report — proving it
+    // did not crash on the missing manager and actually executed runWorkflow().
+    assert.equal(sent.length, 1, "fallback should deliver exactly one result message");
+    assert.equal(sent[0].customType, "workflow:run-inline");
+    assert.ok(sent[0].content?.includes("done"), "delivered content should include the workflow's report");
+  });
+
+  it("a deleted workflow's lingering command notifies and does not run", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+
+    const wf = { name: "gone", script: "export const meta = { name: 't', description: 't' };\nreturn 1;" };
+    // exists() reports the workflow has been deleted from storage.
+    registerSavedWorkflow(pi, "/cwd", wf, undefined, () => false);
+
+    const { ctx, notified } = makeNotifyCtx();
+    await commands[0].handler("", ctx);
+
+    assert.equal(sent.length, 0, "a deleted workflow should not run or deliver a result");
+    assert.equal(notified.length, 1, "the user should be told the command is stale");
+    assert.match(notified[0].message, /deleted/i);
+  });
 });

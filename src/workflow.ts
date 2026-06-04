@@ -112,6 +112,13 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    * analysis). When omitted, the session's main model is used.
    */
   model?: string;
+  /**
+   * Coarse model tier ("small" | "medium" | "big"), resolved from the user's
+   * model-tiers config (see /workflows-models). An explicit `model` takes
+   * precedence; a tier takes precedence over the phase model. When the tier has
+   * no configured entry it falls back to the session's main model.
+   */
+  tier?: string;
   isolation?: "worktree";
   agentType?: string;
   /** Override timeout for this specific agent. */
@@ -216,8 +223,12 @@ export async function runWorkflow<T = unknown>(
 
     const assignedPhase = agentOptions.phase ?? state.currentPhase;
     const requestedLabel = agentOptions.label?.trim();
-    // Precedence: explicit agentOptions.model > phase model (meta.phases[].model).
-    const modelSpec = agentOptions.model ?? resolveModelForPhase(assignedPhase, routingConfig);
+    // Model precedence: explicit agentOptions.model > tier > phase model.
+    // When a tier is requested (and no explicit model), pass undefined here so
+    // the tier — not the phase model — decides inside WorkflowAgent.run(), which
+    // resolves the tier against the user's config (falling back to mainModel).
+    const modelSpec =
+      agentOptions.model ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
     // For display in /workflows: the model this agent runs on — its explicit/phase
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
@@ -280,6 +291,7 @@ export async function runWorkflow<T = unknown>(
             signal: options.signal,
             instructions: buildAgentInstructions(assignedPhase, agentOptions),
             model: modelSpec,
+            tier: agentOptions.tier,
             cwd: runCwd,
             onModelResolved: (id: string) => {
               displayModel = id;
@@ -606,6 +618,7 @@ function hashAgentCall(
   const identity = JSON.stringify({
     prompt,
     model: model ?? null,
+    tier: options.tier ?? null,
     phase: phase ?? null,
     agentType: options.agentType ?? null,
     schema: options.schema ?? null,

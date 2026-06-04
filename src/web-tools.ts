@@ -24,7 +24,7 @@ async function fetchText(url: string, timeoutMs = 15000): Promise<{ status: numb
   }
 }
 
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -37,11 +37,12 @@ function htmlToText(html: string): string {
     .replace(/&#39;|&apos;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/[ \t]+/g, " ")
+    .replace(/\n +/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
-function parseBingResults(html: string, limit: number): Array<{ url: string; title: string }> {
+export function parseBingResults(html: string, limit: number): Array<{ url: string; title: string }> {
   const out: Array<{ url: string; title: string }> = [];
   const seen = new Set<string>();
   for (const m of html.matchAll(/<h2[^>]*>\s*<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g)) {

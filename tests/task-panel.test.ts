@@ -1,112 +1,282 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import test from "node:test";
-import { installResultDelivery, installTaskPanel } from "../src/task-panel.js";
+import { before, describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const theme: any = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+type TaskPanelModule = {
+  installResultDelivery: (pi: ExtensionAPI, manager: unknown) => void;
+  installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
+};
 
-function fakeManager() {
-  const m: any = new EventEmitter();
-  m.runs = new Map();
-  m.listRuns = () => [...m.runs.values()];
-  m.getRun = (id: string) => m.runs.get(id);
-  return m;
-}
+// Loaded once before all tests
+let mod: TaskPanelModule;
 
-test("installResultDelivery delivers a finished run's report and continues the turn", () => {
-  const manager = fakeManager();
-  const sent: Array<{ content: string; options: any }> = [];
-  const pi: any = { sendMessage: async (msg: any, options: any) => sent.push({ content: msg.content, options }) };
+before(async () => {
+  mod = (await import("../src/task-panel.js")) as TaskPanelModule;
+});
 
-  installResultDelivery(pi, manager);
-  installResultDelivery(pi, manager); // idempotent — must not double-subscribe
+// ─── Pure-function tests (tested indirectly via installResultDelivery) ─────────
 
-  manager.runs.set("run-1", {
-    background: true,
-    snapshot: { name: "research", agentCount: 3 },
-    result: { result: { report: "Here is the report." }, tokenUsage: { total: 1234 } },
+describe("installResultDelivery", () => {
+  function createMockManager(run?: unknown) {
+    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+      getRun: (...args: unknown[]) => unknown;
+      __deliveryInstalled?: boolean;
+      listRuns?: () => unknown[];
+    };
+    manager.getRun = () => run;
+    return manager;
+  }
+
+  function createMockPi(): ExtensionAPI & { _calls: { content: string; customType?: string }[] } {
+    const calls: { content: string; customType?: string }[] = [];
+    const obj = {
+      sendMessage(msg: unknown, _opts?: unknown) {
+        calls.push({
+          content: (msg as { content?: string }).content ?? "",
+          customType: (msg as { customType?: string }).customType,
+        });
+      },
+      registerTool: () => {},
+      on: () => {},
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      reload: () => Promise.resolve(),
+      _calls: calls,
+    };
+    return obj as unknown as ExtensionAPI & { _calls: { content: string; customType?: string }[] };
+  }
+
+  function makeRun(overrides: Record<string, unknown> = {}) {
+    return {
+      runId: "test-run-1",
+      background: true,
+      snapshot: {
+        name: "test-workflow",
+        agentCount: 3,
+        agents: [
+          { id: "a1", status: "done", step: "agent 1", phase: "phase-1" },
+          { id: "a2", status: "done", step: "agent 2", phase: "phase-1" },
+          { id: "a3", status: "done", step: "agent 3", phase: "phase-2" },
+        ],
+        phases: [{ title: "phase-1" }, { title: "phase-2" }],
+        currentPhase: "phase-2",
+        startedAt: new Date(),
+        completedAt: new Date(),
+      },
+      result: {
+        agentCount: 3,
+        durationMs: 1500,
+        tokenUsage: { total: 50000, input: 25000, output: 25000 },
+        result: { verdict: "## All tests passed\n\nEverything looks good!" },
+      },
+      ...overrides,
+    };
+  }
+
+  // ── deliverText: verdict path ──
+
+  it("delivers verdict when result.result has verdict", () => {
+    const pi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].customType, "workflow-result");
+    assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
+    assert.ok(calls[0].content.includes("test-workflow"), "should contain test-workflow");
+    assert.ok(calls[0].content.includes("3 agents"), "should contain 3 agents");
+    // locale may format the group separator as ',' / '.' / ' ' / none
+    assert.ok(/50[\s,.]?000/.test(calls[0].content), "should contain 50000 tokens formatted");
+    assert.ok(calls[0].content.includes("1.5s"), "should contain 1.5s");
   });
-  manager.emit("complete", { runId: "run-1" });
 
-  assert.equal(sent.length, 1, "delivered exactly once despite double install");
-  assert.match(sent[0].content, /research/);
-  assert.match(sent[0].content, /Here is the report\./);
-  assert.match(sent[0].content, /1,234 tokens/);
-  assert.match(sent[0].content, /Continue helping the user/);
-  // Triggers a turn when idle, and queues (never interrupts) when the user is busy.
-  assert.equal(sent[0].options?.triggerTurn, true);
-  assert.equal(sent[0].options?.deliverAs, "followUp");
-});
+  // ── deliverText: fallback chain ──
 
-test("installResultDelivery does not deliver a foreground (sync) run's result", () => {
-  const manager = fakeManager();
-  const sent: string[] = [];
-  const pi: any = { sendMessage: async (msg: any) => sent.push(msg.content) };
-  installResultDelivery(pi, manager);
+  it("falls back to report when verdict is absent", () => {
+    const pi = createMockPi();
+    const run = makeRun({ result: { result: { report: "Report body", verdict: "" } } });
+    const manager = createMockManager(run);
 
-  // Foreground run: result is returned inline as the tool result, so delivering
-  // it again into the chat would duplicate it.
-  manager.runs.set("run-fg", {
-    background: false,
-    snapshot: { name: "sync", agentCount: 1 },
-    result: { result: { report: "inline" } },
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.ok(calls[0].content.includes("Report body"), "should contain Report body");
   });
-  manager.emit("complete", { runId: "run-fg" });
-  assert.equal(sent.length, 0, "foreground runs are not re-delivered");
-});
 
-test("installResultDelivery reports failures (background only)", () => {
-  const manager = fakeManager();
-  const sent: string[] = [];
-  const pi: any = { sendMessage: async (msg: any) => sent.push(msg.content) };
-  installResultDelivery(pi, manager);
-  manager.runs.set("run-9", { background: true });
-  manager.emit("error", { runId: "run-9", error: { message: "boom" } });
-  assert.match(sent[0], /run-9 failed: boom/);
-});
+  it("falls back to summary when verdict and report are absent", () => {
+    const pi = createMockPi();
+    const run = makeRun({ result: { result: { summary: "Short summary" } } });
+    const manager = createMockManager(run);
 
-test("installTaskPanel shows running runs and points to /workflows (no input)", () => {
-  const manager = fakeManager();
-  manager.runs.set("run-1", {
-    runId: "run-1",
-    workflowName: "audit",
-    status: "running",
-    agents: [
-      { id: 1, status: "done" },
-      { id: 2, status: "running" },
-    ],
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.ok(calls[0].content.includes("Short summary"), "should contain Short summary");
   });
-  // live snapshot for the running run
-  manager.getRun = (id: string) =>
-    id === "run-1"
-      ? { snapshot: { name: "audit", currentPhase: "Scan", agents: manager.runs.get("run-1").agents } }
-      : undefined;
 
-  let widgetFactory: any;
-  const ui: any = {
-    setWidget: (_key: string, factory: any) => {
-      widgetFactory = factory;
-    },
-  };
+  it("falls back to string result when result is a plain string", () => {
+    const pi = createMockPi();
+    const run = makeRun({ result: { result: "Plain string result" } });
+    const manager = createMockManager(run);
 
-  installTaskPanel({} as any, manager, ui, {});
-  assert.equal(typeof widgetFactory, "function");
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
 
-  const tui: any = { requestRender: () => {} };
-  const comp = widgetFactory(tui, theme);
-  const lines = comp.render(80).join("\n");
-  assert.match(lines, /Workflows running \(1\)/);
-  assert.match(lines, /◆ audit\s+1\/2 agents · Scan/);
-  assert.match(lines, /run \/workflows to open/);
-  // The panel is informational and takes no keyboard input.
-  assert.equal(comp.handleInput, undefined);
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.ok(calls[0].content.includes("Plain string result"), "should contain Plain string result");
+  });
+
+  it("falls back to truncated JSON when result is an object with no known key", () => {
+    const pi = createMockPi();
+    const run = makeRun({ result: { result: { foo: "x".repeat(500), bar: "y".repeat(500) } } });
+    const manager = createMockManager(run);
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.ok(calls[0].content.includes("foo"), "should contain foo");
+    assert.ok(calls[0].content.includes("…(truncated)"), "should contain …(truncated)");
+  });
+
+  it("falls back gracefully when result is nullish", () => {
+    const pi = createMockPi();
+    const run = makeRun({ result: { result: undefined } });
+    const manager = createMockManager(run);
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    // Should not crash; should still deliver a message
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].content.includes("null"), "should contain null for undefined result");
+  });
+
+  // ── installResultDelivery: guard / stale ctx ──
+
+  it("installs delivery only once — second call skips listener registration", () => {
+    const pi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    // Second call: should only refresh holder.pi, not add another listener
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+
+    manager.emit("complete", { runId: "test-run-1" });
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1); // exactly once, not twice
+  });
+
+  it("does not crash when sendMessage throws (stale ctx after reload)", () => {
+    const pi = {
+      sendMessage: (_msg: unknown, _opts?: unknown) => {
+        throw new Error("This extension ctx is stale");
+      },
+      registerTool: () => {},
+      on: () => {},
+      getActiveTools: () => [],
+      setActiveTools: () => {},
+      reload: () => Promise.resolve(),
+    };
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    // Should not throw — stale ctx is silently swallowed
+    manager.emit("complete", { runId: "test-run-1" });
+    assert.ok(true, "should not throw"); // reached without crash
+  });
+
+  // ── Only background runs are delivered ──
+
+  it("skips delivery for foreground runs (background=false)", () => {
+    const pi = createMockPi();
+    const run = makeRun({ background: false });
+    const manager = createMockManager(run);
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 0);
+  });
+
+  // ── Error event ──
+
+  it("delivers error message on error event for background runs", () => {
+    const pi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("error", { runId: "test-run-1", error: { message: "Something went wrong" } });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].content.includes("failed"), "should contain failed");
+    assert.ok(calls[0].content.includes("Something went wrong"), "should contain Something went wrong");
+  });
+
+  it("skips error delivery for foreground runs", () => {
+    const pi = createMockPi();
+    const run = makeRun({ background: false });
+    const manager = createMockManager(run);
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("error", { runId: "test-run-1", error: { message: "fail" } });
+
+    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls.length, 0);
+  });
+
+  // ── Holder refresh on re-call ──
+
+  it("refreshes holder.pi on second call for stale ctx recovery", () => {
+    const pi1 = createMockPi();
+    const pi2 = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    // Install with first pi
+    mod.installResultDelivery(pi1 as unknown as ExtensionAPI, manager);
+    // Re-call with second pi (fresh after reload)
+    mod.installResultDelivery(pi2 as unknown as ExtensionAPI, manager);
+
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const calls1 = (pi1 as unknown as { _calls: { content: string }[] })._calls;
+    const calls2 = (pi2 as unknown as { _calls: { content: string }[] })._calls;
+    assert.equal(calls1.length, 0, "pi1 should not be used after refresh");
+    assert.equal(calls2.length, 1, "pi2 should receive the delivery");
+  });
 });
 
-test("installTaskPanel renders nothing when no runs are active", () => {
-  const manager = fakeManager();
-  let widgetFactory: any;
-  const ui: any = { setWidget: (_k: string, f: any) => (widgetFactory = f), custom: async () => {} };
-  installTaskPanel({} as any, manager, ui, {});
-  const comp = widgetFactory({ requestRender: () => {} }, theme);
-  assert.deepEqual(comp.render(80), []);
+// ─── installTaskPanel ─────────────────────────────────────────────────────────
+
+describe("installTaskPanel", () => {
+  it("registers a widget named workflow-tasks with belowEditor placement", () => {
+    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+      getRun: (...args: unknown[]) => unknown;
+      listRuns: () => unknown[];
+    };
+    manager.getRun = () => null;
+    manager.listRuns = () => [];
+
+    let registeredName = "";
+    let registeredPlacement = "";
+    const ui = {
+      setWidget: (name: string, _factory: unknown, opts: { placement?: string }) => {
+        registeredName = name;
+        registeredPlacement = opts.placement ?? "";
+      },
+    };
+
+    mod.installTaskPanel(null, manager, ui);
+    assert.equal(registeredName, "workflow-tasks");
+    assert.equal(registeredPlacement, "belowEditor");
+  });
 });

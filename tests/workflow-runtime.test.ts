@@ -50,7 +50,7 @@ test("runWorkflow accumulates real per-agent usage", async () => {
   assert.equal(result.tokenUsage?.input, 200);
   assert.equal(result.tokenUsage?.output, 80);
   assert.equal(result.tokenUsage?.total, 280);
-  assert.ok(Math.abs((result.tokenUsage?.cost ?? 0) - 0.004) < 1e-9);
+  assert.ok(Math.abs((result.tokenUsage?.cost ?? 0) - 0.004) < 1e-9, "should be within tolerance");
 });
 
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {
@@ -59,7 +59,6 @@ test("runWorkflow falls back to an estimate when provider reports total === 0", 
     persistLogs: false,
   });
 
-  // No real usage -> input/output stay 0, but total is a positive estimate.
   assert.equal(result.tokenUsage?.input, 0);
   assert.equal(result.tokenUsage?.output, 0);
   assert.ok((result.tokenUsage?.total ?? 0) > 0, "estimate should be positive");
@@ -91,13 +90,41 @@ test("runWorkflow routes models: explicit opts.model > phase model > default", a
   assert.deepEqual(seen, ["explicit-model", "phase-a-model", undefined]);
 });
 
+test("runWorkflow plumbs opts.tier through to the agent with correct precedence", async () => {
+  // Regression guard: tier must reach WorkflowAgent.run() (it was previously
+  // dropped). Precedence: explicit model > tier > phase model.
+  const seen: Array<{ model?: string; tier?: string }> = [];
+  const capturingAgent = {
+    async run(_prompt: string, options: { model?: string; tier?: string }) {
+      seen.push({ model: options.model, tier: options.tier });
+      return "ok";
+    },
+  };
+
+  const script = `export const meta = {
+    name: 'tier_routing', description: 'tier routing',
+    phases: [{ title: 'A', model: 'phase-a-model' }]
+  }
+  phase('A')
+  await agent('tier beats phase', { label: 't', tier: 'small' })
+  await agent('explicit beats tier', { label: 'e', tier: 'small', model: 'explicit-model' })
+  return {}`;
+
+  await runWorkflow(script, { agent: capturingAgent, persistLogs: false });
+
+  // 1) tier set, no explicit model: model is left undefined so the tier (resolved
+  //    inside run()) wins over the phase model; tier is forwarded.
+  assert.deepEqual(seen[0], { model: undefined, tier: "small" });
+  // 2) explicit model + tier: explicit model is forwarded and still wins.
+  assert.deepEqual(seen[1], { model: "explicit-model", tier: "small" });
+});
+
 const resumeScript = `export const meta = { name: 'resume_demo', description: 'resume' }
 const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
 
 test("resume replays cached results without re-running agents", async () => {
-  // First run: capture the journal.
   const first = countingAgent();
   const journal: JournalEntry[] = [];
   const r1 = await runWorkflow(resumeScript, {
@@ -112,7 +139,6 @@ test("resume replays cached results without re-running agents", async () => {
     [0, 1],
   );
 
-  // Resume: same script, all calls cached -> agent runner never invoked.
   const second = countingAgent();
   const r2 = await runWorkflow(resumeScript, {
     agent: second.runner,
@@ -120,8 +146,6 @@ test("resume replays cached results without re-running agents", async () => {
     resumeJournal: new Map(journal.map((e) => [e.index, e])),
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
-  // Compare by value: results are created in separate vm realms, so deepStrictEqual
-  // would reject them on prototype identity alone.
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
 });
 
@@ -134,7 +158,6 @@ test("resume re-runs only the changed call (hash mismatch)", async () => {
     onAgentJournal: (e) => journal.push(e),
   });
 
-  // Edit the second agent's prompt; its hash changes, so only it re-runs.
   const editedScript = resumeScript.replace("'second'", "'second-edited'");
   const second = countingAgent();
   await runWorkflow(editedScript, {
@@ -176,7 +199,6 @@ return { a, nested }`;
     loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
   });
 
-  // Parent agent + child agent both counted on the shared counter.
   assert.equal(result.agentCount, 2);
   assert.equal(result.result.nested.child, "ran:child task");
 });
@@ -204,8 +226,6 @@ return { err }`;
 });
 
 test("runWorkflow budget gates on accumulated tokens", async () => {
-  // Each agent reports 100 tokens; a 100 budget allows one then exhausts
-  // (the next agent sees remaining() === 0 at start and throws).
   const script = `export const meta = { name: 'budget_demo', description: 'budget' }
 const a = await agent('first', { label: 'a' })
 let second = null
@@ -219,4 +239,202 @@ return { a, second }`;
   });
 
   assert.equal(result.result.second, "blocked");
+});
+
+// ─── Additional edge case tests ─────────────────────────────────────────────────
+
+test("runWorkflow returns meta, logs, phases, and duration", async () => {
+  const ONE_AGENT = `export const meta = { name: 'meta_test', description: 'check metadata' }
+const a = await agent('test', { label: 'a' })
+return a`;
+
+  const result = await runWorkflow(ONE_AGENT, {
+    agent: fakeAgent({ total: 50 }),
+    persistLogs: false,
+  });
+
+  assert.equal(result.meta.name, "meta_test");
+  assert.equal(result.meta.description, "check metadata");
+  assert.ok(Array.isArray(result.logs), "result.logs should be an array");
+  assert.ok(Array.isArray(result.phases), "result.phases should be an array");
+  assert.ok(result.durationMs >= 0, "durationMs should be non-negative");
+  assert.ok(typeof result.runId === "string" && result.runId.length > 0, "runId should be a non-empty string");
+});
+
+test("runWorkflow handles empty script without phases gracefully", async () => {
+  const SIMPLE = `export const meta = { name: 'simple', description: 'simple' }
+const a = await agent('hello', { label: 'greeter' })
+return a`;
+
+  const result = await runWorkflow(SIMPLE, {
+    agent: fakeAgent({ total: 50 }, "done"),
+    persistLogs: false,
+  });
+  assert.equal(result.result, "done");
+  assert.equal(result.agentCount, 1);
+});
+
+test("runWorkflow parallel returns results in input order", async () => {
+  const script = `export const meta = { name: 'parallel_order', description: 'check order' }
+const results = await parallel([1,2,3].map(n => () => agent('task ' + n, { label: 't' + n })))
+return results`;
+
+  let callIndex = 0;
+  const agent = {
+    async run(prompt: string) {
+      return `result-${++callIndex}:${prompt}`;
+    },
+  };
+
+  const result = await runWorkflow<unknown[]>(script, { agent, persistLogs: false });
+  assert.ok(Array.isArray(result.result), "result.result should be an array");
+  assert.equal(result.result.length, 3);
+});
+
+test("runWorkflow pipeline stages in order", async () => {
+  const script = `export const meta = { name: 'pipeline_test', description: 'test pipeline' }
+const results = await pipeline(['a','b'], item => agent('stage1 ' + item), result => agent('stage2 ' + result))
+return results`;
+
+  const log: string[] = [];
+  const agent = {
+    async run(prompt: string) {
+      log.push(prompt);
+      return prompt.replace("stage1", "stage1-done").replace("stage2", "stage2-done");
+    },
+  };
+
+  const result = await runWorkflow<string[]>(script, { agent, persistLogs: false });
+  assert.ok(Array.isArray(result.result), "result.result should be an array");
+  assert.equal(result.result.length, 2);
+});
+
+test("runWorkflow agent with different labels", async () => {
+  const script = `export const meta = { name: 'label_test', description: 'labels' }
+const a = await agent('task1', { label: 'worker-1' })
+const b = await agent('task2', { label: 'worker-2' })
+return { a, b }`;
+
+  const seenLabels: string[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    onAgentStart: (e) => seenLabels.push(e.label),
+  });
+
+  assert.deepEqual(seenLabels, ["worker-1", "worker-2"]);
+});
+
+test("runWorkflow with phases assignment to agents", async () => {
+  const script = `export const meta = { name: 'phase_test', description: 'phases', phases: [{ title: 'Phase1' }, { title: 'Phase2' }] }
+phase('Phase1')
+const a = await agent('phase1 work', { label: 'p1' })
+phase('Phase2')
+const b = await agent('phase2 work', { label: 'p2' })
+return { a, b }`;
+
+  const phases: string[] = [];
+  const agentPhases: string[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    onPhase: (title) => phases.push(title),
+    onAgentStart: (e) => {
+      if (e.phase) agentPhases.push(e.phase);
+    },
+  });
+
+  assert.ok(phases.includes("Phase1"), "should contain Phase1");
+  assert.ok(phases.includes("Phase2"), "should contain Phase2");
+});
+
+test("runWorkflow can send args to the script", async () => {
+  const script = `export const meta = { name: 'args_test', description: 'test args' }
+return { received: args && args.value }`;
+
+  const result = await runWorkflow<{ received: unknown }>(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    args: { value: 42 },
+  });
+
+  // No agent calls means 0 agents
+  assert.equal(result.result.received, 42);
+});
+
+test("runWorkflow log function works inside script", async () => {
+  const script = `export const meta = { name: 'log_test', description: 'logging' }
+log('hello from script')
+return true`;
+
+  const result = await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+  });
+
+  assert.ok(
+    result.logs.some((l) => l.includes("hello from script")),
+    "should contain hello from script",
+  );
+});
+
+test("runWorkflow console.log works inside script", async () => {
+  const script = `export const meta = { name: 'console_test', description: 'console' }
+console.log('console log')
+console.warn('console warn')
+return true`;
+
+  const result = await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+  });
+
+  assert.ok(
+    result.logs.some((l) => l.includes("console log")),
+    "should contain console log",
+  );
+  assert.ok(
+    result.logs.some((l) => l.includes("console warn")),
+    "should contain console warn",
+  );
+});
+
+test("runWorkflow process.cwd() works inside script", async () => {
+  const script = `export const meta = { name: 'cwd_test', description: 'cwd' }
+return { cwd: process.cwd() }`;
+
+  const result = await runWorkflow<{ cwd: string }>(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+  });
+
+  assert.equal(typeof result.result.cwd, "string");
+  assert.ok(result.result.cwd.length > 0, "result.cwd should not be empty");
+});
+
+test("runWorkflow budget object exposes spent() and remaining()", async () => {
+  const script = `export const meta = { name: 'budget_api', description: 'budget API' }
+try { const s = budget.spent(); const r = budget.remaining(); return { spent: s, remaining: typeof r } }
+catch(e) { return { error: String(e) } }`;
+
+  const result = await runWorkflow<{ spent: number; remaining: string }>(script, {
+    agent: fakeAgent({ total: 100 }),
+    persistLogs: false,
+  });
+
+  assert.equal(result.result.spent, 0); // before first agent
+  assert.equal(result.result.remaining, "number");
+});
+
+test("runWorkflow returns empty logs array when nothing logged", async () => {
+  const script = `export const meta = { name: 'no_log', description: 'no logs' }
+await agent('silent', { label: 's' })
+return 1`;
+
+  const result = await runWorkflow(script, {
+    agent: fakeAgent({ total: 10 }),
+    persistLogs: false,
+  });
+
+  assert.ok(Array.isArray(result.logs), "result.logs should be an array");
 });

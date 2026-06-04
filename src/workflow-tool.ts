@@ -15,21 +15,25 @@ import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
 
 /**
- * Per-agent model-routing policy handed to the workflow author (the model). It
- * states the rule and lists the user's currently available models, then lets the
- * author choose each agent's model via opts.model — no hardcoded family mapping.
+ * Model routing guideline for workflow authors.
+ * Tells the LLM about opts.tier (small/medium/big) for runtime-enforced
+ * model selection, and opts.model for an exact provider/id override.
+ *
+ * This string is injected into the workflow tool's promptGuidelines and
+ * therefore appears in the LLM's system prompt for every workflow execution.
  */
-function modelRoutingGuideline(): string {
+export function modelRoutingGuideline(): string {
   const available = listAvailableModelSpecs();
   const list = available.length
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
   return [
-    "For workflow, decide each agent's model yourself via opts.model, following this policy:",
-    "If the user named a specific model, use exactly that.",
-    "Otherwise, for exploration/search/inventory/gathering agents, pick a model one tier BELOW the main model in the SAME family (e.g. Claude→Haiku, ChatGPT/GPT→a mini, DeepSeek→a lighter/flash variant), choosing the closest match from the available list.",
-    "For analysis/synthesis/judgment/decision/verification agents, omit opts.model so the agent runs on the main model.",
-    "Never route to a model that is not in the available list; if no suitable lighter sibling exists, omit opts.model (use the main model).",
+    "For workflow, decide each agent's model via opts.model or opts.tier.",
+    "opts.tier accepts 'small', 'medium', or 'big' and is enforced at runtime.",
+    "Small tier: lightweight exploration/search/inventory agents.",
+    "Medium tier: balanced analysis agents (default when omitted).",
+    "Big tier: synthesis/judgment/decision agents spanning the full context.",
+    "If the user named a specific model, use opts.model with that exact provider/id; opts.model always takes precedence over opts.tier.",
     list,
   ].join(" ");
 }
@@ -147,7 +151,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         key: "workflow",
         streamToolUpdates: true,
         maxAgents: 4,
-        maxLogs: 1,
         showResultPreviews: false,
       });
 
@@ -195,11 +198,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           }`
         : "";
 
+      const formattedResult =
+        result.result !== undefined ? `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\`` : "";
+
       return {
         content: [
           {
             type: "text",
-            text: `Workflow ${result.meta.name} completed with ${result.agentCount} agent(s).\n\nResult:\n${JSON.stringify(result.result, null, 2)}${tokenInfo}`,
+            text: `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo}\n\n## Result${formattedResult}`,
           },
         ],
         details: {
@@ -222,8 +228,18 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       if (snapshot?.name) {
         return new Text(renderWorkflowText(snapshot, !isPartial), 0, 0);
       }
+      // Fallback: strip markdown syntax so the TUI doesn't display raw asterisks/hashes.
+      // The `content` field is for the LLM (where markdown is preserved), but the TUI
+      // renderer (Text component) shows text literally — so we strip markdown here.
       const text = result.content?.[0];
-      return new Text(text?.type === "text" ? text.text : theme.fg("muted", "workflow"), 0, 0);
+      const raw = text?.type === "text" ? text.text : theme.fg("muted", "workflow");
+      const clean = raw
+        .replace(/\*\*/g, "")
+        .replace(/```[a-z]*\n/g, "")
+        .replace(/```/g, "")
+        .replace(/^##+\s*/gm, "")
+        .trim();
+      return new Text(clean || theme.fg("muted", "workflow"), 0, 0);
     },
   });
 }

@@ -2,7 +2,7 @@
  * Save and load reusable workflow commands.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { USER_WORKFLOW_SAVED_DIR, WORKFLOW_SAVED_DIR } from "./config.js";
 
@@ -119,7 +119,6 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
       for (const loc of locations) {
         const path = workflowPath(name, loc);
         if (existsSync(path)) {
-          const { unlinkSync } = require("node:fs");
           unlinkSync(path);
           deleted = true;
         }
