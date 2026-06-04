@@ -40,9 +40,9 @@ const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
 
-test("runWorkflow accumulates real per-agent usage", async () => {
+test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)", async () => {
   const result = await runWorkflow(twoAgentScript, {
-    agent: fakeAgent({ input: 100, output: 40, total: 140, cost: 0.002 }),
+    agent: fakeAgent({ input: 100, output: 40, total: 140, cost: 0.002, cacheRead: 50, cacheWrite: 10 }),
     persistLogs: false,
   });
 
@@ -51,6 +51,23 @@ test("runWorkflow accumulates real per-agent usage", async () => {
   assert.equal(result.tokenUsage?.output, 80);
   assert.equal(result.tokenUsage?.total, 280);
   assert.ok(Math.abs((result.tokenUsage?.cost ?? 0) - 0.004) < 1e-9, "should be within tolerance");
+  assert.equal(result.tokenUsage?.cacheRead, 100, "cacheRead accumulates across agents");
+  assert.equal(result.tokenUsage?.cacheWrite, 20, "cacheWrite accumulates across agents");
+});
+
+test("meta.model is parsed and routes as the default model for agents", async () => {
+  let seenModel: string | undefined;
+  const recorder = {
+    async run(_p: string, o: { model?: string }) {
+      seenModel = o.model;
+      return "ok";
+    },
+  };
+  const script = `export const meta = { name: 'm', description: 'd', model: 'meta/default-model' }
+await agent('x', { label: 'x' })
+return 1`;
+  await runWorkflow(script, { agent: recorder, persistLogs: false });
+  assert.equal(seenModel, "meta/default-model", "an agent with no model/tier/phase route uses meta.model");
 });
 
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {
@@ -220,6 +237,63 @@ test("resume re-runs only the changed call (hash mismatch)", async () => {
   assert.equal(second.state.calls, 1, "only the edited call re-runs");
 });
 
+const threeCallScript = `export const meta = { name: 'prefix', description: 'prefix resume' }
+const a = await agent('A', { label: 'a' })
+const b = await agent('B', { label: 'b' })
+const c = await agent('C', { label: 'c' })
+return { a, b, c }`;
+
+test("resume re-runs the changed call AND everything after it (longest-unchanged-prefix)", async () => {
+  const first = countingAgent();
+  const journal: JournalEntry[] = [];
+  await runWorkflow(threeCallScript, {
+    agent: first.runner,
+    persistLogs: false,
+    onAgentJournal: (e) => journal.push(e),
+  });
+  assert.equal(first.state.calls, 3);
+
+  // Edit the MIDDLE call (index 1). Index 0 is an unchanged prefix → cache hit.
+  // Index 1 changed → re-run; index 2 is unchanged but AFTER the first miss, so
+  // it must re-run too (the bug was serving it stale from the journal).
+  const editedScript = threeCallScript.replace("'B'", "'B-edited'");
+  const second = countingAgent();
+  await runWorkflow(editedScript, {
+    agent: second.runner,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+  });
+  assert.equal(second.state.calls, 2, "edited call (1) + its suffix (2) re-run; only the prefix (0) is cached");
+});
+
+test("resume in parallel(): editing one thunk re-runs that index and every later one", async () => {
+  // Three identical-prompt thunks; editing the middle one must invalidate it and
+  // the same-or-later index, not just the single changed call.
+  const script = (mid: string) => `export const meta = { name: 'par_prefix', description: 'parallel prefix' }
+  const xs = await parallel([
+    () => agent('x', { label: 'p0' }),
+    () => agent('${mid}', { label: 'p1' }),
+    () => agent('x', { label: 'p2' }),
+  ])
+  return xs`;
+  const first = countingAgent();
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script("x"), {
+    agent: first.runner,
+    persistLogs: false,
+    onAgentJournal: (e) => journal.push(e),
+  });
+  assert.equal(first.state.calls, 3);
+
+  const second = countingAgent();
+  await runWorkflow(script("x-edited"), {
+    agent: second.runner,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+  });
+  assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
+});
+
 test("callSeq is deterministic under parallel()", async () => {
   const journal: JournalEntry[] = [];
   const script = `export const meta = { name: 'par', description: 'parallel order' }
@@ -291,6 +365,77 @@ return { a, second }`;
   });
 
   assert.equal(result.result.second, "blocked");
+});
+
+test("token budget exhaustion inside parallel() halts (non-recoverable, not swallowed)", async () => {
+  // A warm-up agent spends the whole budget (soft gate: spent accrues after it
+  // finishes); the agent() inside parallel() then hits the gate and must
+  // propagate the non-recoverable error, not become a null in the result array.
+  const script = `export const meta = { name: 'pb', description: 'budget in parallel' }
+await agent('warmup', { label: 'w' })
+const xs = await parallel([() => agent('x', { label: '1' })])
+return xs`;
+  await assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
+        tokenBudget: 100,
+        persistLogs: false,
+      }),
+    /budget/i,
+    "exhausted budget must reject the run, not become a null in the result array",
+  );
+});
+
+test("non-recoverable agent-limit propagates out of pipeline() too", async () => {
+  const script = `export const meta = { name: 'mp', description: 'agent limit pipeline' }
+const xs = await pipeline([0, 1, 2, 3], (n) => agent('x' + n, { label: 'p' + n }))
+return xs`;
+  await assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
+        maxAgents: 2,
+        persistLogs: false,
+      }),
+    /limit/i,
+  );
+});
+
+test("phase sub-budget throws when a phase exceeds its ceiling (run total untouched)", async () => {
+  const script = `export const meta = { name: 'pb', description: 'phase budget' }
+phase('noisy', { budget: 100 })
+let blocked = false
+try {
+  await agent('a', { label: '1' })
+  await agent('b', { label: '2' })
+} catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
+phase('calm')
+const after = await agent('c', { label: '3' })
+return { blocked, after }`;
+  const res = await runWorkflow<{ blocked: boolean; after: unknown }>(script, {
+    agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
+    persistLogs: false,
+  });
+  assert.equal(res.result.blocked, true, "the 2nd agent in the phase hit the sub-budget");
+  assert.ok(res.result.after !== null, "a later phase still proceeds");
+});
+
+test("maxAgents is enforced under a parallel() fan-out (atomic slot reservation)", async () => {
+  // Four agents fan out with maxAgents=2. With the synchronous slot reservation,
+  // the 3rd agent() throws AGENT_LIMIT instead of all four passing the gate.
+  const script = `export const meta = { name: 'ma', description: 'agent limit' }
+const xs = await parallel([0, 1, 2, 3].map((i) => () => agent('x' + i, { label: 'a' + i })))
+return xs`;
+  await assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
+        maxAgents: 2,
+        persistLogs: false,
+      }),
+    /limit/i,
+  );
 });
 
 // ─── Additional edge case tests ─────────────────────────────────────────────────
@@ -489,4 +634,77 @@ return 1`;
   });
 
   assert.ok(Array.isArray(result.logs), "result.logs should be an array");
+});
+
+// ─── Runtime determinism hardening (P0-5) ───────────────────────────────────────
+
+const noopAgent = {
+  async run() {
+    return "ok";
+  },
+};
+
+function probe(expr: string): Promise<{ result: { err: string | null; val: unknown } }> {
+  const script = `export const meta = { name: 'det', description: 'determinism' }
+let err = null, val = null
+try { val = ${expr} } catch (e) { err = String((e && e.message) || e) }
+await agent('noop', { label: 'x' })
+return { err, val }`;
+  return runWorkflow(script, { agent: noopAgent, persistLogs: false });
+}
+
+test("parse-time guard rejects literal Date.now / Math.random / new Date()", async () => {
+  for (const expr of ["Math.random()", "Date.now()", "new Date()"]) {
+    await assert.rejects(
+      () =>
+        runWorkflow(
+          `export const meta = { name: 'lit', description: 'd' }\nconst v = ${expr}\nawait agent('x', { label: 'x' })\nreturn v`,
+          { agent: noopAgent, persistLogs: false },
+        ),
+      /deterministic|unavailable/i,
+      `${expr} literal should be rejected at parse time`,
+    );
+  }
+});
+
+test("runtime guard neuters computed-access bypasses the parse regex misses", async () => {
+  const r1 = await probe('Math["random"]()');
+  assert.match(r1.result.err ?? "", /unavailable|resume/i, 'Math["random"]() should throw at runtime');
+  const r2 = await probe('Date["now"]()');
+  assert.match(r2.result.err ?? "", /unavailable|resume/i, 'Date["now"]() should throw at runtime');
+  const r3 = await probe("(() => { const D = Date; return new D(); })()");
+  assert.match(r3.result.err ?? "", /unavailable|resume/i, "aliased no-arg Date should throw at runtime");
+});
+
+test("runtime determinism: new Date(arg) and Math.max still work", async () => {
+  const d = await probe("new Date(0).getTime()");
+  assert.equal(d.result.err, null, "new Date(0) should construct");
+  assert.equal(d.result.val, 0, "new Date(0).getTime() === 0");
+  const m = await probe("Math.max(1, 2, 3)");
+  assert.equal(m.result.err, null);
+  assert.equal(m.result.val, 3);
+});
+
+test("vm-realm builtins work and the constructor escape hits the neutered Date.now", async () => {
+  // The escape string is split so the parse-time regex doesn't flag it; at runtime
+  // the vm Function runs in the vm realm where Date.now is neutered.
+  const script = `export const meta = { name: 'vm', description: 'vm realm' }
+let escaped = null
+try { escaped = ({}).constructor.constructor('return Da' + 'te.now()')() } catch (e) { escaped = 'blocked:' + String((e && e.message) || e) }
+const arr = [1, 2, 3].map((x) => x * 2)
+const j = JSON.stringify({ a: 1 })
+const s = [...new Set([1, 1, 2])]
+await agent('noop', { label: 'x' })
+return { escaped, arr, j, s }`;
+  const r = await runWorkflow<{ escaped: string; arr: number[]; j: string; s: number[] }>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+  });
+  // Spread to a host array: vm-realm arrays don't deepStrictEqual host literals.
+  assert.deepEqual([...r.result.arr], [2, 4, 6], "vm Array.map works");
+  assert.equal(r.result.j, '{"a":1}', "vm JSON works");
+  assert.deepEqual([...r.result.s], [1, 2], "vm Set works");
+  // ({}).constructor.constructor is the vm Function; its code runs in the vm realm
+  // where Date.now is neutered -> blocked (the old host-object escape is closed).
+  assert.match(r.result.escaped, /blocked/, "constructor escape via vm objects is closed");
 });

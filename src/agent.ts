@@ -12,16 +12,122 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
+import { Check, Convert } from "typebox/value";
+import { applyToolPolicy } from "./agent-registry.js";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 /**
+ * Find a JSON object/array in free-form text: a fenced ```json block if present,
+ * else the first balanced {...} or [...]. Best-effort (the schema check is the
+ * real gate). Returns the raw JSON string, or undefined when none is found.
+ */
+function findJsonBlock(text: string): string | undefined {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) return fence[1].trim();
+  const start = text.search(/[{[]/);
+  if (start === -1) return undefined;
+  const open = text[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === open) depth++;
+    else if (text[i] === close && --depth === 0) return text.slice(start, i + 1);
+  }
+  return undefined;
+}
+
+/**
+ * Last-resort structured-output recovery: extract a JSON block from prose, coerce
+ * it toward the schema, and accept it only if it then validates. Never fabricates
+ * — returns undefined unless the parsed value genuinely satisfies the schema.
+ */
+export function extractValidated<T>(text: string, schema: TSchema): T | undefined {
+  const json = findJsonBlock(text);
+  if (json === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  try {
+    const converted = Convert(schema, parsed);
+    if (Check(schema, converted)) return converted as T;
+  } catch {
+    // typebox can throw on exotic schemas; treat as no match.
+  }
+  return undefined;
+}
+
+/** Minimal session surface resolveStructuredOutput needs (real session or a test double). */
+export interface StructuredSession {
+  prompt(text: string): Promise<void>;
+  setActiveToolsByName?(names: string[]): void;
+  messages: unknown[];
+}
+
+/**
+ * Resolve a schema agent's result. If the tool was called, return the captured
+ * value. Otherwise re-prompt up to maxSchemaRetries (tools restricted to
+ * structured_output), then try strict schema-validated prose extraction, else
+ * throw SCHEMA_NONCOMPLIANCE (non-recoverable — surfaced, never a silent null).
+ * Module-level with an injected `lastText` so it is unit-testable.
+ */
+export async function resolveStructuredOutput<T>(
+  session: StructuredSession,
+  capture: StructuredOutputCapture<T>,
+  schema: TSchema,
+  options: { maxSchemaRetries?: number; signal?: AbortSignal; label?: string },
+  lastText: (messages: unknown[]) => string,
+): Promise<T> {
+  if (capture.called) return capture.value as T;
+
+  const maxRetries = Math.max(0, options.maxSchemaRetries ?? 2);
+  // Restrict to the schema tool so the only useful next action is calling it
+  // (takes effect on the next prompt turn). Best-effort.
+  try {
+    session.setActiveToolsByName?.(["structured_output"]);
+  } catch {
+    // ignore — the re-prompt alone still drives most models to comply
+  }
+  for (let attempt = 0; attempt < maxRetries && !capture.called; attempt++) {
+    if (options.signal?.aborted) throw new Error("Subagent was aborted");
+    await session.prompt(
+      "You did not call the structured_output tool. Call structured_output now as your only action, with the required fields filled in. Do not write a prose answer.",
+    );
+  }
+  if (capture.called) return capture.value as T;
+
+  const extracted = extractValidated<T>(lastText(session.messages), schema);
+  if (extracted !== undefined) {
+    console.warn(
+      "[workflow] structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
+    );
+    return extracted;
+  }
+
+  throw new WorkflowError(
+    "Subagent did not produce valid structured_output after repair attempts",
+    WorkflowErrorCode.SCHEMA_NONCOMPLIANCE,
+    { recoverable: false, agentLabel: options.label },
+  );
+}
+
+/**
  * Resolve which concrete model spec a subagent should use. Precedence, most
  * specific first:
- *   1. options.model — an explicit per-agent model always wins.
+ *   1. options.model — an explicit per-agent model (also carries agentType /
+ *      phase model, which the workflow layer folds into options.model).
  *   2. options.tier  — resolved via the model-tiers config, falling back to the
  *      session's main model when the tier has no configured entry.
- * Returns undefined when neither is set, so the session default applies.
+ *   3. DEFAULT TIER — when neither is set but the user has a model-tiers config,
+ *      untagged agents default to the "medium" tier so a configured tier set
+ *      actually affects the whole workflow (not just agents the script tagged).
+ *      Fresh-install medium == the session model, so this is a no-op until the
+ *      user customizes tiers via /workflows-models.
+ * Returns undefined when nothing applies, so the session default is used.
  *
  * `loadConfig` is injectable for testing; it defaults to reading from disk.
  */
@@ -31,9 +137,14 @@ export function resolveAgentModelSpec(
   loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
 ): string | undefined {
   if (options.model) return options.model;
+  const config = loadConfig();
   if (options.tier) {
-    const config = loadConfig();
     return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
+  }
+  // Untagged agent: default to the configured medium tier when one exists.
+  if (config) {
+    const medium = resolveTierModel("medium", config);
+    if (medium) return medium;
   }
   return undefined;
 }
@@ -110,8 +221,25 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   tier?: string;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
+  /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
+  onModelFallback?: (requestedSpec: string) => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
   cwd?: string;
+  /**
+   * Restrict the subagent's coding tools to these names (an agentType
+   * definition's `tools` allowlist). Undefined = all coding tools. The
+   * structured_output tool is always added after this filter, so a schema
+   * still works under a restrictive allowlist.
+   */
+  toolNames?: string[];
+  /** Remove these coding-tool names after the allowlist (an agentType `disallowedTools` denylist). */
+  disallowedToolNames?: string[];
+  /**
+   * With `schema`: how many extra repair turns to allow if the model finishes
+   * without calling structured_output. Each retry re-prompts (tools restricted to
+   * structured_output) before falling back to strict prose extraction. Default 2.
+   */
+  maxSchemaRetries?: number;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -169,7 +297,13 @@ export class WorkflowAgent {
     // since tools capture their cwd at construction and can't be relocated.
     const runCwd = options.cwd ?? this.cwd;
     const baseTools = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
-    const customTools: ToolDefinition[] = [...baseTools, ...(options.tools ?? [])];
+    // Apply the agentType tool policy BEFORE adding structured_output, so a
+    // restrictive allowlist never strips the schema tool.
+    const customTools: ToolDefinition[] = applyToolPolicy(
+      [...baseTools, ...(options.tools ?? [])],
+      options.toolNames,
+      options.disallowedToolNames,
+    );
 
     if (options.schema) {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
@@ -189,6 +323,7 @@ export class WorkflowAgent {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
       } else {
         console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
+        options.onModelFallback?.(modelSpec);
       }
     }
 
@@ -221,10 +356,9 @@ export class WorkflowAgent {
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 
       if (options.schema) {
-        if (!capture.called) {
-          throw new Error("Subagent finished without calling structured_output");
-        }
-        return capture.value as AgentRunResult<TSchemaDef>;
+        return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
+          this.lastAssistantText(m),
+        )) as AgentRunResult<TSchemaDef>;
       }
 
       return this.lastAssistantText(session.messages) as AgentRunResult<TSchemaDef>;

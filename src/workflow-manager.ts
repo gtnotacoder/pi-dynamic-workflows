@@ -49,6 +49,10 @@ export interface ExecOptions {
   externalSignal?: AbortSignal;
   /** Called with the live snapshot on every progress event. */
   onProgress?: (snapshot: WorkflowSnapshot) => void;
+  /** Hard token budget for this run; once spent reaches it, agent() throws. */
+  tokenBudget?: number | null;
+  /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
+  confirm?: (promptText: string, options: unknown) => Promise<unknown>;
 }
 
 export interface WorkflowManagerOptions {
@@ -60,6 +64,8 @@ export interface WorkflowManagerOptions {
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   mainModel?: string;
+  /** The pi session id to tag runs with (see setSessionId). */
+  sessionId?: string;
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -71,6 +77,8 @@ export class WorkflowManager extends EventEmitter {
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
+  /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
+  private sessionId?: string;
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -79,7 +87,33 @@ export class WorkflowManager extends EventEmitter {
     this.loadSavedWorkflow = options.loadSavedWorkflow;
     this.agent = options.agent;
     this.mainModel = options.mainModel;
+    this.sessionId = options.sessionId;
     this.persistence = createRunPersistence(this.cwd);
+    this.recoverStaleRuns();
+  }
+
+  /** Bind the manager to the current pi session, so new runs are tagged with it and
+   * the navigator/task-panel show only this session's runs (set on session_start). */
+  setSessionId(id: string | undefined): void {
+    this.sessionId = id;
+  }
+
+  /**
+   * On startup, any persisted run still marked "running" belongs to a process
+   * that died mid-run (this fresh manager has it nowhere in memory). Reconcile it
+   * to "paused" — never "failed" — so its journal is preserved and resume() can
+   * replay the completed prefix and finish the rest.
+   */
+  private recoverStaleRuns(): void {
+    try {
+      for (const p of this.listAllRuns()) {
+        if (p.status === "running" && !this.runs.has(p.runId)) {
+          this.persistence.save({ ...p, status: "paused" });
+        }
+      }
+    } catch {
+      // Recovery is best-effort; never let it block manager construction.
+    }
   }
 
   /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
@@ -91,7 +125,11 @@ export class WorkflowManager extends EventEmitter {
    * Start a workflow in the background.
    * Returns immediately with a run ID; the workflow executes asynchronously.
    */
-  startInBackground(script: string, args?: unknown): { runId: string; promise: Promise<WorkflowRunResult> } {
+  startInBackground(
+    script: string,
+    args?: unknown,
+    exec: ExecOptions = {},
+  ): { runId: string; promise: Promise<WorkflowRunResult> } {
     const runId = generateRunId();
     const controller = new AbortController();
     const parsed = parseWorkflowScript(script);
@@ -126,6 +164,7 @@ export class WorkflowManager extends EventEmitter {
       workflowName: parsed.meta.name,
       script,
       args,
+      sessionId: this.sessionId,
       status: "running",
       phases: managed.snapshot.phases,
       agents: [],
@@ -139,7 +178,7 @@ export class WorkflowManager extends EventEmitter {
     // when a workflow is aborted/paused/stopped — executeRun()'s catch block
     // already records status/event/persist, but the promise still rejects.
     // The original promise is returned so callers can await it in try/catch.
-    const promise = this.executeRun(managed, script, args);
+    const promise = this.executeRun(managed, script, args, exec);
     promise.catch(() => {});
 
     return { runId, promise };
@@ -192,7 +231,7 @@ export class WorkflowManager extends EventEmitter {
     args?: unknown,
     exec: ExecOptions = {},
   ): Promise<WorkflowRunResult> {
-    const { resumeJournal, maxAgents, agentTimeoutMs, externalSignal, onProgress } = exec;
+    const { resumeJournal, maxAgents, agentTimeoutMs, externalSignal, onProgress, tokenBudget, confirm } = exec;
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -209,6 +248,8 @@ export class WorkflowManager extends EventEmitter {
         concurrency: this.concurrency,
         maxAgents,
         agentTimeoutMs,
+        tokenBudget,
+        confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
@@ -308,6 +349,7 @@ export class WorkflowManager extends EventEmitter {
         // under .pi/workflows/runs/ — protect via directory permissions, not blanking.
         script: managed.script,
         args: managed.args,
+        sessionId: this.sessionId,
         journal: managed.journal,
         status: managed.status,
         phases: managed.snapshot.phases,
@@ -324,6 +366,9 @@ export class WorkflowManager extends EventEmitter {
               input: managed.snapshot.tokenUsage.input,
               output: managed.snapshot.tokenUsage.output,
               total: managed.snapshot.tokenUsage.total,
+              cost: managed.snapshot.tokenUsage.cost,
+              cacheRead: managed.snapshot.tokenUsage.cacheRead,
+              cacheWrite: managed.snapshot.tokenUsage.cacheWrite,
             }
           : undefined,
         startedAt: managed.startedAt.toISOString(),
@@ -421,7 +466,18 @@ export class WorkflowManager extends EventEmitter {
   /**
    * List all runs (active + persisted).
    */
+  /**
+   * Runs for the navigator/task panel. Once bound to a session (setSessionId), only
+   * that session's runs are returned — runs from other sessions stay on disk and
+   * reappear when you switch back. Unbound (tests/legacy) returns everything.
+   */
   listRuns(): PersistedRunState[] {
+    const all = this.persistence.list();
+    return this.sessionId ? all.filter((r) => r.sessionId === this.sessionId) : all;
+  }
+
+  /** All persisted runs regardless of session (used by cross-session recovery). */
+  listAllRuns(): PersistedRunState[] {
     return this.persistence.list();
   }
 

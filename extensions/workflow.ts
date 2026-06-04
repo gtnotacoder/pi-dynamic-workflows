@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  createEffortState,
   createWorkflowStorage,
   createWorkflowTool,
   installResultDelivery,
@@ -7,6 +8,7 @@ import {
   installWorkflowEditor,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
+  registerEffortCommand,
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
   WorkflowManager,
@@ -25,6 +27,10 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { cwd });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
+  // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
+  // messages, like CC's ultracode. Shared with the editor's input hook below.
+  const effort = createEffortState();
+  registerEffortCommand(pi, effort);
   // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
   // Backspace right after the word disarms it. Registers the `input` hook now;
   // the editor itself is installed once the UI is available (session_start).
@@ -38,12 +44,20 @@ export default function extension(pi: ExtensionAPI) {
     // Tell the manager the session's main model so "explore" agents auto-tier
     // down to a lighter same-family sibling (e.g. Claude → Haiku).
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
+    // Scope the /workflows history to this session: runs persist on disk across
+    // sessions, but the navigator/task panel show only the current session's runs.
+    // Switching back to a previous session re-shows that session's runs.
+    try {
+      manager.setSessionId(ctx.sessionManager?.getSessionId());
+    } catch {
+      // sessionManager may be unavailable in some contexts — fall back to global history.
+    }
     // Deliver a background run's result into the conversation when it finishes.
     installResultDelivery(pi, manager);
     // Live "workflows running" panel below the input (focus + enter to open).
     installTaskPanel(pi, manager, ctx.ui, { storage, cwd });
     if (!editorInstalled) {
-      installWorkflowEditor(pi, ctx.ui);
+      installWorkflowEditor(pi, ctx.ui, effort);
       editorInstalled = true;
     }
   });

@@ -2,8 +2,8 @@ export type { AdversarialReviewConfig } from "./adversarial-review.js";
 export { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 export type { AgentRunOptions, AgentRunResult, WorkflowAgentOptions } from "./agent.js";
 export { listAvailableModelSpecs, WorkflowAgent } from "./agent.js";
-export type { AutoWorkflowConfig } from "./auto-workflow.js";
-export { shouldUseWorkflow, suggestWorkflowScript } from "./auto-workflow.js";
+export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
+export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export * from "./config.js";
 export type { DeepResearchConfig } from "./deep-research.js";
@@ -25,6 +25,14 @@ export {
   renderWorkflowText,
 } from "./display.js";
 export {
+  createEffortState,
+  type EffortLevel,
+  type EffortState,
+  effortDirective,
+  isSubstantive,
+  registerEffortCommand,
+} from "./effort-command.js";
+export {
   isAbortError,
   isTimeoutError,
   isWorkflowError,
@@ -35,7 +43,7 @@ export {
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
-export { buildModelRoutingInstructions, parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+export { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 export type { ModelTierConfig } from "./model-tier-config.js";
 export {
   buildDefaultTierConfig,

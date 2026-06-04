@@ -2,6 +2,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { listAvailableModelSpecs } from "./agent.js";
+import { listAgentTypes, loadAgentRegistry } from "./agent-registry.js";
 import {
   createToolUpdateWorkflowDisplay,
   createWorkflowSnapshot,
@@ -28,14 +29,32 @@ export function modelRoutingGuideline(): string {
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
   return [
-    "For workflow, decide each agent's model via opts.model or opts.tier.",
+    "For workflow, the user configures per-tier models (/workflows-models), so TAG EVERY agent with opts.tier by role so those models are actually used.",
     "opts.tier accepts 'small', 'medium', or 'big' and is enforced at runtime.",
     "Small tier: lightweight exploration/search/inventory agents.",
-    "Medium tier: balanced analysis agents (default when omitted).",
+    "Medium tier: balanced analysis agents.",
     "Big tier: synthesis/judgment/decision agents spanning the full context.",
+    "An agent with no opts.tier and no opts.model falls back to the user's medium tier; do not rely on that — tag agents explicitly so small/big are used where they fit.",
     "If the user named a specific model, use opts.model with that exact provider/id; opts.model always takes precedence over opts.tier.",
     list,
   ].join(" ");
+}
+
+/**
+ * Tells the LLM which named subagent definitions (agentType) are available, so
+ * it can route an agent() to a reusable role that binds tools+model+prompt.
+ * Returns undefined when no definitions are registered (nothing to advertise).
+ */
+export function agentTypeGuideline(cwd: string = process.cwd()): string | undefined {
+  let types: Array<{ name: string; description?: string }>;
+  try {
+    types = listAgentTypes(loadAgentRegistry(cwd));
+  } catch {
+    return undefined;
+  }
+  if (!types.length) return undefined;
+  const list = types.map((t) => (t.description ? `${t.name} (${t.description})` : t.name)).join(", ");
+  return `For workflow, opts.agentType routes an agent to a named definition that binds its tools, model, and role prompt. Available agentTypes: ${list}. An explicit opts.model still overrides the definition's model.`;
 }
 
 const workflowToolSchema = Type.Object({
@@ -66,6 +85,12 @@ const workflowToolSchema = Type.Object({
       description: "Timeout per agent in milliseconds. Default: 300000 (5 minutes).",
     }),
   ),
+  tokenBudget: Type.Optional(
+    Type.Number({
+      description:
+        "Hard total-token budget for the whole run. Once spent reaches it, further agent() calls fail and the run stops. Omit for no limit. Set it when the user asks to cap spend.",
+    }),
+  ),
 });
 
 export type WorkflowToolInput = {
@@ -74,6 +99,7 @@ export type WorkflowToolInput = {
   background?: boolean;
   maxAgents?: number;
   agentTimeoutMs?: number;
+  tokenBudget?: number;
 };
 
 export interface WorkflowToolOptions {
@@ -110,7 +136,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description', phases: [{ title: 'Phase name' }] }`; meta.name and meta.description are required non-empty strings.",
       "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
       "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
+      "For workflow, prefer the built-in quality helpers when they fit (each is built on agent()/parallel() and returns plain data): verify(item, {reviewers, threshold, lens}) for adversarial fact-checking; judgePanel(attempts, {judges, rubric}) to score N candidates and return the best; loopUntilDry({round, key, consecutiveEmpty}) to keep finding until rounds stop yielding new items; completenessCheck(args, results) as a final 'what's missing' critic.",
       "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
+      "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds or choose a lighter tier.",
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
@@ -119,24 +147,40 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
       modelRoutingGuideline(),
+      agentTypeGuideline(),
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
       "For workflow, runs are background by default: the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when the run finishes. Pass background: false only when you must use the result inline in this same turn (it will block).",
       "For workflow, you may call `await workflow('saved-name', argsObject)` to run a saved workflow inline and use its result; nesting is one level deep only, and the global 16-concurrent / 1000-total caps hold across the nesting.",
-    ],
+    ].filter((g): g is string => typeof g === "string" && g.length > 0),
     parameters: workflowToolSchema,
     prepareArguments(args) {
       return normalizeWorkflowToolArgs(args);
     },
-    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
+
+      // checkpoint() reaches the human only on a UI-bearing foreground run; a
+      // background run is detached, so checkpoint() falls back to its headless
+      // default. Map a checkpoint to ctx.ui.confirm (a yes/no gate) when available.
+      const uiCtx = ctx as
+        | { hasUI?: boolean; ui?: { confirm?(title: string, message: string): Promise<boolean> } }
+        | undefined;
+      const uiConfirm = uiCtx?.hasUI ? uiCtx.ui?.confirm : undefined;
+      const confirm = uiConfirm
+        ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
+        : undefined;
 
       // Background execution is the default: return immediately so the turn ends
       // and the user isn't blocked. The result is delivered back into the
       // conversation when the run finishes (see installResultDelivery). Only an
       // explicit `background: false` blocks for the result inline.
       if (params.background ?? true) {
-        const { runId } = manager.startInBackground(script, params.args);
+        const { runId } = manager.startInBackground(script, params.args, {
+          maxAgents: params.maxAgents,
+          agentTimeoutMs: params.agentTimeoutMs,
+          tokenBudget: params.tokenBudget,
+        });
         return {
           content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
           details: { runId, background: true },
@@ -160,6 +204,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         result = await manager.runSync(script, params.args, {
           maxAgents: params.maxAgents,
           agentTimeoutMs: params.agentTimeoutMs,
+          tokenBudget: params.tokenBudget,
+          confirm,
           externalSignal: signal,
           onProgress(live) {
             snapshot = recomputeWorkflowSnapshot(live);

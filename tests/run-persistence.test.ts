@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WORKFLOW_RUNS_DIR } from "../src/config.js";
 import { createRunPersistence, generateRunId, type PersistedRunState } from "../src/run-persistence.js";
+import { WorkflowManager } from "../src/workflow-manager.js";
 
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -438,5 +439,149 @@ test(
     assert.deepEqual(loaded.logs, ["started", "phase: Scan", "phase: Analyze"]);
     assert.deepEqual(loaded.tokenUsage, { input: 500, output: 200, total: 700 });
     assert.deepEqual(loaded.journal, [{ index: 0, hash: "abc", result: { ok: true } }]);
+  }),
+);
+
+// ─── P1-1: crash-safe durable resume ────────────────────────────────────────────
+
+test(
+  "save writes the primary plus a .bak (atomic temp+rename leaves no .tmp)",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "r1",
+      workflowName: "w",
+      status: "running",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+    const runsDir = join(cwd, WORKFLOW_RUNS_DIR);
+    assert.ok(existsSync(join(runsDir, "r1.json")), "primary written");
+    assert.ok(existsSync(join(runsDir, "r1.json.bak")), ".bak written");
+    assert.equal(existsSync(join(runsDir, "r1.json.tmp")), false, "no leftover .tmp");
+  }),
+);
+
+test(
+  "load recovers from .bak when the primary is corrupt",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "r1",
+      workflowName: "w",
+      status: "running",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+    // Corrupt the primary; the .bak from the good save should still load.
+    writeFileSync(join(cwd, WORKFLOW_RUNS_DIR, "r1.json"), "{ truncated", "utf-8");
+    const loaded = rp.load("r1");
+    assert.equal(loaded?.runId, "r1", "load falls back to the intact .bak");
+  }),
+);
+
+test(
+  "delete removes the .bak sidecar too",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "r1",
+      workflowName: "w",
+      status: "completed",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+    rp.delete("r1");
+    const runsDir = join(cwd, WORKFLOW_RUNS_DIR);
+    assert.equal(existsSync(join(runsDir, "r1.json")), false);
+    assert.equal(existsSync(join(runsDir, "r1.json.bak")), false, ".bak cleaned up");
+  }),
+);
+
+test(
+  "persistence round-trips cost and cache fields in tokenUsage",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "tu",
+      workflowName: "w",
+      status: "completed",
+      phases: [],
+      agents: [],
+      logs: [],
+      tokenUsage: { input: 1, output: 2, total: 3, cost: 0.5, cacheRead: 9, cacheWrite: 4 },
+    } as PersistedRunState);
+    const loaded = rp.load("tu");
+    assert.equal(loaded?.tokenUsage?.cost, 0.5, "cost survives reload");
+    assert.equal(loaded?.tokenUsage?.cacheRead, 9, "cacheRead survives reload");
+    assert.equal(loaded?.tokenUsage?.cacheWrite, 4, "cacheWrite survives reload");
+  }),
+);
+
+test(
+  "WorkflowManager reconciles a stale 'running' run to 'paused' on construction",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "stale",
+      workflowName: "w",
+      status: "running",
+      script: "export const meta = { name: 'w', description: 'd' }\nawait agent('x',{label:'x'})\nreturn 1",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+    // A fresh manager (the previous process died) should recover the orphan.
+    new WorkflowManager({ cwd });
+    assert.equal(rp.load("stale")?.status, "paused", "stale running -> paused (journal preserved for resume)");
+  }),
+);
+
+test(
+  "WorkflowManager.listRuns is scoped to the bound session and switches with setSessionId",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const run = (runId: string, sessionId: string): PersistedRunState =>
+      ({
+        runId,
+        workflowName: "w",
+        status: "completed",
+        sessionId,
+        phases: [],
+        agents: [],
+        logs: [],
+      }) as PersistedRunState;
+    rp.save(run("a", "s1"));
+    rp.save(run("b", "s2"));
+
+    const m = new WorkflowManager({ cwd, sessionId: "s1" });
+    assert.deepEqual(
+      m.listRuns().map((r) => r.runId),
+      ["a"],
+      "only the bound session's runs are listed",
+    );
+
+    m.setSessionId("s2");
+    assert.deepEqual(
+      m.listRuns().map((r) => r.runId),
+      ["b"],
+      "switching sessions re-shows that session's runs",
+    );
+
+    m.setSessionId(undefined);
+    assert.deepEqual(
+      m
+        .listRuns()
+        .map((r) => r.runId)
+        .sort(),
+      ["a", "b"],
+      "unbound lists all runs (legacy/global)",
+    );
+
+    // listAllRuns ignores the session binding.
+    assert.equal(new WorkflowManager({ cwd, sessionId: "s1" }).listAllRuns().length, 2);
   }),
 );

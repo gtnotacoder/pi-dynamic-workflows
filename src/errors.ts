@@ -13,6 +13,8 @@ export enum WorkflowErrorCode {
   TOKEN_BUDGET_EXHAUSTED = "TOKEN_BUDGET_EXHAUSTED",
   /** Script validation failed. */
   SCRIPT_VALIDATION_ERROR = "SCRIPT_VALIDATION_ERROR",
+  /** A schema agent never produced valid structured_output (after repair + extraction). */
+  SCHEMA_NONCOMPLIANCE = "SCHEMA_NONCOMPLIANCE",
   /** Agent execution failed. */
   AGENT_EXECUTION_ERROR = "AGENT_EXECUTION_ERROR",
   /** Run state persistence failed. */

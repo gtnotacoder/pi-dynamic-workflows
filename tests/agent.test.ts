@@ -62,8 +62,19 @@ test("resolveAgentModelSpec: unconfigured tier falls back to the main model", ()
   assert.equal(resolveAgentModelSpec({ tier: "unknown-tier" }, "main/model", loadCfg), "main/model");
 });
 
-test("resolveAgentModelSpec: returns undefined when neither model nor tier is set", () => {
-  assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg), undefined);
+test("resolveAgentModelSpec: untagged agent defaults to the configured medium tier", () => {
+  // The "set tier but nothing changed" fix: an agent with no model and no tier
+  // falls back to the user's medium tier when a config exists.
+  assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg), "vendor/medium");
+});
+
+test("resolveAgentModelSpec: untagged agent with NO config falls through to session default", () => {
+  assert.equal(resolveAgentModelSpec({}, "main/model", noCfg), undefined);
+});
+
+test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier => session default", () => {
+  const noMedium = () => ({ tiers: { small: "vendor/small" } });
+  assert.equal(resolveAgentModelSpec({}, "main/model", noMedium), undefined);
 });
 
 test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
