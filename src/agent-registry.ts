@@ -135,11 +135,11 @@ export function resolveAgentType(name: string | undefined, registry: AgentRegist
  */
 export function applyToolPolicy<T extends { name: string }>(tools: T[], allow?: string[], deny?: string[]): T[] {
   let out = tools;
-  if (allow && allow.length) {
+  if (allow?.length) {
     const allowSet = new Set(allow);
     out = out.filter((t) => allowSet.has(t.name));
   }
-  if (deny && deny.length) {
+  if (deny?.length) {
     const denySet = new Set(deny);
     out = out.filter((t) => !denySet.has(t.name));
   }

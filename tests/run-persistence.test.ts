@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -518,6 +518,78 @@ test(
     assert.equal(loaded?.tokenUsage?.cost, 0.5, "cost survives reload");
     assert.equal(loaded?.tokenUsage?.cacheRead, 9, "cacheRead survives reload");
     assert.equal(loaded?.tokenUsage?.cacheWrite, 4, "cacheWrite survives reload");
+  }),
+);
+
+test(
+  "run lease creates an exclusive lock and releases only with the owner token",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const lease = rp.acquireRunLease("lease-1");
+    assert.ok(lease, "first acquire should succeed");
+    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR, "lease-1.lock")), true, "lock file is created");
+
+    const second = rp.acquireRunLease("lease-1");
+    assert.equal(second, null, "second acquire should be refused while owner pid is alive");
+
+    rp.releaseRunLease({ ...lease, token: "wrong-token" });
+    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR, "lease-1.lock")), true, "wrong token does not release");
+
+    rp.releaseRunLease(lease);
+    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR, "lease-1.lock")), false, "owner token releases");
+  }),
+);
+
+test(
+  "run lease steals a stale lock whose pid is dead",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const runsDir = join(cwd, WORKFLOW_RUNS_DIR);
+    rp.save({
+      runId: "stale-lock",
+      workflowName: "w",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+
+    writeFileSync(
+      join(runsDir, "stale-lock.lock"),
+      JSON.stringify({
+        runId: "stale-lock",
+        runPath: join(runsDir, "stale-lock.json"),
+        pid: 2147483647,
+        startedAt: "2024-01-01T00:00:00.000Z",
+        token: "stale",
+      }),
+      "utf-8",
+    );
+
+    const lease = rp.acquireRunLease("stale-lock");
+    assert.ok(lease, "dead-pid lock should be stolen");
+    const lock = JSON.parse(readFileSync(join(runsDir, "stale-lock.lock"), "utf-8")) as { token: string };
+    assert.equal(lock.token, lease.token, "stale lock is replaced by the new owner");
+    rp.releaseRunLease(lease);
+  }),
+);
+
+test(
+  "delete removes the lock sidecar too",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      runId: "delete-lock",
+      workflowName: "w",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+    } as PersistedRunState);
+    const lease = rp.acquireRunLease("delete-lock");
+    assert.ok(lease, "lease exists before delete");
+    rp.delete("delete-lock");
+    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR, "delete-lock.lock")), false, "lock cleaned up");
   }),
 );
 

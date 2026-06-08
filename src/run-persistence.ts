@@ -3,7 +3,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { WORKFLOW_RUNS_DIR } from "./config.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "aborted";
@@ -61,8 +61,28 @@ export interface RunPersistence {
   list(): PersistedRunState[];
   /** Delete a persisted run. */
   delete(runId: string): boolean;
+  /**
+   * Acquire an exclusive cross-process lease for a run. Returns null when another
+   * live process owns the run; stale/corrupt lock files are removed and retried.
+   */
+  acquireRunLease(runId: string): RunLease | null;
+  /** Release a lease previously returned by acquireRunLease(). */
+  releaseRunLease(lease: RunLease): void;
   /** Get runs directory path. */
   getRunsDir(): string;
+}
+
+export interface RunLease {
+  runId: string;
+  token: string;
+}
+
+interface LockFile {
+  runId: string;
+  runPath: string;
+  pid: number;
+  startedAt: string;
+  token: string;
 }
 
 /**
@@ -88,7 +108,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
   const _unlinkSync = fsOverride?.unlinkSync ?? unlinkSync;
   const _writeFileSync = fsOverride?.writeFileSync ?? writeFileSync;
 
-  const runsDir = join(cwd, WORKFLOW_RUNS_DIR);
+  const runsDir = resolve(cwd, WORKFLOW_RUNS_DIR);
 
   const ensureDir = () => {
     if (!_existsSync(runsDir)) {
@@ -97,6 +117,26 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
   };
 
   const runPath = (runId: string) => join(runsDir, `${runId}.json`);
+  const lockPath = (runId: string) => join(runsDir, `${runId}.lock`);
+
+  const pidIsAlive = (pid: number): boolean => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      if ((err as { code?: string }).code === "EPERM") return true;
+      return false;
+    }
+  };
+
+  const readLock = (runId: string): LockFile | null => {
+    try {
+      return JSON.parse(_readFileSync(lockPath(runId), "utf-8")) as LockFile;
+    } catch {
+      return null;
+    }
+  };
 
   return {
     save(state: PersistedRunState) {
@@ -153,7 +193,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
       try {
         const path = runPath(runId);
         // Best-effort cleanup of the sidecar files alongside the primary.
-        for (const sidecar of [`${path}.bak`, `${path}.tmp`]) {
+        for (const sidecar of [`${path}.bak`, `${path}.tmp`, lockPath(runId)]) {
           try {
             if (_existsSync(sidecar)) _unlinkSync(sidecar);
           } catch {
@@ -167,6 +207,48 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
         return false;
       } catch {
         return false;
+      }
+    },
+
+    acquireRunLease(runId: string): RunLease | null {
+      ensureDir();
+      const path = runPath(runId);
+      const lock = lockPath(runId);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        const payload: LockFile = {
+          runId,
+          runPath: path,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          token,
+        };
+        try {
+          _writeFileSync(lock, JSON.stringify(payload, null, 2), { flag: "wx" });
+          return { runId, token };
+        } catch (err) {
+          const code = (err as { code?: string }).code;
+          if (code !== "EEXIST") throw err;
+          const existing = readLock(runId);
+          if (existing && existing.runPath === path && pidIsAlive(existing.pid)) {
+            return null;
+          }
+          try {
+            _unlinkSync(lock);
+          } catch {
+            return null;
+          }
+        }
+      }
+      return null;
+    },
+
+    releaseRunLease(lease: RunLease): void {
+      try {
+        const existing = readLock(lease.runId);
+        if (existing?.token === lease.token) _unlinkSync(lockPath(lease.runId));
+      } catch {
+        // Best-effort cleanup only.
       }
     },
 

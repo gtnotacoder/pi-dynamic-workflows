@@ -276,8 +276,10 @@ return r`;
     assert.equal(first.seen.length, 1);
 
     // Resume with an EDITED definition (different model) → cache must miss → re-run.
+    const securityAuditor = registry.get("security-auditor");
+    assert.ok(securityAuditor, "security-auditor definition should be loaded");
     const editedRegistry: AgentRegistry = new Map([
-      ["security-auditor", { ...registry.get("security-auditor")!, model: "vendor/changed-model" }],
+      ["security-auditor", { ...securityAuditor, model: "vendor/changed-model" }],
     ]);
     const second = capturingAgent();
     await runWorkflow(script, {

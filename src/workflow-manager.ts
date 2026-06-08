@@ -10,6 +10,7 @@ import {
   createRunPersistence,
   generateRunId,
   type PersistedRunState,
+  type RunLease,
   type RunPersistence,
   type RunStatus,
 } from "./run-persistence.js";
@@ -28,6 +29,8 @@ export interface ManagedRun {
   args?: unknown;
   /** Accumulated agent results for resume (deterministic call index -> result). */
   journal: JournalEntry[];
+  /** Cross-process execution lease for this run, when it is actively executing. */
+  lease?: RunLease;
   /**
    * True when the run was started in the background (or resumed) and the caller is
    * not awaiting its result inline. Only background runs deliver their result back
@@ -108,7 +111,13 @@ export class WorkflowManager extends EventEmitter {
     try {
       for (const p of this.listAllRuns()) {
         if (p.status === "running" && !this.runs.has(p.runId)) {
-          this.persistence.save({ ...p, status: "paused" });
+          const lease = this.persistence.acquireRunLease(p.runId);
+          if (!lease) continue;
+          try {
+            this.persistence.save({ ...p, status: "paused" });
+          } finally {
+            this.persistence.releaseRunLease(lease);
+          }
         }
       }
     } catch {
@@ -133,6 +142,8 @@ export class WorkflowManager extends EventEmitter {
     const runId = generateRunId();
     const controller = new AbortController();
     const parsed = parseWorkflowScript(script);
+    const lease = this.persistence.acquireRunLease(runId);
+    if (!lease) throw new Error(`Could not acquire workflow run lease for ${runId}`);
 
     const managed: ManagedRun = {
       runId,
@@ -154,24 +165,31 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: true,
+      lease,
     };
 
     this.runs.set(runId, managed);
 
-    // Persist initial state
-    this.persistence.save({
-      runId,
-      workflowName: parsed.meta.name,
-      script,
-      args,
-      sessionId: this.sessionId,
-      status: "running",
-      phases: managed.snapshot.phases,
-      agents: [],
-      logs: [],
-      startedAt: managed.startedAt.toISOString(),
-      updatedAt: managed.startedAt.toISOString(),
-    });
+    try {
+      // Persist initial state
+      this.persistence.save({
+        runId,
+        workflowName: parsed.meta.name,
+        script,
+        args,
+        sessionId: this.sessionId,
+        status: "running",
+        phases: managed.snapshot.phases,
+        agents: [],
+        logs: [],
+        startedAt: managed.startedAt.toISOString(),
+        updatedAt: managed.startedAt.toISOString(),
+      });
+    } catch (err) {
+      this.releaseRunLease(managed);
+      this.runs.delete(runId);
+      throw err;
+    }
 
     // Run workflow asynchronously.
     // Attach a side-channel catch to prevent Node.js unhandled-rejection crashes
@@ -192,6 +210,9 @@ export class WorkflowManager extends EventEmitter {
    */
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const managed = this.createManaged(script, args);
+    const lease = this.persistence.acquireRunLease(managed.runId);
+    if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
+    managed.lease = lease;
     this.runs.set(managed.runId, managed);
     // Persist the initial state immediately so listRuns()/the task panel can see
     // the run the moment it starts, not only after the first agent journals.
@@ -310,6 +331,7 @@ export class WorkflowManager extends EventEmitter {
 
       // Persist final state
       this.persistRun(managed);
+      this.releaseRunLease(managed);
 
       return result;
     } catch (error) {
@@ -335,9 +357,16 @@ export class WorkflowManager extends EventEmitter {
 
       // Persist final state
       this.persistRun(managed);
+      this.releaseRunLease(managed);
 
       throw workflowError;
     }
+  }
+
+  private releaseRunLease(managed: ManagedRun): void {
+    if (!managed.lease) return;
+    this.persistence.releaseRunLease(managed.lease);
+    managed.lease = undefined;
   }
 
   private persistRun(managed: ManagedRun) {
@@ -395,6 +424,7 @@ export class WorkflowManager extends EventEmitter {
     managed.status = "paused";
     this.emit("paused", { runId });
     this.persistRun(managed);
+    this.releaseRunLease(managed);
     return true;
   }
 
@@ -411,6 +441,8 @@ export class WorkflowManager extends EventEmitter {
 
     const persisted = this.persistence.load(runId);
     if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
+    const lease = this.persistence.acquireRunLease(runId);
+    if (!lease) return false;
 
     const controller = new AbortController();
     const managed: ManagedRun = {
@@ -432,6 +464,7 @@ export class WorkflowManager extends EventEmitter {
       args: persisted.args,
       journal: persisted.journal ?? [],
       background: true,
+      lease,
     };
     this.runs.set(runId, managed);
 
@@ -453,6 +486,7 @@ export class WorkflowManager extends EventEmitter {
     managed.status = "aborted";
     this.emit("stopped", { runId });
     this.persistRun(managed);
+    this.releaseRunLease(managed);
     return true;
   }
 
@@ -492,6 +526,8 @@ export class WorkflowManager extends EventEmitter {
    * Delete a persisted run.
    */
   deleteRun(runId: string): boolean {
+    const managed = this.runs.get(runId);
+    if (managed) this.releaseRunLease(managed);
     this.runs.delete(runId);
     return this.persistence.delete(runId);
   }

@@ -802,6 +802,109 @@ test(
   }),
 );
 
+test(
+  "cold-start resume: a second manager cannot resume a run while another manager owns the lease",
+  withTempCwd(async (cwd) => {
+    const ownerAgent = deferredAgent();
+    const owner = new WorkflowManager({ cwd, agent: ownerAgent.runner });
+    owner.on("error", () => {});
+    const runId = "cold-start-leased-1";
+    owner.getPersistence().save({
+      runId,
+      workflowName: "leased",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await owner.resume(runId), true, "first manager should acquire the lease and start");
+    await new Promise((r) => setTimeout(r, 20));
+
+    const contender = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          assert.fail("second manager must not run an agent without the lease");
+        },
+      },
+    });
+    assert.equal(await contender.resume(runId), false, "second manager should be refused by the live lease");
+
+    ownerAgent.resolve("done");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(owner.getRun(runId)?.status, "completed", "leased owner should still finish");
+  }),
+);
+
+test(
+  "cold-start recovery leaves a live leased running run untouched",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd });
+    const pers = manager.getPersistence();
+    const runId = "live-running-lease";
+    pers.save({
+      runId,
+      workflowName: "live",
+      script: oneAgentScript,
+      status: "running",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const lease = pers.acquireRunLease(runId);
+    assert.ok(lease, "test setup should acquire the live lease");
+
+    try {
+      new WorkflowManager({ cwd });
+      assert.equal(pers.load(runId)?.status, "running", "live leased run is not recovered to paused");
+    } finally {
+      pers.releaseRunLease(lease);
+    }
+  }),
+);
+
+test(
+  "cold-start resume releases the lease after failure so another manager can retry",
+  withTempCwd(async (cwd) => {
+    const failing = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          throw new WorkflowError("boom", WorkflowErrorCode.UNKNOWN, { recoverable: false });
+        },
+      },
+    });
+    failing.on("error", () => {});
+    const runId = "failed-lease-retry";
+    failing.getPersistence().save({
+      runId,
+      workflowName: "failed_once",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await failing.resume(runId), true, "first resume starts");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(failing.getRun(runId)?.status, "failed", "first resume failed");
+
+    const retry = new WorkflowManager({ cwd, agent: fakeAgent() });
+    assert.equal(await retry.resume(runId), true, "failed run can be resumed after lease release");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(retry.getRun(runId)?.status, "completed", "retry manager completed the run");
+  }),
+);
+
 // ─── getRun tests ──────────────────────────────────────────────────────────────
 
 test(

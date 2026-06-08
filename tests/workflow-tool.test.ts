@@ -111,8 +111,9 @@ test("createWorkflowTool invalid args throws descriptive error", () => {
   const tool = createWorkflowTool();
   // We can test prepareArguments through the tool definition
   if (tool.prepareArguments) {
-    assert.throws(() => (tool.prepareArguments as Function)({ script: 123 }), /script.*string/);
-    assert.throws(() => (tool.prepareArguments as Function)("not-an-object"), /object argument/);
+    const prepare = tool.prepareArguments as (args: unknown) => unknown;
+    assert.throws(() => prepare({ script: 123 }), /script.*string/);
+    assert.throws(() => prepare("not-an-object"), /object argument/);
   }
 });
 
@@ -134,7 +135,8 @@ test("modelRoutingGuideline output is non-empty and well-formed", () => {
 test("createWorkflowTool prepareArguments strips markdown fences from script", () => {
   const tool = createWorkflowTool();
   if (tool.prepareArguments) {
-    const result = (tool.prepareArguments as Function)({
+    const prepare = tool.prepareArguments as (args: unknown) => { script: string };
+    const result = prepare({
       script: "```js\nconst x = 1\n```",
     });
     assert.equal(result.script, "const x = 1");
@@ -144,7 +146,8 @@ test("createWorkflowTool prepareArguments strips markdown fences from script", (
 test("createWorkflowTool prepareArguments strips javascript fences", () => {
   const tool = createWorkflowTool();
   if (tool.prepareArguments) {
-    const result = (tool.prepareArguments as Function)({
+    const prepare = tool.prepareArguments as (args: unknown) => { script: string };
+    const result = prepare({
       script: "```\nexport const meta = { name: 't', description: 't' }\n```",
     });
     assert.equal(result.script, "export const meta = { name: 't', description: 't' }");
@@ -154,7 +157,8 @@ test("createWorkflowTool prepareArguments strips javascript fences", () => {
 test("createWorkflowTool prepareArguments passes through args", () => {
   const tool = createWorkflowTool();
   if (tool.prepareArguments) {
-    const result = (tool.prepareArguments as Function)({
+    const prepare = tool.prepareArguments as (args: unknown) => { script: string; args?: unknown; maxAgents?: number };
+    const result = prepare({
       script: "export const meta = { name: 't', description: 't' }",
       args: { question: "test" },
       maxAgents: 5,
