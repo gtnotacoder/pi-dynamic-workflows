@@ -119,6 +119,51 @@ return { a, b }`;
 );
 
 test(
+  "runSync persists recoverable agent error details for /workflows",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          throw new Error("agent exploded");
+        },
+      },
+    });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const agent = run?.agents[0];
+    assert.equal(agent?.status, "error");
+    assert.equal(agent?.error, "agent exploded");
+    assert.equal(agent?.errorCode, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+    assert.equal(agent?.recoverable, true);
+  }),
+);
+
+test(
+  "runSync stores compact subagent history for /workflows detail",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(_prompt: string, options: { onHistory?: (history: unknown[]) => void }) {
+          options.onHistory?.([{ role: "assistant", kind: "text", text: "inspecting files" }]);
+          return "ok";
+        },
+      },
+    });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const agent = run?.agents[0];
+    assert.equal(agent?.history?.length, 1);
+    assert.equal(agent?.history?.[0]?.text, "inspecting files");
+  }),
+);
+
+test(
   "startInBackground returns immediately with runId and promise",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });

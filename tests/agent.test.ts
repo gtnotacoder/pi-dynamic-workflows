@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
+import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
 import { runWorkflow } from "../src/workflow.js";
 
@@ -304,6 +305,31 @@ test("agent() in workflow fires onAgentStart and onAgentEnd callbacks", async ()
   assert.deepEqual(events, ["start:greeter", "end:greeter"]);
 });
 
+test("agent() in workflow forwards compact subagent history snapshots", async () => {
+  const historyRunner = {
+    async run(_prompt: string, options: any) {
+      options.onHistory?.([{ role: "assistant", kind: "text", text: "working" }]);
+      return "done";
+    },
+  };
+  const histories: Array<{ label: string; history: Array<{ text: string }> }> = [];
+
+  await runWorkflow(
+    `export const meta = { name: 'test', description: 't' }
+     await agent('hello', { label: 'greeter' })
+     return 1`,
+    {
+      agent: historyRunner,
+      persistLogs: false,
+      onAgentHistory: (event) => histories.push(event),
+    },
+  );
+
+  assert.equal(histories.length, 1);
+  assert.equal(histories[0].label, "greeter");
+  assert.equal(histories[0].history[0].text, "working");
+});
+
 test("agent() in workflow fires onAgentStart with phase info", async () => {
   const rec = new CallRecordingAgent();
   const starts: Array<{ label: string; phase?: string }> = [];
@@ -340,13 +366,82 @@ test("agent() in workflow returns null for recoverable errors", async () => {
       throw new Error("recoverable agent error");
     },
   };
+  let end:
+    | {
+        result: unknown;
+        error?: string;
+        errorCode?: WorkflowErrorCode;
+        recoverable?: boolean;
+      }
+    | undefined;
   const result = await runWorkflow<unknown>(
     `export const meta = { name: 'test', description: 't' }
      const r = await agent('failing task', { label: 'f' })
      return r`,
-    { agent: failer, persistLogs: false },
+    { agent: failer, persistLogs: false, onAgentEnd: (e) => (end = e) },
   );
   assert.equal(result.result, null);
+  assert.equal(end?.result, null);
+  assert.equal(end?.error, "recoverable agent error");
+  assert.equal(end?.errorCode, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+  assert.equal(end?.recoverable, true);
+});
+
+test("agent() in workflow treats empty text output as a recoverable failure", async () => {
+  const rec = new CallRecordingAgent();
+  rec.result = "   ";
+  let end:
+    | {
+        result: unknown;
+        error?: string;
+        errorCode?: WorkflowErrorCode;
+        recoverable?: boolean;
+      }
+    | undefined;
+  const result = await runWorkflow<unknown>(
+    `export const meta = { name: 'test', description: 't' }
+     const r = await agent('empty task', { label: 'empty' })
+     return r`,
+    { agent: rec, persistLogs: false, onAgentEnd: (e) => (end = e) },
+  );
+
+  assert.equal(result.result, null);
+  assert.equal(end?.result, null);
+  assert.equal(end?.error, "Subagent produced no assistant output");
+  assert.equal(end?.errorCode, WorkflowErrorCode.AGENT_EMPTY_OUTPUT);
+  assert.equal(end?.recoverable, true);
+});
+
+test("agent() in workflow reports non-recoverable errors before throwing", async () => {
+  const failer = {
+    async run() {
+      throw new WorkflowError("schema failed", WorkflowErrorCode.SCHEMA_NONCOMPLIANCE, { recoverable: false });
+    },
+  };
+  let end:
+    | {
+        result: unknown;
+        error?: string;
+        errorCode?: WorkflowErrorCode;
+        recoverable?: boolean;
+      }
+    | undefined;
+
+  await assert.rejects(
+    () =>
+      runWorkflow<unknown>(
+        `export const meta = { name: 'test', description: 't' }
+         await agent('schema task', { label: 'schema' })
+         return 1`,
+        { agent: failer, persistLogs: false, onAgentEnd: (e) => (end = e) },
+      ),
+    (err) => err instanceof WorkflowError && err.code === WorkflowErrorCode.SCHEMA_NONCOMPLIANCE,
+  );
+
+  assert.equal(end?.result, null);
+  assert.equal(end?.error, "schema failed");
+  assert.equal(end?.errorCode, WorkflowErrorCode.SCHEMA_NONCOMPLIANCE);
+  assert.equal(end?.recoverable, false);
 });
 
 test("agent() in workflow fires onTokenUsage after run", async () => {
