@@ -215,7 +215,8 @@ export function renderWorkflowLines(
       const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
+      const errTxt = agentErrorText(agent, theme);
+      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`);
     }
     if (agents.length > visibleAgents.length)
       lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
@@ -227,7 +228,8 @@ export function renderWorkflowLines(
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
+      const errTxt = agentErrorText(agent, theme);
+      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`);
     }
   }
 
@@ -267,7 +269,38 @@ function unique(values: string[]): string[] {
 
 export function shorten(value: string, max: number): string {
   const text = value.replace(/\s+/g, " ").trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  if (text.length <= max) return text;
+  // Slice by Unicode code point so we never split a UTF-16 surrogate pair —
+  // an astral-plane char/emoji at the boundary would otherwise leave a lone
+  // surrogate that renders as a replacement character (\uFFFD).
+  const chars = Array.from(text);
+  return `${chars.slice(0, max - 1).join("")}…`;
+}
+
+/** First non-empty, trimmed line of a (possibly multi-line) message. Keeps the
+ * actionable summary instead of space-joining a whole stack trace into one
+ * flattened blob that a coarse length cap then clips to a generic prefix. */
+export function firstLine(value: string | undefined | null): string {
+  if (!value) return "";
+  for (const line of value.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t) return t;
+  }
+  return "";
+}
+
+/** Inline error suffix for an errored agent row — shared by both the detailed
+ * task panel and the live workflow widget so the two renderers cannot diverge.
+ * Renders the first non-empty error line (surrogate-safe), and returns "" when
+ * there is no error or the error is blank/whitespace-only (no dangling ` — `). */
+export function agentErrorText(
+  agent: { status: string; error?: string },
+  theme: ThemeLike,
+  max = 60,
+): string {
+  if (agent.status !== "error") return "";
+  const text = shorten(firstLine(agent.error), max);
+  return text ? theme.fg("error", ` — ${text}`) : "";
 }
 
 export function preview(value: unknown, max = 80): string {

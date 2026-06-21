@@ -732,4 +732,45 @@ describe("installTaskPanel mode selection", () => {
     const doneRow = rendered.find((l) => /research 1/.test(l));
     assert.ok(doneRow && !/model timeout/.test(doneRow), "done agent row has no error text");
   });
+
+  it("detailed panel renders no dangling dash for a blank/whitespace error", async () => {
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
+      agents: [{ id: 2, label: "research 2", status: "error", phase: "P1", tokens: 0, error: "   \n  " }],
+      tokenUsage: { total: 0, input: 0, output: 0 },
+    };
+    const manager = {
+      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {}, off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    const row = rendered.find((l) => /research 2/.test(l));
+    assert.ok(row && /✗/.test(row), "errored agent row shows the error icon");
+    assert.ok(row && !/—\s*$/.test(row), "no dangling dash when the error is blank");
+  });
+
+  it("detailed panel shows the first line of a multi-line error (no flattening)", async () => {
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
+      agents: [{
+        id: 2, label: "research 2", status: "error", phase: "P1", tokens: 0,
+        error: "Provider error: upstream fault\nCaused by: connection reset by peer\n  at stack: ...",
+      }],
+      tokenUsage: { total: 0, input: 0, output: 0 },
+    };
+    const manager = {
+      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {}, off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    const row = rendered.find((l) => /research 2/.test(l));
+    assert.ok(row && /Provider error: upstream fault/.test(row), "first line of the error is shown");
+    assert.ok(row && !/Caused by/.test(row), "later lines are not flattened into the row");
+  });
 });

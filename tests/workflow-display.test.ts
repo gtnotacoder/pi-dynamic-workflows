@@ -30,7 +30,7 @@ function agent(
   label: string,
   status: "queued" | "running" | "done" | "error" | "skipped",
   phase?: string,
-  opts?: { resultPreview?: string; tokens?: number; model?: string; prompt?: string },
+  opts?: { resultPreview?: string; tokens?: number; model?: string; prompt?: string; error?: string },
 ) {
   return {
     id,
@@ -41,6 +41,7 @@ function agent(
     ...(opts?.resultPreview ? { resultPreview: opts.resultPreview } : {}),
     ...(opts?.tokens ? { tokens: opts.tokens } : {}),
     ...(opts?.model ? { model: opts.model } : {}),
+    ...(opts?.error ? { error: opts.error } : {}),
   };
 }
 
@@ -529,6 +530,60 @@ describe("display pure helpers", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // deliverText — background result formatting
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// agent error surfacing — shared helper + both renderers stay consistent
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("agent error surfacing", () => {
+  it("shorten never splits a UTF-16 surrogate pair", async () => {
+    const { shorten } = await loadDisplay();
+    // 58 ASCII + an astral char (2 code units at indices 58-59) + padding, so a
+    // naive code-unit slice(0, 59) would cut between the high and low surrogate
+    // and emit a lone surrogate. Code-point slicing keeps the astral char whole.
+    const emoji = "\u{1F6A8}";
+    const s = "x".repeat(58) + emoji + "y".repeat(10);
+    const out = shorten(s, 60);
+    assert.ok(out.endsWith("…"), "truncated string ends with ellipsis");
+    assert.ok(out.includes(emoji), "astral char is kept whole, not split into a lone surrogate");
+  });
+
+  it("firstLine returns the first non-empty line", async () => {
+    const { firstLine } = await loadDisplay();
+    assert.equal(firstLine("Provider error: upstream\nCaused by: reset"), "Provider error: upstream");
+    assert.equal(firstLine("\n  \nfirst real line\nsecond"), "first real line");
+    assert.equal(firstLine(undefined), "");
+    assert.equal(firstLine("   \n  \t  "), "");
+  });
+
+  it("agentErrorText is empty for non-error agents and blank errors (no dangling dash)", async () => {
+    const { agentErrorText } = await loadDisplay();
+    const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t } as never;
+    assert.equal(agentErrorText({ status: "done" }, theme), "");
+    assert.equal(agentErrorText({ status: "error", error: "   \n  " }, theme), "");
+    assert.equal(agentErrorText({ status: "error", error: undefined }, theme), "");
+  });
+
+  it("agentErrorText renders the first line for a real error", async () => {
+    const { agentErrorText } = await loadDisplay();
+    const theme = { fg: (c: string, t: string) => `[${c}]${t}`, bold: (t: string) => t } as never;
+    const out = agentErrorText({ status: "error", error: "model timeout: 30000ms\nstack..." }, theme);
+    assert.ok(out.startsWith("[error] — model timeout: 30000ms"), "colored first-line suffix");
+    assert.ok(!out.includes("stack"), "later lines dropped");
+  });
+
+  it("renderWorkflowLines surfaces an errored agent's error inline (both renderers consistent)", async () => {
+    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
+    const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta()));
+    snap.agents = [
+      agent(1, "a1", "done", "Research"),
+      agent(2, "a2", "error", "Research", { error: "model timeout: 30000ms" }),
+    ] as never[];
+    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap)).join("\n");
+    const row = text.split("\n").find((l) => /a2/.test(l));
+    assert.ok(row && /model timeout: 30000ms/.test(row), "live widget row shows the error reason");
+  });
+});
 
 describe("deliverText", () => {
   function fakeManagedRun(overrides: Record<string, unknown> = {}) {

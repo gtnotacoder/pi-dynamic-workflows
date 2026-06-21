@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
+import { agentErrorText, shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
 import type { RunStatus } from "./run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
@@ -361,10 +361,13 @@ function renderRunBody(
       // run progresses — the manager already populates `resultPreview` on agentEnd.
       const previewTxt = a.status === "done" && a.resultPreview ? dim(` — ${shorten(a.resultPreview, 50)}`) : "";
       // Surface why an agent failed (visibility for errored subagents): the
-      // manager populates `error` on agentEnd failure — render it inline so a
-      // developer can see which agents air out and why without opening transcripts.
-      const errTxt = a.status === "error" && a.error ? theme.fg("error", ` — ${shorten(a.error, 60)}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}${previewTxt}${errTxt}`);
+      // manager populates `error` on agentEnd failure — render it inline (first
+      // non-empty line, surrogate-safe, no dangling dash on blank errors) so a
+      // developer can see why without opening transcripts. Placed BEFORE tok/model
+      // so fitLine's right-truncation cuts those before the error reason in narrow
+      // terminals — the reason is the whole point of the feature.
+      const errTxt = agentErrorText(a, theme);
+      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${errTxt}${tok}${model}${previewTxt}`);
     }
     if (phaseAgents.length > visible.length) {
       lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
