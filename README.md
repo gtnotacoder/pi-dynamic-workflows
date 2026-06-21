@@ -1,3 +1,10 @@
+> ## ⚠️ Vendored + patched fork (gtnotacoder)
+>
+> This is **not** the upstream package. It is a local fork of
+> [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0 (MIT)
+> with internal Claude-Code-fidelity patches. See **[PROVENANCE.md](./PROVENANCE.md)**.
+> Upstream: <https://github.com/QuintinShaw/pi-dynamic-workflows>.
+
 # pi-dynamic-workflows
 
 [![npm](https://img.shields.io/npm/v/@quintinshaw/pi-dynamic-workflows?color=cb3837&logo=npm)](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows)
