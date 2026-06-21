@@ -4,6 +4,7 @@ import {
   createWorkflowStorage,
   createWorkflowTool,
   installResultDelivery,
+  installTaskPanel,
   installWorkflowEditor,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
@@ -61,12 +62,11 @@ export default function extension(pi: ExtensionAPI) {
       // sessionManager may be unavailable in some contexts — fall back to global history.
     }
     // Deliver a background run's result into the conversation when it finishes.
-    // This is the canonical chat surface for workflow status (tokens + error +
-    // log links on failure). The below-editor "workflows running" panel is NOT
-    // auto-installed — it duplicated the streamed chat updates. Open /workflows
-    // for an explicit live navigator; installTaskPanel remains available but
-    // opt-in.
     installResultDelivery(pi, manager);
+    // Live "workflows running" panel below the input (focus + enter to open).
+    // Pass a live settings loader so /workflows-progress (compact|detailed) takes
+    // effect without a restart.
+    installTaskPanel(pi, manager, ctx.ui, { storage, cwd, loadSettings: () => loadWorkflowSettings({ cwd }) });
     if (!editorInstalled) {
       installWorkflowEditor(pi, ctx.ui, effort, {
         settingsStore: {

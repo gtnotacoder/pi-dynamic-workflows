@@ -6,6 +6,7 @@
  *    conversation so the paused task continues with the outcome.
  */
 
+import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { agentErrorText, shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
@@ -14,8 +15,6 @@ import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
 import { shortModel } from "./workflow-ui.js";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 // `tokenUsage` is included so the detailed panel's live token/s counter refreshes
 // as tokens accrue (not only on agent start/end). It is harmless in compact mode —
@@ -151,13 +150,10 @@ function formatTaskNotification(
     let recovery = `To resume after editing the script, run: ${resume}${reset}. Completed agents return cached results.`;
     // Link the on-disk transcripts and run-state JSON with file:// URIs so a
     // failed run is one click from its logs in chat (Claude Code surfaces these
-    // in <recovery>). The run-state JSON lives at runsDir/<runId>.json, derivable
-    // from the transcript dir (runsDir/<runId>/subagents).
-    const runStatePath = run.transcriptDir
-      ? path.join(run.transcriptDir, "..", "..", `${run.runId}.json`)
-      : undefined;
+    // in <recovery>). runStatePath is set on ManagedRun regardless of transcript
+    // persistence, so the link works even with persistSubagentTranscripts:false.
     if (run.transcriptDir) recovery += `\nAgent transcripts: ${fileLink(run.transcriptDir)}`;
-    if (runStatePath) recovery += `\nRun state: ${fileLink(runStatePath)}`;
+    if (run.runStatePath) recovery += `\nRun state: ${fileLink(run.runStatePath)}`;
     lines.push(`<recovery>${xmlEscape(recovery)}</recovery>`);
   } else if (result !== undefined) {
     lines.push(`<result>${xmlEscape(truncResult(JSON.stringify(result)))}</result>`);

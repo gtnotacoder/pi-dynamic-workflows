@@ -708,6 +708,7 @@ describe("deliverText", () => {
       error: { message: "model timeout: 30000ms" },
       result: undefined,
       transcriptDir: "/tmp/wf-runs/r-123/subagents",
+      runStatePath: "/tmp/wf-runs/r-123.json",
       runId: "r-123",
     });
     const text = deliverText(run);
@@ -716,16 +717,40 @@ describe("deliverText", () => {
     assert.ok(text.includes("Agent transcripts:"), "mentions transcripts");
     assert.ok(text.includes("file:///tmp/wf-runs/r-123/subagents"), "transcript file:// URI");
     assert.ok(text.includes("Run state:"), "mentions run state");
-    assert.ok(text.includes("file:///tmp/wf-runs/r-123.json"), "run-state json file:// URI derived from transcriptDir + runId");
+    assert.ok(text.includes("file:///tmp/wf-runs/r-123.json"), "run-state json file:// URI");
+  });
+
+  it("links run-state JSON even when subagent transcripts are disabled", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      status: "failed",
+      error: { message: "boom" },
+      result: undefined,
+      transcriptDir: undefined,
+      runStatePath: "/tmp/wf-runs/only-state.json",
+      runId: "only-state",
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("Run state:"), "run-state link present without transcripts");
+    assert.ok(text.includes("file:///tmp/wf-runs/only-state.json"), "run-state file:// URI");
+    assert.ok(!text.includes("Agent transcripts:"), "no transcript link when transcripts disabled");
   });
 
   it("reports real tool_uses from agent toolCall history (not hardcoded 0)", async () => {
     const { deliverText } = await loadTaskPanel();
     const run = fakeManagedRun({
       snapshot: {
-        name: "my-wf", agentCount: 5, phases: [], logs: [],
+        name: "my-wf",
+        agentCount: 5,
+        phases: [],
+        logs: [],
         agents: [
-          { id: 1, label: "a1", status: "done", history: [{ kind: "text" }, { kind: "toolCall" }, { kind: "toolCall" }, { kind: "toolResult" }] },
+          {
+            id: 1,
+            label: "a1",
+            status: "done",
+            history: [{ kind: "text" }, { kind: "toolCall" }, { kind: "toolCall" }, { kind: "toolResult" }],
+          },
           { id: 2, label: "a2", status: "done", history: [{ kind: "toolCall" }] },
         ],
       },

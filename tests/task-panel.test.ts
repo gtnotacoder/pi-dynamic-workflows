@@ -736,14 +736,26 @@ describe("installTaskPanel mode selection", () => {
   it("detailed panel renders no dangling dash for a blank/whitespace error", async () => {
     const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
     const snapshot = {
-      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
       agents: [{ id: 2, label: "research 2", status: "error", phase: "P1", tokens: 0, error: "   \n  " }],
       tokenUsage: { total: 0, input: 0, output: 0 },
     };
     const manager = {
-      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
       getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
-      on: () => {}, off: () => {},
+      on: () => {},
+      off: () => {},
     };
     clearTokenSamples("r1");
     const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
@@ -755,17 +767,35 @@ describe("installTaskPanel mode selection", () => {
   it("detailed panel shows the first line of a multi-line error (no flattening)", async () => {
     const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
     const snapshot = {
-      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
-      agents: [{
-        id: 2, label: "research 2", status: "error", phase: "P1", tokens: 0,
-        error: "Provider error: upstream fault\nCaused by: connection reset by peer\n  at stack: ...",
-      }],
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        {
+          id: 2,
+          label: "research 2",
+          status: "error",
+          phase: "P1",
+          tokens: 0,
+          error: "Provider error: upstream fault\nCaused by: connection reset by peer\n  at stack: ...",
+        },
+      ],
       tokenUsage: { total: 0, input: 0, output: 0 },
     };
     const manager = {
-      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
       getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
-      on: () => {}, off: () => {},
+      on: () => {},
+      off: () => {},
     };
     clearTokenSamples("r1");
     const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
@@ -781,17 +811,36 @@ describe("installTaskPanel mode selection", () => {
     // old order (errTxt last) the reason would be cut to "model ti…".
     const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
     const snapshot = {
-      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
-      agents: [{
-        id: 2, label: "research 2", status: "error", phase: "P1",
-        tokens: 80, model: "claude-haiku-4-5", error: "model timeout: 30000ms",
-      }],
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        {
+          id: 2,
+          label: "research 2",
+          status: "error",
+          phase: "P1",
+          tokens: 80,
+          model: "claude-haiku-4-5",
+          error: "model timeout: 30000ms",
+        },
+      ],
       tokenUsage: { total: 80, input: 40, output: 40 },
     };
     const manager = {
-      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
       getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
-      on: () => {}, off: () => {},
+      on: () => {},
+      off: () => {},
     };
     clearTokenSamples("r1");
     const rendered = renderPanelDetailed(manager as never, theme as never, 60, 8, 1000) as string[];

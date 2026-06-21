@@ -216,7 +216,9 @@ export function renderWorkflowLines(
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
       const errTxt = agentErrorText(agent, theme);
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`);
+      lines.push(
+        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+      );
     }
     if (agents.length > visibleAgents.length)
       lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
@@ -229,7 +231,9 @@ export function renderWorkflowLines(
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
       const errTxt = agentErrorText(agent, theme);
-      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`);
+      lines.push(
+        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+      );
     }
   }
 
@@ -293,11 +297,7 @@ export function firstLine(value: string | undefined | null): string {
  * task panel and the live workflow widget so the two renderers cannot diverge.
  * Renders the first non-empty error line (surrogate-safe), and returns "" when
  * there is no error or the error is blank/whitespace-only (no dangling ` — `). */
-export function agentErrorText(
-  agent: { status: string; error?: string },
-  theme: ThemeLike,
-  max = 60,
-): string {
+export function agentErrorText(agent: { status: string; error?: string }, theme: ThemeLike, max = 60): string {
   if (agent.status !== "error") return "";
   const text = shorten(firstLine(agent.error), max);
   return text ? theme.fg("error", ` — ${text}`) : "";

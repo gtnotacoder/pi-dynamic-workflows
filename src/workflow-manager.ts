@@ -50,6 +50,10 @@ export interface ManagedRun {
    * is disabled via `persistSubagentTranscripts: false`.
    */
   transcriptDir?: string;
+  /** Path to the persisted run-state JSON (runsDir/<runId>.json), so a failed
+   *  run can link to it from the chat <recovery> block. Set regardless of whether
+   *  subagent transcript persistence is enabled (the run state is always saved). */
+  runStatePath?: string;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -136,6 +140,11 @@ export class WorkflowManager extends EventEmitter {
   /** Directory each subagent's transcript is written to for a given run id. */
   private transcriptDirFor(runId: string): string {
     return join(workflowProjectPaths(this.cwd).runsDir, runId, "subagents");
+  }
+
+  /** Path to the persisted run-state JSON for a run id (runsDir/<runId>.json). */
+  private runStatePathFor(runId: string): string {
+    return join(workflowProjectPaths(this.cwd).runsDir, runId + ".json");
   }
 
   /**
@@ -225,6 +234,7 @@ export class WorkflowManager extends EventEmitter {
       background: true,
       lease,
       transcriptDir: this.resolveTranscriptDir(runId),
+      runStatePath: this.runStatePathFor(runId),
     };
 
     this.runs.set(runId, managed);
@@ -304,6 +314,7 @@ export class WorkflowManager extends EventEmitter {
       journal: [],
       background: false,
       transcriptDir: this.resolveTranscriptDir(runId),
+      runStatePath: this.runStatePathFor(runId),
     };
   }
 
@@ -581,6 +592,7 @@ export class WorkflowManager extends EventEmitter {
       background: true,
       lease,
       transcriptDir: this.resolveTranscriptDir(runId),
+      runStatePath: this.runStatePathFor(runId),
     };
     this.runs.set(runId, managed);
 
