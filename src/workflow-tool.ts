@@ -211,8 +211,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           agentTimeoutMs: params.agentTimeoutMs,
           tokenBudget: params.tokenBudget,
         });
+        const transcriptDir = manager.getRun(runId)?.transcriptDir;
         return {
-          content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
+          content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId, transcriptDir) }],
           details: { runId, background: true },
         };
       }
@@ -344,17 +345,22 @@ function resolveWorkflowToolDefaults(
  * own and the conversation will resume automatically when it finishes, so the
  * user can just wait here (or go do something else).
  */
-export function backgroundStartedText(name: string, runId: string): string {
-  return [
-    `Workflow "${name}" started in the background.`,
-    `Run ID: ${runId}`,
+export function backgroundStartedText(name: string, runId: string, transcriptDir?: string): string {
+  const lines = [`Workflow "${name}" started in the background.`, `Run ID: ${runId}`];
+  if (transcriptDir) {
+    // Parity with Claude Code, which surfaces `Transcript dir: <dir>` on async
+    // launch so a failed subagent is debuggable from the start.
+    lines.push(`Transcript dir: ${transcriptDir}`);
+  }
+  lines.push(
     "It keeps running on its own. When it finishes, the result is delivered back",
     "here and the conversation continues automatically — the user does not need to",
     "do anything. Tell the user they can simply wait here for it to finish (it will",
     "resume the conversation by itself), or keep chatting / working on other things",
     "in the meantime; either way the result will come back to this conversation.",
     `They can also track or cancel it with /workflows status ${runId} or /workflows stop ${runId}.`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {

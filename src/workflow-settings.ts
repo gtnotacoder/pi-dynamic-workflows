@@ -21,6 +21,13 @@ export interface WorkflowSettings {
   progressPanelMode?: "compact" | "detailed";
   /** Max agents shown per phase in detailed progress mode (default 8). */
   progressPanelMaxAgents?: number;
+  /**
+   * Whether each subagent gets a persisted NDJSON transcript under
+   * `<runsDir>/<runId>/subagents/`. Default true (matches Claude Code, which
+   * writes `agent-<id>.jsonl` per subagent so failed runs are debuggable).
+   * Set false to keep subagent sessions in-memory only.
+   */
+  persistSubagentTranscripts?: boolean;
 }
 
 export interface WorkflowSettingsStore {
@@ -129,6 +136,9 @@ function normalizeSettings(value: unknown): WorkflowSettings {
     raw.progressPanelMaxAgents >= 1
   ) {
     settings.progressPanelMaxAgents = Math.min(1000, Math.floor(raw.progressPanelMaxAgents));
+  }
+  if (typeof raw.persistSubagentTranscripts === "boolean") {
+    settings.persistSubagentTranscripts = raw.persistSubagentTranscripts;
   }
   return settings;
 }

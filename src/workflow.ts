@@ -86,6 +86,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
   runId?: string;
+  /**
+   * Directory to persist each subagent's NDJSON transcript into (one file per
+   * subagent). When set, subagent sessions are file-backed so the full message
+   * stream survives disposal — matching Claude Code's `agent-<id>.jsonl` per-subagent
+   * transcripts. When omitted, subagents use in-memory sessions.
+   */
+  transcriptDir?: string;
   /** Resume: cached agent results keyed by deterministic call index. */
   resumeJournal?: Map<number, JournalEntry>;
   /** Resume: the run being resumed (informational; enables resume mode). */
@@ -485,6 +492,7 @@ export async function runWorkflow<T = unknown>(
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
                 cwd: runCwd,
+                transcriptDir: options.transcriptDir,
                 onModelResolved: (id: string) => {
                   displayModel = id;
                 },

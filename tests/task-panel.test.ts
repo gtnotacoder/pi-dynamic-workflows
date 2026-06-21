@@ -89,10 +89,16 @@ describe("installResultDelivery", () => {
     assert.equal(calls[0].customType, "workflow-result");
     assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
     assert.ok(calls[0].content.includes("test-workflow"), "should contain test-workflow");
-    assert.ok(calls[0].content.includes("3 agents"), "should contain 3 agents");
-    // locale may format the group separator as ',' / '.' / ' ' / none
-    assert.ok(/50[\s,.]?000/.test(calls[0].content), "should contain 50000 tokens formatted");
-    assert.ok(calls[0].content.includes("1.5s"), "should contain 1.5s");
+    // EDIT 3: deliverText now emits a Claude-Code-style <task-notification> XML block.
+    // Usage lives in <usage> as <agent_count> / <subagent_tokens> / <duration_ms>.
+    assert.ok(/<agent_count>3<\/agent_count>/.test(calls[0].content), "should report agent_count 3");
+    assert.ok(
+      /<subagent_tokens>50000<\/subagent_tokens>/.test(calls[0].content),
+      "should report subagent_tokens 50000",
+    );
+    assert.ok(/<duration_ms>1500<\/duration_ms>/.test(calls[0].content), "should report duration_ms 1500");
+    assert.ok(calls[0].content.startsWith("<task-notification>"), "should be a task-notification XML block");
+    assert.ok(calls[0].content.includes("<status>completed</status>"), "should report completed status");
   });
 
   // ── deliverText: fallback chain ──

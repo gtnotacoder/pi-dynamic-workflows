@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
@@ -267,6 +268,14 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
   cwd?: string;
   /**
+   * Directory to persist this subagent's NDJSON transcript into. When set,
+   * a real (file-backed) SessionManager is used so the full subagent message
+   * stream survives session disposal — matching Claude Code's per-subagent
+   * `agent-<id>.jsonl` transcript. When omitted, an in-memory session is used
+   * (ad-hoc `agent()` with no run context) and nothing is written to disk.
+   */
+  transcriptDir?: string;
+  /**
    * Restrict the subagent's coding tools to these names (an agentType
    * definition's `tools` allowlist). Undefined = all coding tools. The
    * structured_output tool is always added after this filter, so a schema
@@ -369,10 +378,26 @@ export class WorkflowAgent {
     }
 
     const agentDir = getAgentDir();
+    // Persist the subagent's full message stream to disk when a transcript dir is
+    // provided (workflow runs), so a failed run is debuggable — matching Claude
+    // Code's per-subagent `agent-<id>.jsonl` transcript. Ad-hoc `agent()` with no
+    // run context keeps the in-memory session so nothing is written to disk.
+    let sessionManager: SessionManager;
+    if (options.transcriptDir) {
+      try {
+        if (!existsSync(options.transcriptDir)) mkdirSync(options.transcriptDir, { recursive: true });
+      } catch {
+        // Best-effort: SessionManager.create will also mkdirSync. Never let a
+        // transient FS failure downgrade a run to in-memory silently.
+      }
+      sessionManager = SessionManager.create(runCwd, options.transcriptDir);
+    } else {
+      sessionManager = SessionManager.inMemory();
+    }
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
-      sessionManager: SessionManager.inMemory(),
+      sessionManager,
       // Use real SettingsManager to inherit user's default provider/model settings.
       // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
       // would fall back to the first available model (e.g. openai-codex) which may

@@ -44,6 +44,14 @@ export const DEFAULT_TOKEN_BUDGET = null;
 /** Legacy project-relative directory for persisted workflow run state. New writes use workflowProjectPaths(). */
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";
 
+/**
+ * Whether per-subagent NDJSON transcripts are written to disk by default.
+ * Matches Claude Code, which writes an `agent-<id>.jsonl` transcript per
+ * subagent (Task tool and workflow `agent()`) so a failed run is debuggable.
+ * Users can opt out via `persistSubagentTranscripts: false` in workflow settings.
+ */
+export const PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT = true;
+
 /** Legacy project-relative directory for saved workflow commands. New writes use workflowProjectPaths(). */
 export const WORKFLOW_SAVED_DIR = ".pi/workflows/saved";
 
