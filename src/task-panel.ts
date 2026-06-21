@@ -360,7 +360,11 @@ function renderRunBody(
       // Show each finished agent's result preview so the panel is watchable as a
       // run progresses — the manager already populates `resultPreview` on agentEnd.
       const previewTxt = a.status === "done" && a.resultPreview ? dim(` — ${shorten(a.resultPreview, 50)}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}${previewTxt}`);
+      // Surface why an agent failed (visibility for errored subagents): the
+      // manager populates `error` on agentEnd failure — render it inline so a
+      // developer can see which agents air out and why without opening transcripts.
+      const errTxt = a.status === "error" && a.error ? theme.fg("error", ` — ${shorten(a.error, 60)}`) : "";
+      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}${previewTxt}${errTxt}`);
     }
     if (phaseAgents.length > visible.length) {
       lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));

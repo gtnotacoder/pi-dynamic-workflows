@@ -693,4 +693,43 @@ describe("installTaskPanel mode selection", () => {
     const runningRow = rendered.find((l) => /research 2/.test(l));
     assert.ok(runningRow && !/capital is paris/.test(runningRow), "running agent has no preview");
   });
+
+  it("detailed panel surfaces an errored subagent's error message (next-session A)", async () => {
+    // When a subagent airs out, the panel must show WHY inline — not just the ✗ icon —
+    // so a developer can see which agents failed and the reason without opening transcripts.
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        { id: 1, label: "research 1", status: "done", phase: "P1", tokens: 1200, resultPreview: "ok" },
+        { id: 2, label: "research 2", status: "error", phase: "P1", tokens: 80, error: "model timeout: 30000ms" },
+      ],
+      tokenUsage: { total: 1280, input: 700, output: 580 },
+    };
+    const manager = {
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {},
+      off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    assert.ok(
+      rendered.some((l) => /research 2/.test(l) && /model timeout: 30000ms/.test(l)),
+      "errored agent shows its error message inline",
+    );
+    const doneRow = rendered.find((l) => /research 1/.test(l));
+    assert.ok(doneRow && !/model timeout/.test(doneRow), "done agent row has no error text");
+  });
 });
