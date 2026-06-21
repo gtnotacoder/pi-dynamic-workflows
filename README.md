@@ -137,7 +137,7 @@ Three surfaces show workflow state, by design serving different moments:
 - **Status bar** (`ctx.ui.setStatus`) — one-line live progress while watching a run (`/workflows watch <id>`).
 - **Chat `<task-notification>`** (`installResultDelivery`) — the canonical *final* status delivered when a background run finishes. Modeled on Claude Code's XML: `<status>`, `<usage>` (`agent_count`, `subagent_tokens`, `tool_uses`, `duration_ms`), and on failure a `<recovery>` block with **`file://` links** to the on-disk agent transcripts and the persisted run-state JSON (`ManagedRun.runStatePath`, set regardless of transcript persistence).
 
-> **Known dedup gap (in progress).** For a foreground tool call, live progress can stream to chat *and* the status bar simultaneously. The surgical fix — make the status bar the live surface and chat the single final status — is the next item of work; a blunt removal of the below-editor panel was reverted (it broke `/workflows-progress`).
+> **Foreground dedup.** A foreground (`background: false`) tool run used to stream live progress into chat *and* the below-editor panel at the same time. Now, when a UI is present, live progress shows only in the panel (`installTaskPanel`, which subscribes to the manager directly) and chat receives just the final result; in headless/RPC mode (no panel) it still streams to chat as a fallback. Background runs are unchanged: the panel shows live progress and chat gets the final `<task-notification>`.
 
 ---
 

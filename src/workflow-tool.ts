@@ -223,9 +223,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       // runs, then stays in history afterwards. We still block on the result and
       // return it inline, so the model gets the full output in the same turn.
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
+      // Live progress for a foreground run is shown by the below-editor task
+      // panel (installTaskPanel), which subscribes to the manager directly.
+      // Streaming the same progress into chat too duplicated it (chat + "pi
+      // status"). Stream to chat only when there is no UI (headless/RPC) and thus
+      // no panel to show it; chat then gets just the final result below.
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
         key: "workflow",
-        streamToolUpdates: true,
+        streamToolUpdates: !uiCtx?.hasUI,
         maxAgents: 4,
         showResultPreviews: false,
       });
