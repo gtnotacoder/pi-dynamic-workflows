@@ -701,6 +701,39 @@ describe("deliverText", () => {
     assert.ok(text.includes("<duration_ms>12345</duration_ms>"), "should report duration_ms 12345");
   });
 
+  it("links transcripts + run-state JSON with file:// URIs in <recovery> on failure", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      status: "failed",
+      error: { message: "model timeout: 30000ms" },
+      result: undefined,
+      transcriptDir: "/tmp/wf-runs/r-123/subagents",
+      runId: "r-123",
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("<status>failed</status>"), "failed status");
+    assert.ok(text.includes("<recovery>"), "has a recovery block");
+    assert.ok(text.includes("Agent transcripts:"), "mentions transcripts");
+    assert.ok(text.includes("file:///tmp/wf-runs/r-123/subagents"), "transcript file:// URI");
+    assert.ok(text.includes("Run state:"), "mentions run state");
+    assert.ok(text.includes("file:///tmp/wf-runs/r-123.json"), "run-state json file:// URI derived from transcriptDir + runId");
+  });
+
+  it("reports real tool_uses from agent toolCall history (not hardcoded 0)", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      snapshot: {
+        name: "my-wf", agentCount: 5, phases: [], logs: [],
+        agents: [
+          { id: 1, label: "a1", status: "done", history: [{ kind: "text" }, { kind: "toolCall" }, { kind: "toolCall" }, { kind: "toolResult" }] },
+          { id: 2, label: "a2", status: "done", history: [{ kind: "toolCall" }] },
+        ],
+      },
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("<tool_uses>3</tool_uses>"), "sums toolCall history entries across agents (2+1=3)");
+  });
+
   it("starts with task-notification XML and includes workflow name", async () => {
     const { deliverText } = await loadTaskPanel();
     const text = deliverText(fakeManagedRun());

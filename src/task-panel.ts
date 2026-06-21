@@ -14,6 +14,8 @@ import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
 import { shortModel } from "./workflow-ui.js";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // `tokenUsage` is included so the detailed panel's live token/s counter refreshes
 // as tokens accrue (not only on agent start/end). It is harmless in compact mode —
@@ -104,6 +106,10 @@ function truncResult(s: string): string {
  * `overrides` lets the error/paused event handlers inject the event payload's
  * status/error/resetHint (the run object may not yet reflect them in tests).
  */
+/** Render a path plus its file:// URI so TUIs/chat that linkify URIs make it
+ * clickable, while staying parseable as a plain path otherwise. */
+const fileLink = (p: string) => `${p} (${pathToFileURL(p).href})`;
+
 function formatTaskNotification(
   run: ManagedRun,
   overrides: { status?: RunStatus; error?: { message?: string }; resetHint?: string } = {},
@@ -114,8 +120,12 @@ function formatTaskNotification(
   const result = run.result?.result;
   const agentCount = run.result?.agentCount ?? run.snapshot?.agentCount ?? 0;
   const tokens = run.result?.tokenUsage?.total ?? run.snapshot?.tokenUsage?.total ?? 0;
-  // qshaw does not currently track per-run tool-uses; report 0 for XML parity.
-  const toolUses = 0;
+  // Per-run tool-uses: sum each agent's toolCall history entries, mirroring
+  // Claude Code's <usage><tool_uses>. 0 when agent history isn't captured.
+  const toolUses = (run.snapshot?.agents ?? []).reduce(
+    (n, a) => n + (a.history?.filter((e) => e.kind === "toolCall").length ?? 0),
+    0,
+  );
   const durationMs = run.result?.durationMs ?? 0;
   const failures = (run.snapshot?.agents ?? [])
     .filter((a) => a.status === "error")
@@ -139,7 +149,15 @@ function formatTaskNotification(
     const resume = `/workflows resume ${run.runId}`;
     const reset = overrides.resetHint ? ` (resets: ${overrides.resetHint})` : "";
     let recovery = `To resume after editing the script, run: ${resume}${reset}. Completed agents return cached results.`;
-    if (run.transcriptDir) recovery += `\nAgent transcripts: ${run.transcriptDir}`;
+    // Link the on-disk transcripts and run-state JSON with file:// URIs so a
+    // failed run is one click from its logs in chat (Claude Code surfaces these
+    // in <recovery>). The run-state JSON lives at runsDir/<runId>.json, derivable
+    // from the transcript dir (runsDir/<runId>/subagents).
+    const runStatePath = run.transcriptDir
+      ? path.join(run.transcriptDir, "..", "..", `${run.runId}.json`)
+      : undefined;
+    if (run.transcriptDir) recovery += `\nAgent transcripts: ${fileLink(run.transcriptDir)}`;
+    if (runStatePath) recovery += `\nRun state: ${fileLink(runStatePath)}`;
     lines.push(`<recovery>${xmlEscape(recovery)}</recovery>`);
   } else if (result !== undefined) {
     lines.push(`<result>${xmlEscape(truncResult(JSON.stringify(result)))}</result>`);
