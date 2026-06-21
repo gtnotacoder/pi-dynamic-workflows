@@ -5,6 +5,13 @@
 /** Maximum number of agents allowed per workflow run. */
 export const MAX_AGENTS_PER_RUN = 1000;
 
+/**
+ * Maximum items accepted by a single parallel()/pipeline() fan-out call.
+ * Matches Claude Code's internal cap (verified in claude.exe 2.1.185 .bun
+ * section): >4096 items is rejected explicitly rather than silently truncated.
+ */
+export const MAX_FANOUT_ITEMS = 4096;
+
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;
 

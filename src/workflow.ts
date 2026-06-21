@@ -13,7 +13,13 @@ import {
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  MAX_AGENT_RETRIES,
+  MAX_AGENTS_PER_RUN,
+  MAX_CONCURRENCY,
+  MAX_FANOUT_ITEMS,
+} from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -553,6 +559,13 @@ export async function runWorkflow<T = unknown>(
     if (thunks.some((thunk) => typeof thunk !== "function")) {
       throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
     }
+    if (thunks.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `parallel() accepts at most ${MAX_FANOUT_ITEMS} items (got ${thunks.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     return Promise.all(
       thunks.map(async (thunk, index) => {
         try {
@@ -579,6 +592,13 @@ export async function runWorkflow<T = unknown>(
     if (!Array.isArray(items)) throw new TypeError("pipeline() expects an array as the first argument");
     if (stages.some((stage) => typeof stage !== "function")) {
       throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
+    }
+    if (items.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `pipeline() accepts at most ${MAX_FANOUT_ITEMS} items (got ${items.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
     }
     return Promise.all(
       items.map(async (item, index) => {

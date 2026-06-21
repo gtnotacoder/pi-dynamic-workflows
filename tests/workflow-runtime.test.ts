@@ -79,6 +79,76 @@ return xs`;
   assert.equal(result.agentCount, 4);
 });
 
+test("parallel() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+  let calls = 0;
+  const runner = {
+    async run(_prompt: string) {
+      calls++;
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'fanout_over', description: 'over cap' }
+const xs = await parallel(Array.from({ length: 4097 }, (_, i) => () => agent(String(i))))
+return xs`,
+      { agent: runner, persistLogs: false },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /4096/.test(error.message),
+  );
+  assert.equal(calls, 0, "the cap must reject before any thunk runs");
+});
+
+test("parallel() accepts exactly 4096 items (boundary)", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'fanout_at', description: 'at cap' }
+const xs = await parallel(Array.from({ length: 4096 }, () => () => Promise.resolve('x')))
+return xs.length`,
+    { persistLogs: false },
+  );
+  assert.equal(result.result, 4096);
+  assert.equal(result.agentCount, 0, "non-agent thunks must not consume agent slots");
+});
+
+test("pipeline() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+  let calls = 0;
+  const runner = {
+    async run(_prompt: string) {
+      calls++;
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'pipe_over', description: 'over cap' }
+const xs = await pipeline(Array.from({ length: 4097 }, (_, i) => i), (x) => agent(String(x)))
+return xs`,
+      { agent: runner, persistLogs: false },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /4096/.test(error.message),
+  );
+  assert.equal(calls, 0, "the cap must reject before any stage runs");
+});
+
+test("pipeline() accepts exactly 4096 items (boundary)", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'pipe_at', description: 'at cap' }
+const xs = await pipeline(Array.from({ length: 4096 }, (_, i) => i), (x) => x * 2)
+return xs.length`,
+    { persistLogs: false },
+  );
+  assert.equal(result.result, 4096);
+  assert.equal(result.agentCount, 0);
+});
+
 test("runWorkflow retries recoverable empty output then succeeds", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];
