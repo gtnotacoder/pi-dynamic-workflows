@@ -7,13 +7,17 @@ internal reverse-engineering work on Claude Code's "Workflows" feature, ported t
 ## Upstream origin
 
 - **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows
-- **npm package:** [`@quintinshaw/pi-dynamic-workflows`](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows) **v2.6.0** (MIT)
-- **Upstream `main` at fork point:** commit `622f6df` — `feat: checkpoint workflows on provider usage limit instead of failing (#28)`
+- **npm package:** [`@quintinshaw/pi-dynamic-workflows`](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows) (MIT) — forked from **v2.6.0**, now tracking upstream **v2.7.0**
+- **Edit-branch fork point:** commit `622f6df` (v2.6.0) — `feat: checkpoint workflows on provider usage limit instead of failing (#28)`
+- **Upstream tip tracked:** commit `b11fdbd` (v2.7.0) — `chore(release): bump version to 2.7.0` (a version-string-only release; no code changes vs 2.6.0)
 - **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
 
-The `main` branch here mirrors upstream `main` plus one documentation commit (this
-file + a README banner). Our actual code modifications live on the
-`edit1/fanout-cap-4096` and `edit2/script-size-timeout-cap` branches.
+The `main` branch mirrors upstream `main` (currently v2.7.0) plus one documentation
+commit (this file + a README banner). Our code modifications live on the
+`edit1/fanout-cap-4096` and `edit2/script-size-timeout-cap` branches, which were
+**forked from v2.6.0 (`622f6df`) and merged forward to v2.7.0 on 2026-06-21**
+(conflict-free; the only v2.6.0→v2.7.0 delta is the version string). Upstream is
+re-merged periodically to stay current.
 
 ## Why a fork
 
@@ -28,7 +32,7 @@ Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
 - Per-subagent logging mechanism + EDIT 5 fix spec: `cc-pi/findings/cc-subagent-logging.md`
 - Token-free comparison harness + parity money chart: `cc-pi/findings/comparison-test-suite.md`
 
-## Our edits (stacked on upstream v2.6.0)
+## Our edits (forked from v2.6.0, merged forward to v2.7.0)
 
 | Edit   | Branch                     | Summary                                                                 |
 |--------|---------------------------|-------------------------------------------------------------------------|
