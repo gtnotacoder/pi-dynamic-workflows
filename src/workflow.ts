@@ -19,6 +19,8 @@ import {
   MAX_AGENTS_PER_RUN,
   MAX_CONCURRENCY,
   MAX_FANOUT_ITEMS,
+  MAX_SCRIPT_BYTES,
+  SCRIPT_TIMEOUT_MS,
 } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
@@ -254,6 +256,16 @@ export async function runWorkflow<T = unknown>(
   options: WorkflowRunOptions = {},
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
+  // Reject oversized scripts up front — matches Claude Code's `A2` (524288-byte)
+  // input-schema cap. The size is measured on the raw script source (which is
+  // what the model supplies); checking before parse/execute avoids wasted work.
+  if (script.length > MAX_SCRIPT_BYTES) {
+    throw new WorkflowError(
+      `Script exceeds ${MAX_SCRIPT_BYTES} bytes (got ${script.length}); Claude Code caps workflow scripts at ${MAX_SCRIPT_BYTES} bytes`,
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
   const { meta, body } = parseWorkflowScript(script);
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
@@ -878,7 +890,12 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  // Guard synchronous script setup with the 30000 ms runInContext timeout
+  // (Claude's `Pjn`). The async agent body runs after the Promise is returned,
+  // so the timeout only bounds synchronous parse/setup — exactly like Claude.
+  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
+    timeout: SCRIPT_TIMEOUT_MS,
+  });
 
   // Persist logs
   const logFile = logger.persist();

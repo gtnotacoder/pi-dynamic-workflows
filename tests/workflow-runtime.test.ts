@@ -149,6 +149,56 @@ return xs.length`,
   assert.equal(result.agentCount, 0);
 });
 
+test("runWorkflow rejects scripts larger than 524288 bytes (Claude Code A2 script cap)", async () => {
+  // Build a minimal valid script whose body is exactly 524289 bytes (one over
+  // the cap). The size check measures the full script source, so pad the body
+  // with a long comment.
+  const header = `export const meta = { name: 'script_over', description: 'over byte cap' }\n//`;
+  const pad = 524_289 - header.length;
+  const script = header + "x".repeat(pad);
+  assert.equal(script.length, 524_289);
+  await assert.rejects(
+    runWorkflow(script, { persistLogs: false }),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /524288/.test(error.message),
+  );
+});
+
+test("runWorkflow accepts a script exactly 524288 bytes (boundary)", async () => {
+  const header = `export const meta = { name: 'script_at', description: 'at byte cap' }\nreturn 1\n//`;
+  const pad = 524_288 - header.length;
+  assert.ok(pad > 0, `header already exceeds the cap: ${header.length}`);
+  const script = header + "x".repeat(pad);
+  assert.equal(script.length, 524_288);
+  const result = await runWorkflow(script, { persistLogs: false });
+  assert.equal(result.result, 1);
+});
+
+test("runWorkflow rejects a synchronous infinite loop after ~30000 ms (Claude Code Pjn script timeout)", async () => {
+  const start = Date.now();
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'sync_loop', description: 'sync infinite loop' }
+while (true) {}`,
+      { persistLogs: false },
+    ),
+    // Node throws a vm-script-timeout error on the synchronous runInContext
+    // timeout. The error originates in the vm realm, so it is NOT an
+    // `instanceof Error` of the host realm — match on the message string.
+    (error: unknown) => {
+      const msg = String((error as { message?: unknown } | null)?.message ?? error);
+      return /timeout|timed out|ScriptTimeout/i.test(msg);
+    },
+  );
+  const elapsed = Date.now() - start;
+  // Should have aborted around 30s. Allow generous slack for CI scheduling.
+  assert.ok(elapsed >= 29_000, `expected ~30s timeout, took ${elapsed}ms`);
+  assert.ok(elapsed < 60_000, `timeout took too long: ${elapsed}ms`);
+});
+
 test("runWorkflow retries recoverable empty output then succeeds", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];
