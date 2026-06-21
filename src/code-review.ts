@@ -241,7 +241,7 @@ const scope = await agent(
   "3. Summarize what changed in one paragraph.\\n" +
   "4. List the CLAUDE.md files that apply to the changed files (the user-level ~/.claude/CLAUDE.md, the repo-root CLAUDE.md, plus any CLAUDE.md or CLAUDE.local.md in a directory that is an ancestor of a changed file). Read each one that exists and note conventions a reviewer should know.\\n\\n" +
   "Return diffCommand exactly as a reviewer should run it. Structured output only.",
-  { label: "scope", tier: "small", schema: SCOPE_SCHEMA }
+  { label: "scope", tier: "big", schema: SCOPE_SCHEMA }
 )
 if (!scope) {
   return { error: "Scope agent returned no result \u2014 cannot establish the review scope." }
@@ -290,7 +290,7 @@ let candidatesSeen = 0
 
 function verifyCandidate(c) {
   const short = (c.file || "").split("/").pop()
-  return agent(VERIFIER_PROMPT(c), { label: "verify:" + short, phase: "Verify", tier: "small", schema: VERDICT_SCHEMA })
+  return agent(VERIFIER_PROMPT(c), { label: "verify:" + short, phase: "Verify", tier: "big", schema: VERDICT_SCHEMA })
     .then(v => (v ? { ...c, verdict: v.verdict, evidence: v.evidence } : null))
 }
 
@@ -302,7 +302,7 @@ const FINDERS = CORRECTNESS_ANGLES.slice(0, P.correctnessAngles)
 const finderResults = await pipeline(
   FINDERS,
 
-  f => agent(FINDER_PROMPT(f), { label: f.label, phase: "Find", tier: "small", schema: CANDIDATES_SCHEMA }).then(r => {
+  f => agent(FINDER_PROMPT(f), { label: f.label, phase: "Find", tier: "big", schema: CANDIDATES_SCHEMA }).then(r => {
     if (!r) return { finder: f, candidates: [] }
     log(f.label + ": " + r.candidates.length + " candidates")
     return { finder: f, candidates: r.candidates.slice(0, P.perAngle) }
@@ -328,7 +328,7 @@ if (P.sweep) {
     "Re-read the diff and the enclosing functions looking ONLY for defects not already listed. " +
     "Focus on what the first pass tends to miss: " + SWEEP_GAP_FOCUS + "\\n\\n" +
     "Surface up to " + SWEEP_MAX + " additional candidates. If nothing new, return an empty list \u2014 do not pad.\\n\\nStructured output only.",
-    { label: "sweep", phase: "Sweep", tier: "small", schema: CANDIDATES_SCHEMA }
+    { label: "sweep", phase: "Sweep", tier: "big", schema: CANDIDATES_SCHEMA }
   )
   if (sweep && sweep.candidates.length > 0) {
     const sliced = sweep.candidates.slice(0, SWEEP_MAX)
@@ -380,7 +380,7 @@ const report = await agent(
   "2. Order decisions most-severe first. Correctness bugs always outrank cleanup findings.\\n" +
   "3. Keep at most " + P.maxFindings + " decisions; omit the least severe beyond the cap.\\n" +
   "4. Write a 2-3 sentence summary of the review.\\n\\nStructured output only.",
-  { label: "synthesize", tier: "small", schema: REPORT_SCHEMA }
+  { label: "synthesize", tier: "big", schema: REPORT_SCHEMA }
 )
 
 // Assembler invariants:
