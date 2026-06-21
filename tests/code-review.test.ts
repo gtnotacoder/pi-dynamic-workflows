@@ -49,32 +49,91 @@ test("code-review uses the verdict ladder CONFIRMED/PLAUSIBLE/REFUTED", () => {
   assert.match(body, /"REFUTED"/);
 });
 
-test("code-review Find phase fans out one agent per angle in parallel", () => {
+// ─── Verbatim fidelity (item B): the real Claude prompt fragments are embedded ──
+
+test("code-review embeds the verbatim Claude angle taxonomy (5 correctness + 5 cleanup)", () => {
   const body = generateCodeReviewWorkflow();
-  assert.match(body, /phase\('Find'\)/);
-  assert.match(body, /parallel\(ANGLES\.map/);
-  assert.match(body, /P\.perAngle/);
+  // 5 correctness angles, labelled angle-A..angle-E (Claude's H$p mapping).
+  for (const l of ["angle-A", "angle-B", "angle-C", "angle-D", "angle-E"]) {
+    assert.match(body, new RegExp(`"label":\\s*"${l}"`), `missing correctness angle ${l}`);
+  }
+  // 5 cleanup angles: reuse / simplification / efficiency / altitude / conventions.
+  for (const l of ["reuse", "simplification", "efficiency", "altitude", "conventions"]) {
+    assert.match(body, new RegExp(`"label":\\s*"${l}"`), `missing cleanup angle ${l}`);
+  }
 });
 
-test("code-review Verify phase runs one verifier per finding", () => {
+test("code-review embeds the verbatim angle prompt text (recovered from the .bun section)", () => {
   const body = generateCodeReviewWorkflow();
-  assert.match(body, /phase\('Verify'\)/);
-  assert.match(body, /parallel\(rawFindings\.map/);
+  // Distinctive substrings from each verbatim angle prompt.
+  assert.match(body, /line-by-line diff scan/);
+  assert.match(body, /removed-behavior auditor/);
+  assert.match(body, /cross-file tracer/);
+  assert.match(body, /language-pitfall specialist/);
+  assert.match(body, /wrapper\/proxy correctness/);
+  assert.match(body, /Re-implements something the codebase already has|re-implements something the codebase/i);
+  assert.match(body, /unnecessary complexity the diff adds/);
+  assert.match(body, /wasted work the diff introduces/);
+  assert.match(body, /right depth, not as a fragile bandaid/);
+  assert.match(body, /CLAUDE\.md files that govern the changed code/);
+});
+
+test("code-review embeds the verbatim verdict ladder + recall-bias + sweep focus", () => {
+  const body = generateCodeReviewWorkflow();
+  // VERDICT_LADDER definitions (Efo).
+  assert.match(body, /can name the inputs\/state that trigger it/);
+  assert.match(body, /mechanism is real, trigger is uncertain/);
+  assert.match(body, /factually wrong \(code doesn't say that\)/);
+  // VERDICT_LADDER_RECALL (Hfo) — PLAUSIBLE by default (markdown-bold `**REFUTED**`).
+  assert.match(body, /PLAUSIBLE by default/);
+  assert.match(body, /constructible from the code/);
+  // CLEANUP_PRECEDENCE ($3t).
+  assert.match(body, /Correctness bugs always outrank cleanup, altitude, and conventions/);
+  // SWEEP_GAP_FOCUS (vfo).
+  assert.match(body, /moved\/extracted code that dropped a guard/);
+  assert.match(body, /setup\/teardown asymmetry in tests/);
+});
+
+test("code-review Find phase runs pipeline(FINDERS) with one finder per angle", () => {
+  const body = generateCodeReviewWorkflow();
+  // Find is entered via the agent `phase: "Find"` option (not a phase() call), and
+  // finders fan out through pipeline(FINDERS, ...) — no barrier between finders.
+  assert.match(body, /phase: "Find"/);
+  assert.match(body, /pipeline\(\s*FINDERS/);
+  assert.match(body, /P\.perAngle/);
+  // FINDERS = correctness(0..P.correctnessAngles) + all 5 cleanup, tagged by kind.
+  assert.match(body, /CORRECTNESS_ANGLES\.slice\(0, P\.correctnessAngles\)/);
+  assert.match(body, /\.concat\(CLEANUP_ANGLES\.map/);
+});
+
+test("code-review Verify phase runs one verifier per candidate inside the pipeline", () => {
+  const body = generateCodeReviewWorkflow();
+  assert.match(body, /phase: "Verify"/);
+  assert.match(body, /parallel\(result\.candidates\.map\(c => \(\) => verifyCandidate/);
+  assert.match(body, /function verifyCandidate/);
 });
 
 test("code-review Sweep phase is gated on P.sweep (xhigh/max only)", () => {
   const body = generateCodeReviewWorkflow();
   assert.match(body, /if \(P\.sweep\)/);
-  assert.match(body, /phase\('Sweep'\)/);
+  assert.match(body, /phase\("Sweep"\)/);
   assert.match(body, /\.slice\(0, SWEEP_MAX\)/);
+  // Sweep candidates are themselves verified (sweepVerified), not trusted.
+  assert.match(body, /parallel\(sliced\.map\(c => \(\) => verifyCandidate/);
 });
 
-test("code-review Synthesize merges duplicates and caps at maxFindings", () => {
+test("code-review Synthesize ranks, merges by index, caps at maxFindings, backfills", () => {
   const body = generateCodeReviewWorkflow();
-  assert.match(body, /phase\('Synthesize'\)/);
-  assert.match(body, /merge SEMANTIC duplicates/);
-  assert.match(body, /cap at ' \+ P\.maxFindings/);
-  assert.match(body, /CONFIRMED before PLAUSIBLE/);
+  assert.match(body, /phase\("Synthesize"\)/);
+  // Correctness outranks cleanup; CONFIRMED outranks PLAUSIBLE.
+  assert.match(body, /const rank = c => \(c\.kind === "cleanup" \? 2 : 0\)/);
+  assert.match(body, /Correctness bugs always outrank cleanup findings/);
+  assert.match(body, /Keep at most " \+ P\.maxFindings/);
+  // Assembler: decisions by index, merge array, verdict escalation, backfill.
+  assert.match(body, /Assembler invariants/);
+  assert.match(body, /BY INDEX/);
+  assert.match(body, /merged\.some\(m => m\.verdict === "CONFIRMED"\)/);
+  assert.match(body, /additional verified finding/);
 });
 
 // ─── Command registration ───────────────────────────────────────────────────────
@@ -98,115 +157,142 @@ test("/code-review is idempotent (alreadyRegistered guard)", () => {
 // ─── Token-free run: topology + caps with a mock agent ───────────────────────────
 
 /**
- * Mock agent that returns canned, deterministic results keyed on the agent label
- * so the workflow exercises the full Scope→Find→Verify→(Sweep)→Synthesize topology
- * without calling a model. Find agents return `perAngle` findings each; verifiers
- * REFUTE every other finding so the REFUTED exclusion path is exercised.
+ * Mock agent that returns canned, deterministic results keyed on the agent label /
+ * prompt so the workflow exercises the full Scope→Find→Verify→(Sweep)→Synthesize
+ * topology without calling a model. Finders return `perAngle` candidates each; the
+ * verifier verdict is derived from the candidate's `line` (odd → CONFIRMED, even →
+ * REFUTED) so the REFUTED-exclusion path is exercised deterministically.
  */
 function mockReviewer(level: "high" | "xhigh" | "max") {
   const perAngle = level === "high" ? 6 : 8;
   let sweepCalled = false;
-  const phases: string[] = [];
   return {
-    state: { sweepCalled: () => sweepCalled, phases: () => phases },
+    state: { sweepCalled: () => sweepCalled },
     runner: {
-      async run(_prompt: string, options: { label?: string }) {
+      async run(prompt: string, options: { label?: string }) {
         const label = options.label ?? "";
-        if (label === "scope") return { files: ["src/a.ts", "src/b.ts"], diffSummary: "changed a,b" };
-        if (label.startsWith("find ")) {
-          // `perAngle` findings per angle agent.
-          const findings = Array.from({ length: perAngle }, (_, k) => ({
-            location: `src/a.ts:${k + 1}`,
-            severity: k === 0 ? "high" : "low",
-            description: `${label} finding ${k + 1}`,
-          }));
-          return { findings };
-        }
-        if (label.startsWith("verify ")) {
-          // REFUTE every even-numbered finding (by the trailing .N) to exercise
-          // the REFUTED exclusion path; CONFIRM the odd ones.
-          const n = Number.parseInt(label.split(".").pop() ?? "1", 10);
-          const verdict = n % 2 === 0 ? "REFUTED" : "CONFIRMED";
-          return { verdict, reason: `mock ${verdict}` };
-        }
-        if (label === "sweep") {
-          sweepCalled = true;
+        if (label === "scope") {
           return {
-            findings: Array.from({ length: 3 }, (_, k) => ({
-              location: `src/b.ts:${k + 1}`,
-              severity: "medium",
-              description: `sweep finding ${k + 1}`,
+            diffCommand: "git diff main...HEAD",
+            files: ["src/a.ts", "src/b.ts"],
+            summary: "changed a and b",
+            claudeMdFiles: [],
+            conventions: "",
+          };
+        }
+        // Finder angles: correctness (angle-A..E) + cleanup (reuse/simplification/...).
+        if (/^angle-[A-E]$/.test(label) || /^(reuse|simplification|efficiency|altitude|conventions)$/.test(label)) {
+          return {
+            candidates: Array.from({ length: perAngle }, (_, k) => ({
+              file: "src/a.ts",
+              line: k + 1,
+              summary: `${label} finding ${k + 1}`,
+              failure_scenario: "mock failure",
             })),
           };
         }
-        if (label === "synthesize") return "MOCK CODE REVIEW REPORT";
-        return "ok";
+        if (label.startsWith("verify:")) {
+          // Derive the candidate's line from the verifier prompt (VERIFIER_PROMPT
+          // embeds `File: <file>:<line>`) and REFUTE even lines, CONFIRM odd ones.
+          const m = prompt.match(/:\s*(\d+)\n/);
+          const line = m ? Number.parseInt(m[1], 10) : 1;
+          const verdict = line % 2 === 0 ? "REFUTED" : "CONFIRMED";
+          return { verdict, evidence: `mock ${verdict}` };
+        }
+        if (label === "sweep") {
+          sweepCalled = true;
+          // Odd lines so all 3 survive verification (sweep candidates are verified too).
+          return {
+            candidates: Array.from({ length: 3 }, (_, k) => ({
+              file: "src/b.ts",
+              line: k * 2 + 1,
+              summary: `sweep finding ${k + 1}`,
+              failure_scenario: "mock sweep failure",
+            })),
+          };
+        }
+        if (label === "synthesize") {
+          // Empty decisions → the assembler backfills from the ranked survivors up
+          // to maxFindings, exercising the backfill + cap path.
+          return { summary: "MOCK CODE REVIEW REPORT", decisions: [] };
+        }
+        return null;
       },
     },
   };
 }
 
-test("code-review high run: ≤10 findings, every survivor has a CONFIRMED/PLAUSIBLE verdict, REFUTED excluded", async () => {
+test("code-review high run: ≤10 findings, no REFUTED leaks, sweep skipped", async () => {
   const mock = mockReviewer("high");
+  const phases: string[] = [];
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
     args: "high",
     agent: mock.runner,
     persistLogs: false,
-    onPhase: (t) => mock.state.phases().push(t),
+    onAgentStart: (e) => phases.push(e.phase ?? ""),
   });
   const r = result.result as {
     level: string;
-    surviving: Array<{ verdict: string }>;
-    refutedCount: number;
-    maxFindings: number;
-    sweep: boolean;
-    report: string;
+    target?: string;
+    summary: string;
+    findings: Array<{ verdict: string }>;
+    refuted: unknown[];
+    stats: { finders: number; candidates: number; verified: number; refuted: number; reported: number };
   };
   assert.equal(r.level, "high");
-  assert.equal(r.maxFindings, 10);
-  assert.equal(r.sweep, false);
-  // Every surviving finding must carry a CONFIRMED or PLAUSIBLE verdict (no REFUTED leaks).
-  for (const f of r.surviving)
+  // high = 3 correctness + 5 cleanup = 8 finders × 6 candidates = 48; half REFUTED.
+  assert.equal(r.stats.finders, 8);
+  assert.equal(r.stats.candidates, 48);
+  assert.equal(r.stats.verified, 48);
+  assert.equal(r.stats.refuted, 24);
+  // 24 survived → capped at maxFindings=10 via backfill.
+  assert.equal(r.findings.length, 10);
+  for (const f of r.findings) {
     assert.ok(f.verdict === "CONFIRMED" || f.verdict === "PLAUSIBLE", `bad verdict ${f.verdict}`);
-  assert.equal(r.report, "MOCK CODE REVIEW REPORT");
-  // high = 3 correctness + 5 cleanup = 8 angles × 6 findings = 48 raw; half REFUTED.
-  assert.equal(r.refutedCount, 24);
-  assert.equal(r.surviving.length, 24);
-  // Sweep phase must NOT run at the high level.
+  }
+  // Sweep must NOT run at the high level.
   assert.equal(mock.state.sweepCalled(), false);
-  // Phase order matches Claude's topology.
-  assert.deepEqual(mock.state.phases(), ["Scope", "Find", "Verify", "Synthesize"]);
+  // Phase order matches Claude's topology (Find/Verify entered via the agent phase option).
+  assert.equal(phases[0], "Scope");
+  assert.equal(phases.filter((p) => p === "Find").length, 8); // 3 correctness + 5 cleanup
+  assert.equal(phases.filter((p) => p === "Verify").length, 48); // 8 finders × 6 candidates
+  assert.equal(phases.at(-1), "Synthesize");
+  assert.ok(!phases.includes("Sweep"), "no Sweep at high level");
 });
 
-test("code-review xhigh run: sweep phase runs and adds ≤8 findings", async () => {
+test("code-review xhigh run: sweep runs, survivors + sweep capped at 15", async () => {
   const mock = mockReviewer("xhigh");
+  const phases: string[] = [];
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
     args: "xhigh main..HEAD",
     agent: mock.runner,
     persistLogs: false,
-    onPhase: (t) => mock.state.phases().push(t),
+    onAgentStart: (e) => phases.push(e.phase ?? ""),
   });
   const r = result.result as {
     level: string;
     target: string;
-    surviving: Array<{ id: string; verdict: string }>;
-    maxFindings: number;
-    sweep: boolean;
+    findings: Array<{ verdict: string }>;
+    stats: { finders: number; candidates: number; verified: number; refuted: number; reported: number };
   };
   assert.equal(r.level, "xhigh");
   assert.equal(r.target, "main..HEAD");
-  assert.equal(r.maxFindings, 15);
-  assert.equal(r.sweep, true);
-  // xhigh = 5 correctness + 5 cleanup = 10 angles × 8 findings = 80 raw; half REFUTED → 40 surviving + 3 sweep.
-  assert.equal(r.surviving.length, 43);
-  // Sweep findings carry the sweep.<n> id and a PLAUSIBLE verdict.
-  const sweepFindings = r.surviving.filter((f) => f.id.startsWith("sweep."));
-  assert.equal(sweepFindings.length, 3);
-  for (const f of sweepFindings) assert.equal(f.verdict, "PLAUSIBLE");
+  // xhigh = 5 correctness + 5 cleanup = 10 finders × 8 = 80; half REFUTED → 40 survive.
+  assert.equal(r.stats.finders, 10);
+  assert.equal(r.stats.candidates, 83); // 80 + 3 sweep
+  assert.equal(r.stats.refuted, 40);
+  // 40 + 3 sweep survivors = 43 → capped at maxFindings=15.
+  assert.equal(r.findings.length, 15);
+  for (const f of r.findings) {
+    assert.ok(f.verdict === "CONFIRMED" || f.verdict === "PLAUSIBLE", `bad verdict ${f.verdict}`);
+  }
   assert.equal(mock.state.sweepCalled(), true);
-  assert.deepEqual(mock.state.phases(), ["Scope", "Find", "Verify", "Sweep", "Synthesize"]);
+  assert.ok(phases.includes("Sweep"), "Sweep phase entered");
+  assert.equal(phases.filter((p) => p === "Find").length, 10); // 5 correctness + 5 cleanup
+  // 80 finder candidates + 3 sweep candidates, each verified → 83 Verify agents.
+  assert.equal(phases.filter((p) => p === "Verify").length, 83);
 });
 
 test("code-review default level is high when the first token is not a known level", async () => {
@@ -218,7 +304,7 @@ test("code-review default level is high when the first token is not a known leve
     agent: mock.runner,
     persistLogs: false,
   });
-  const r = result.result as { level: string; target: string };
+  const r = result.result as { level: string; target?: string };
   assert.equal(r.level, "high");
   assert.equal(r.target, "somepath");
 });
@@ -231,7 +317,7 @@ test("code-review own-property check: 'constructor' does not parse as a level", 
     agent: mock.runner,
     persistLogs: false,
   });
-  const r = result.result as { level: string; target: string };
+  const r = result.result as { level: string; target?: string };
   // "constructor" is on Object.prototype but not an own property of LEVEL_PARAMS,
   // so it must NOT parse as a level — defaults to "high" and the whole string is the target.
   assert.equal(r.level, "high");
