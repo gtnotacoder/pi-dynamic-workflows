@@ -1,13 +1,16 @@
 # pi-dynamic-workflows (gtnotacoder fork)
 
-A vendored, patched fork of [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) — Claude-Code-style dynamic workflows for [Pi](https://pi.dev).
+A vendored, patched fork of [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) that brings Claude-Code-style **dynamic multi-agent workflows** to [Pi](https://pi.dev).
 
-**This is not the upstream package.** We vendor it, apply internal "Claude-Code-fidelity" patches, and maintain it for our own use. See **[PROVENANCE.md](./PROVENANCE.md)** for exactly what changed (EDITs 1–6), the fork point, and upstream-tracking history.
+The upstream package is itself a Pi re-implementation of Claude Code's `Workflow` tool. **This fork's patches increase fidelity to the *actual* Claude Code 2.1.185 JavaScript**, which we reverse-engineered from Claude Code's packed `.bun` bundle. The `<task-notification>`/`<usage>`/`<recovery>` XML delivery, the built-in `code-review` topology, per-subagent transcript logging, and the live progress panel are all modeled on the real CC behavior rather than guesswork. See the RE findings linked under [Provenance](#provenance--derivation) below.
 
-- **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows
-- **npm:** https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows
-- **Based on:** v2.6.0 — now tracking upstream **v2.7.0**
+> **Not the upstream package.** We vendor it, apply internal "Claude-Code-fidelity" patches, and maintain it for our own use. Full change log in **[PROVENANCE.md](./PROVENANCE.md)**.
+
+- **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows · **npm:** https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows
+- **Fork point:** v2.6.0 (`622f6df`) — now tracking upstream **v2.7.0** (`b11fdbd`, version-string-only)
 - **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
+
+---
 
 ## Install
 
@@ -19,10 +22,156 @@ Point Pi's agent settings at this checkout, build, and restart Pi:
 ```
 
 ```bash
-npx tsc        # build dist/
+npm run build     # tsc -> dist/
+npm test          # full gate: biome check . && build && unit tests
 # then restart pi
 ```
 
-## Status
+---
 
-Patched-fork parity vs. Claude Code 2.1.185: **15/17** (matches CC best). **764/764** unit tests pass. Details in [PROVENANCE.md](./PROVENANCE.md).
+## The `workflow` tool
+
+The model-facing primitive. A workflow is a plain JavaScript string with a required `meta` header and at least one `agent()` call:
+
+```js
+export const meta = { name: 'research_topic', description: 'Cross-check a topic', phases: [{ title: 'Scope' }, { title: 'Synthesize' }] };
+
+phase('Scope');
+const findings = await parallel([
+  () => agent('find sources for X', { label: 'scout-a', tier: 'small' }),
+  () => agent('find sources for Y', { label: 'scout-b', tier: 'small' }),
+]);
+
+phase('Synthesize');
+return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', tier: 'big' });
+```
+
+- **Background by default** — the tool returns immediately with a run id; the result is delivered back into chat when the run finishes. Pass `background: false` to block inline.
+- **Resume-safe** — every `agent()` call is journaled under a stable call sequence, so a run interrupted by a usage-limit checkpoint resumes without re-running finished agents.
+- **Bounded** — fan-out capped at 4096 items, script source at 512 KB, `runInContext` at 30 s (our EDITs 1–2).
+
+### Authoring API (globals inside a script)
+
+| Primitive | Purpose |
+|-----------|---------|
+| `agent(prompt, opts)` | Spawn one sub-agent. Returns its result (or `null` on recoverable failure). |
+| `parallel(thunks)` | Fan-out. **Pass functions, not promises:** `items.map(x => () => agent(...))`. Results in input order; recoverable failures become `null`. |
+| `pipeline(items, ...stages)` | Each item flows through stages sequentially; different items run concurrently. Stage gets `(prev, original, index)`. |
+| `phase(title)` | Group agents under a phase (matches `meta.phases`). Optional `{ budget }` sub-budget. |
+| `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
+| `args`, `cwd`, `budget` | Run inputs + `budget.remaining()` / `budget.total`. |
+| `log(msg)` | Emit a progress log line. |
+
+### Quality helpers (each built on `agent()`/`parallel()`)
+
+| Helper | Signature | Returns |
+|--------|-----------|---------|
+| `verify(item, {reviewers=2, threshold=0.5, lens})` | Adversarial fact-check — N reviewers try to refute the claim. | `{ real, realCount, total, votes }` |
+| `judgePanel(attempts, {judges=3, rubric})` | Score N candidates with a judge panel, pick the best. | best candidate |
+| `loopUntilDry({round, key, consecutiveEmpty=2, maxRounds=50})` | Keep calling `round(i)` until rounds stop yielding fresh items. | `all[]` (deduped) |
+| `completenessCheck(taskArgs, results)` | "What's still missing?" critic. | `{ complete, missing[] }` |
+| `retry(thunk, {attempts=3, until})` | Bounded retry until `until(result)` is true. | last result |
+| `gate(thunk, validator, {attempts=3})` | Retry where the validator's `feedback` steers the next attempt. | `{ ok, value, attempts }` |
+
+### `agent()` options
+
+| Opt | Effect |
+|-----|--------|
+| `tier` | Route to a tier model (`'small'` / `'medium'` / `'big'`) — see [Model routing](#model-tier-routing). |
+| `model` | Pin a specific `provider/modelId` (overrides `tier`). |
+| `label` | Short unique label (2–5 words) for live status + logs. |
+| `schema` | JSON Schema; `agent()` returns the validated object. |
+| `phase` | Override the active phase for this agent. |
+| `timeoutMs`, `retries` | Per-agent timeout / retry count. |
+
+---
+
+## Model-tier routing
+
+Agents are routed to concrete models by **tier**, so workflow source stays portable. The mapping lives in a machine-local config, not in the repo:
+
+```jsonc
+// ~/.pi/workflows/model-tiers.json
+{ "tiers": { "small": "litellm/qwen3.6-27b", "medium": "ollama/glm-5.2", "big": "openai-codex/gpt-5.5" } }
+```
+
+- `resolveTierModel(tier, config)` returns the `provider/modelId` spec; an unset tier falls back to the session main model.
+- Inspect/edit live with **`/workflows-models`**.
+- **Gotcha:** an invalid spec **silently falls back** to the session main model with no warning — always confirm the spec is in `listAvailableModelSpecs()`.
+
+---
+
+## Slash commands
+
+| Command | Usage | What it does |
+|---------|-------|--------------|
+| `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
+| `/code-review` | `<target description>` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. |
+| `/deep-research` | `<question>` | Research a question across the web with cross-checked sources. |
+| `/adversarial-review` | `<task>` | Investigate a task, then cross-check each finding with skeptical reviewers. |
+| `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
+| `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
+| `/workflows-models` | — | View and edit model tiers (small/medium/big). |
+| `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, mentioning "workflow(s)" auto-arms workflows mode. |
+| `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
+| `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
+
+### Saved workflows
+
+Run a workflow, then register it for reuse:
+
+```
+/workflows save research_topic        # saves the most recent run with a script
+/workflows save research_topic <runId>
+```
+
+This creates a `/<name>` command (with `key=value` args). Call it from another workflow via `await workflow('research_topic', { key: 'value' })`. Storage is `WorkflowStorage` (`workflow-saved.ts`).
+
+---
+
+## UI & notifications
+
+Three surfaces show workflow state, by design serving different moments:
+
+- **Below-editor "workflows running" panel** (`installTaskPanel`) — live agents/phases/tokens while a run is in flight. Focus + Enter to open the navigator. Mode controlled by `/workflows-progress`.
+- **Status bar** (`ctx.ui.setStatus`) — one-line live progress while watching a run (`/workflows watch <id>`).
+- **Chat `<task-notification>`** (`installResultDelivery`) — the canonical *final* status delivered when a background run finishes. Modeled on Claude Code's XML: `<status>`, `<usage>` (`agent_count`, `subagent_tokens`, `tool_uses`, `duration_ms`), and on failure a `<recovery>` block with **`file://` links** to the on-disk agent transcripts and the persisted run-state JSON (`ManagedRun.runStatePath`, set regardless of transcript persistence).
+
+> **Known dedup gap (in progress).** For a foreground tool call, live progress can stream to chat *and* the status bar simultaneously. The surgical fix — make the status bar the live surface and chat the single final status — is the next item of work; a blunt removal of the below-editor panel was reverted (it broke `/workflows-progress`).
+
+---
+
+## Our patches
+
+All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full table and per-edit commits.
+
+| Patch | Summary |
+|-------|---------|
+| EDIT 1 | 4096-item fan-out cap |
+| EDIT 2 | 512 KB script-size cap + 30 s `runInContext` timeout |
+| EDIT 3 | `<task-notification>` XML delivery (CC-fidelity) |
+| EDIT 4 | Built-in `code-review` workflow matching CC 2.1.185 topology |
+| EDIT 5 | Per-subagent transcript logging (`ManagedRun.transcriptDir`) |
+| EDIT 6 | Live progress panel polish + Claude concurrency floor |
+| + | Error-surfacing in the task panel + 5 bug fixes (code-point-safe truncation, first-line extraction, whitespace-only errors, shared `agentErrorText()` helper) |
+| + | `code-review` agents pinned to `tier: "big"`; model-tier routing config |
+| + | Chat notification enrichment: `file://` log links on failure + real `tool_uses` from agent history |
+
+---
+
+## Provenance & derivation
+
+This fork's fidelity patches are grounded in direct reverse engineering of Claude Code's `Workflow` tool, extracted from its `.bun` bundle. Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
+
+- `cc-pi/findings/cc-workflows.md` — RE of Claude Code's `Workflow` tool
+- `cc-pi/findings/comparison-pi-dynamic-workflows.md` — side-by-side: our from-scratch port vs. this package vs. CC internals
+- `cc-pi/findings/cc-subagent-logging.md` — per-subagent logging mechanism + EDIT 5 fix spec
+- `cc-pi/findings/comparison-test-suite.md` — token-free comparison harness + parity money chart
+
+**Status:** patched-fork parity vs. Claude Code 2.1.185 — **15/17** (matches CC best). **775/775** unit tests pass; full `npm test` gate (biome + build + unit) green.
+
+---
+
+## License
+
+MIT, retained from upstream. See [LICENSE](./LICENSE).
