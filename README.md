@@ -61,13 +61,16 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
 | `args`, `cwd`, `budget` | Run inputs + `budget.remaining()` / `budget.total`. |
 | `log(msg)` | Emit a progress log line. |
+| `checkpoint(prompt, opts)` | Human-in-the-loop yes/no gate — deterministic, journaled, replayable (resume-safe). Maps to `ctx.ui.confirm` in a UI run; headless runs use the declared `headless` default. |
 
-### Quality helpers (each built on `agent()`/`parallel()`)
+### Quality helpers
+
+Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic thunk combinators** — they are agent-backed only if your thunk calls `agent()`; non-agent work in them is NOT journaled and will repeat on resume/retry.
 
 | Helper | Signature | Returns |
 |--------|-----------|---------|
 | `verify(item, {reviewers=2, threshold=0.5, lens})` | Adversarial fact-check — N reviewers try to refute the claim. | `{ real, realCount, total, votes }` |
-| `judgePanel(attempts, {judges=3, rubric})` | Score N candidates with a judge panel, pick the best. | best candidate |
+| `judgePanel(attempts, {judges=3, rubric})` | Score N candidates with a judge panel, pick the highest. | `{ index, attempt, score, judgments }` — read `.attempt` for the winning candidate |
 | `loopUntilDry({round, key, consecutiveEmpty=2, maxRounds=50})` | Keep calling `round(i)` until rounds stop yielding fresh items. | `all[]` (deduped) |
 | `completenessCheck(taskArgs, results)` | "What's still missing?" critic. | `{ complete, missing[] }` |
 | `retry(thunk, {attempts=3, until})` | Bounded retry until `until(result)` is true. | last result |
@@ -95,7 +98,8 @@ Agents are routed to concrete models by **tier**, so workflow source stays porta
 { "tiers": { "small": "litellm/qwen3.6-27b", "medium": "ollama/glm-5.2", "big": "openai-codex/gpt-5.5" } }
 ```
 
-- `resolveTierModel(tier, config)` returns the `provider/modelId` spec; an unset tier falls back to the session main model.
+- `resolveTierModel(tier, config)` returns the `provider/modelId` spec for a tagged tier.
+- **Untagged agents (no `tier`/`model`) route to the configured `medium` tier** when a tier config exists; the session main model is the fallback only when no `model-tiers.json` is present. So pin `tier`/`model` explicitly when it matters.
 - Inspect/edit live with **`/workflows-models`**.
 - **Gotcha:** an invalid spec **silently falls back** to the session main model with no warning — always confirm the spec is in `listAvailableModelSpecs()`.
 
@@ -106,7 +110,7 @@ Agents are routed to concrete models by **tier**, so workflow source stays porta
 | Command | Usage | What it does |
 |---------|-------|--------------|
 | `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
-| `/code-review` | `<target description>` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. |
+| `/code-review` | `[high\|xhigh\|max] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `<question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `<task>` | Investigate a task, then cross-check each finding with skeptical reviewers. |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
@@ -133,7 +137,7 @@ This creates a `/<name>` command (with `key=value` args). Call it from another w
 
 Three surfaces show workflow state, by design serving different moments:
 
-- **Below-editor "workflows running" panel** (`installTaskPanel`) — live agents/phases/tokens while a run is in flight. Focus + Enter to open the navigator. Mode controlled by `/workflows-progress`.
+- **Below-editor "workflows running" panel** (`installTaskPanel`) — live agents/phases/tokens while a run is in flight. Informational only (it takes no input) — run `/workflows` to open the interactive navigator. Mode controlled by `/workflows-progress`.
 - **Status bar** (`ctx.ui.setStatus`) — one-line live progress while watching a run (`/workflows watch <id>`).
 - **Chat `<task-notification>`** (`installResultDelivery`) — the canonical *final* status delivered when a background run finishes. Modeled on Claude Code's XML: `<status>`, `<usage>` (`agent_count`, `subagent_tokens`, `tool_uses`, `duration_ms`), and on failure a `<recovery>` block with **`file://` links** to the on-disk agent transcripts and the persisted run-state JSON (`ManagedRun.runStatePath`, set regardless of transcript persistence).
 

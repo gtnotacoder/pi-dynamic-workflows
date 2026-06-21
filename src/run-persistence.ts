@@ -108,6 +108,14 @@ export type FsLayer = {
   writeFileSync: typeof writeFileSync;
 };
 
+/** Shared formula for a run-state JSON file path: runsDir/runId.json.
+ *  Used by both RunPersistence (primaryRunPath) and WorkflowManager.runStatePathFor
+ *  so the <recovery> log link can never drift from where the run state is actually
+ *  written. */
+export function runStateJsonPath(runsDir: string, runId: string): string {
+  return join(runsDir, `${runId}.json`);
+}
+
 export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>): RunPersistence {
   const _existsSync = fsOverride?.existsSync ?? existsSync;
   const _mkdirSync = fsOverride?.mkdirSync ?? mkdirSync;
@@ -127,7 +135,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     }
   };
 
-  const runPath = (dir: string, runId: string) => join(dir, `${runId}.json`);
+  const runPath = runStateJsonPath; // shared formula (also used by WorkflowManager.runStatePathFor)
   const primaryRunPath = (runId: string) => runPath(runsDir, runId);
   const legacyRunPath = (runId: string) => runPath(legacyRunsDir, runId);
   const lockPath = (dir: string, runId: string) => join(dir, `${runId}.lock`);

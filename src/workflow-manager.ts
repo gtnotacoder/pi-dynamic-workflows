@@ -16,6 +16,7 @@ import {
   type RunLease,
   type RunPersistence,
   type RunStatus,
+  runStateJsonPath,
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
@@ -109,6 +110,10 @@ export class WorkflowManager extends EventEmitter {
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
+  /** True once installTaskPanel() has registered the below-editor panel — lets the
+   *  workflow tool suppress redundant chat streaming only when a panel will show
+   *  live progress (see workflow-tool.ts). Set by installTaskPanel in task-panel.ts. */
+  hasTaskPanel = false;
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
@@ -142,9 +147,11 @@ export class WorkflowManager extends EventEmitter {
     return join(workflowProjectPaths(this.cwd).runsDir, runId, "subagents");
   }
 
-  /** Path to the persisted run-state JSON for a run id (runsDir/<runId>.json). */
+  /** Path to the persisted run-state JSON for a run id (runsDir/<runId>.json) —
+   *  delegates to the shared runStateJsonPath so this can never drift from where
+   *  RunPersistence actually writes the file. */
   private runStatePathFor(runId: string): string {
-    return join(workflowProjectPaths(this.cwd).runsDir, runId + ".json");
+    return runStateJsonPath(workflowProjectPaths(this.cwd).runsDir, runId);
   }
 
   /**
@@ -623,6 +630,15 @@ export class WorkflowManager extends EventEmitter {
    */
   getRun(runId: string): ManagedRun | undefined {
     return this.runs.get(runId);
+  }
+
+  /** Cheap in-memory active-run check (no persistence scan) for the task panel's
+   *  idle timer — avoids listRuns() disk I/O every tick when nothing is running. */
+  hasActiveRuns(): boolean {
+    for (const r of this.runs.values()) {
+      if (r.status === "running" || r.status === "paused") return true;
+    }
+    return false;
   }
 
   /**

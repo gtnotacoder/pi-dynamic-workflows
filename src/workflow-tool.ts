@@ -223,14 +223,18 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       // runs, then stays in history afterwards. We still block on the result and
       // return it inline, so the model gets the full output in the same turn.
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
+      let latestLive: WorkflowSnapshot | undefined;
       // Live progress for a foreground run is shown by the below-editor task
       // panel (installTaskPanel), which subscribes to the manager directly.
       // Streaming the same progress into chat too duplicated it (chat + "pi
-      // status"). Stream to chat only when there is no UI (headless/RPC) and thus
-      // no panel to show it; chat then gets just the final result below.
+      // status"). Stream to chat only when no panel will show it: a headless/RPC
+      // run (no UI), or a UI host that did NOT install the task panel. The latter
+      // guard (manager.hasTaskPanel, set by installTaskPanel) keeps live progress
+      // visible even if an embedder skips the panel (Codex review: robustness).
+      const streamLive = !(uiCtx?.hasUI && manager.hasTaskPanel);
       const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
         key: "workflow",
-        streamToolUpdates: !uiCtx?.hasUI,
+        streamToolUpdates: streamLive,
         maxAgents: 4,
         showResultPreviews: false,
       });
@@ -246,12 +250,21 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           confirm,
           externalSignal: signal,
           onProgress(live) {
+            // Always capture the latest live snapshot (a cheap reference) so the
+            // final tool details render the real agent tree even when we skip the
+            // per-event recompute below. The expensive recompute + display.update
+            // run only when we stream to chat; when the task panel shows live
+            // progress it reads the manager directly and this path is a no-op
+            // (Codex review: avoid wasted work on an inert display).
+            latestLive = live;
+            if (!streamLive) return;
             snapshot = recomputeWorkflowSnapshot(live);
             display.update(snapshot);
           },
         });
       } catch (error) {
         if (signal?.aborted || (error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED)) {
+          if (latestLive) snapshot = recomputeWorkflowSnapshot(latestLive);
           for (const agent of snapshot.agents) {
             if (agent.status === "running") {
               agent.status = "skipped";
@@ -271,6 +284,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         );
       }
 
+      // Build the final snapshot from the last live state the manager reported
+      // (works whether or not we streamed), so the returned details render the
+      // real agent tree instead of the empty initial snapshot.
+      if (latestLive) snapshot = recomputeWorkflowSnapshot(latestLive);
       snapshot.result = result.result;
       snapshot.durationMs = result.durationMs;
       snapshot = recomputeWorkflowSnapshot(snapshot);

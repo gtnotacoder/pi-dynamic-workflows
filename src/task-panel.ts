@@ -463,6 +463,9 @@ export function installTaskPanel(
   ui: ExtensionUIContext,
   opts: TaskPanelOptions = {},
 ): void {
+  // Mark the manager so the workflow tool can suppress redundant chat streaming
+  // only when this panel will actually show live progress.
+  manager.hasTaskPanel = true;
   // Live-read settings with a ~1s TTL: a render-path disk read every frame would
   // be wasteful, but re-reading at most once a second still makes
   // /workflows-progress take effect "immediately" (no restart).
@@ -481,7 +484,7 @@ export function installTaskPanel(
     }
     return cached;
   };
-  const hasActiveRun = () => manager.listRuns().some((r) => r.status === "running" || r.status === "paused");
+  const hasActiveRun = () => manager.hasActiveRuns();
 
   ui.setWidget(
     "workflow-tasks",
