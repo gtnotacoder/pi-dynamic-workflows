@@ -773,4 +773,30 @@ describe("installTaskPanel mode selection", () => {
     assert.ok(row && /Provider error: upstream fault/.test(row), "first line of the error is shown");
     assert.ok(row && !/Caused by/.test(row), "later lines are not flattened into the row");
   });
+
+  it("detailed panel keeps the error reason in a narrow terminal (regression for the fitLine truncation fix)", async () => {
+    // Headline fix under test: errTxt is placed BEFORE tok/model so fitLine's
+    // right-truncation cuts those before the error reason. At a narrow width the
+    // row overflows and is truncated — the reason must still be visible. With the
+    // old order (errTxt last) the reason would be cut to "model ti…".
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf", phases: ["P1"], currentPhase: undefined, logs: [],
+      agents: [{
+        id: 2, label: "research 2", status: "error", phase: "P1",
+        tokens: 80, model: "claude-haiku-4-5", error: "model timeout: 30000ms",
+      }],
+      tokenUsage: { total: 80, input: 40, output: 40 },
+    };
+    const manager = {
+      listRuns: () => [{ runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage }],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {}, off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 60, 8, 1000) as string[];
+    const row = rendered.find((l) => /research 2/.test(l));
+    assert.ok(row, "errored agent row present at narrow width");
+    assert.ok(/model timeout: 30000ms/.test(row), "error reason survives right-truncation in a narrow terminal");
+  });
 });
