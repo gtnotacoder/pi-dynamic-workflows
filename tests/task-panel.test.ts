@@ -89,10 +89,16 @@ describe("installResultDelivery", () => {
     assert.equal(calls[0].customType, "workflow-result");
     assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
     assert.ok(calls[0].content.includes("test-workflow"), "should contain test-workflow");
-    assert.ok(calls[0].content.includes("3 agents"), "should contain 3 agents");
-    // locale may format the group separator as ',' / '.' / ' ' / none
-    assert.ok(/50[\s,.]?000/.test(calls[0].content), "should contain 50000 tokens formatted");
-    assert.ok(calls[0].content.includes("1.5s"), "should contain 1.5s");
+    // EDIT 3: deliverText now emits a Claude-Code-style <task-notification> XML block.
+    // Usage lives in <usage> as <agent_count> / <subagent_tokens> / <duration_ms>.
+    assert.ok(/<agent_count>3<\/agent_count>/.test(calls[0].content), "should report agent_count 3");
+    assert.ok(
+      /<subagent_tokens>50000<\/subagent_tokens>/.test(calls[0].content),
+      "should report subagent_tokens 50000",
+    );
+    assert.ok(/<duration_ms>1500<\/duration_ms>/.test(calls[0].content), "should report duration_ms 1500");
+    assert.ok(calls[0].content.startsWith("<task-notification>"), "should be a task-notification XML block");
+    assert.ok(calls[0].content.includes("<status>completed</status>"), "should report completed status");
   });
 
   // ── deliverText: fallback chain ──
@@ -620,13 +626,16 @@ describe("installTaskPanel mode selection", () => {
     return lines;
   }
 
-  it("uses compact rendering when no loadSettings is provided", () => {
+  it("uses detailed rendering by default when no loadSettings is provided", () => {
     const lines = captureRender();
     assert.ok(
-      lines.some((l) => /1 agents/.test(l)),
-      "compact one-liner",
+      lines.some((l) => /▶ P1/.test(l)),
+      "per-phase detail is the default",
     );
-    assert.ok(!lines.some((l) => /▶ P1/.test(l)), "no per-phase detail in compact");
+    assert.ok(
+      lines.some((l) => /\[1\] ● a/.test(l)),
+      "per-agent row is the default",
+    );
   });
 
   it("uses compact rendering when the mode is compact", () => {
@@ -644,5 +653,83 @@ describe("installTaskPanel mode selection", () => {
       lines.some((l) => /\[1\] ● a/.test(l)),
       "per-agent row in detailed mode",
     );
+  });
+
+  it("detailed panel shows each finished agent's result preview (EDIT 6)", async () => {
+    // A run with one done agent carrying a resultPreview — the panel should surface it
+    // so a developer can watch results accrue without opening the navigator.
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        { id: 1, label: "research 1", status: "done", phase: "P1", tokens: 1200, resultPreview: "capital is paris" },
+        { id: 2, label: "research 2", status: "running", phase: "P1", tokens: 300 },
+      ],
+      tokenUsage: { total: 1500, input: 800, output: 700 },
+    };
+    const manager = {
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {},
+      off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    assert.ok(
+      rendered.some((l) => /research 1/.test(l) && /capital is paris/.test(l)),
+      "done agent shows its result preview",
+    );
+    const runningRow = rendered.find((l) => /research 2/.test(l));
+    assert.ok(runningRow && !/capital is paris/.test(runningRow), "running agent has no preview");
+  });
+
+  it("detailed panel surfaces an errored subagent's error message (next-session A)", async () => {
+    // When a subagent airs out, the panel must show WHY inline — not just the ✗ icon —
+    // so a developer can see which agents failed and the reason without opening transcripts.
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        { id: 1, label: "research 1", status: "done", phase: "P1", tokens: 1200, resultPreview: "ok" },
+        { id: 2, label: "research 2", status: "error", phase: "P1", tokens: 80, error: "model timeout: 30000ms" },
+      ],
+      tokenUsage: { total: 1280, input: 700, output: 580 },
+    };
+    const manager = {
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {},
+      off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    assert.ok(
+      rendered.some((l) => /research 2/.test(l) && /model timeout: 30000ms/.test(l)),
+      "errored agent shows its error message inline",
+    );
+    const doneRow = rendered.find((l) => /research 1/.test(l));
+    assert.ok(doneRow && !/model timeout/.test(doneRow), "done agent row has no error text");
   });
 });

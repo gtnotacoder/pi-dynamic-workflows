@@ -5,6 +5,30 @@
 /** Maximum number of agents allowed per workflow run. */
 export const MAX_AGENTS_PER_RUN = 1000;
 
+/**
+ * Maximum items accepted by a single parallel()/pipeline() fan-out call.
+ * Matches Claude Code's internal cap (verified in claude.exe 2.1.185 .bun
+ * section): >4096 items is rejected explicitly rather than silently truncated.
+ */
+export const MAX_FANOUT_ITEMS = 4096;
+
+/**
+ * Maximum size of a workflow script body in bytes. Matches Claude Code's internal
+ * cap `A2` (verified in claude.exe 2.1.185 .bun section, offset 0x802506C):
+ * `script: H.string().max(A2)` where A2 = 524288 (512 KB). Scripts exceeding this
+ * are rejected up front as a non-recoverable validation error.
+ */
+export const MAX_SCRIPT_BYTES = 524_288;
+
+/**
+ * Timeout for the synchronous runInContext() call that evaluates the wrapped
+ * workflow script. Matches Claude Code's `Pjn` = 30000 ms. Because the wrapper
+ * is `(async () => { body })()`, runInContext returns a Promise synchronously,
+ * so this only guards *synchronous* script setup — exactly like Claude's Pjn.
+ * The async agent work is bounded separately by agentTimeoutMs / budget.
+ */
+export const SCRIPT_TIMEOUT_MS = 30_000;
+
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;
 
@@ -19,6 +43,14 @@ export const DEFAULT_TOKEN_BUDGET = null;
 
 /** Legacy project-relative directory for persisted workflow run state. New writes use workflowProjectPaths(). */
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";
+
+/**
+ * Whether per-subagent NDJSON transcripts are written to disk by default.
+ * Matches Claude Code, which writes an `agent-<id>.jsonl` transcript per
+ * subagent (Task tool and workflow `agent()`) so a failed run is debuggable.
+ * Users can opt out via `persistSubagentTranscripts: false` in workflow settings.
+ */
+export const PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT = true;
 
 /** Legacy project-relative directory for saved workflow commands. New writes use workflowProjectPaths(). */
 export const WORKFLOW_SAVED_DIR = ".pi/workflows/saved";

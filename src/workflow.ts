@@ -13,7 +13,15 @@ import {
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  MAX_AGENT_RETRIES,
+  MAX_AGENTS_PER_RUN,
+  MAX_CONCURRENCY,
+  MAX_FANOUT_ITEMS,
+  MAX_SCRIPT_BYTES,
+  SCRIPT_TIMEOUT_MS,
+} from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -78,6 +86,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
   runId?: string;
+  /**
+   * Directory to persist each subagent's NDJSON transcript into (one file per
+   * subagent). When set, subagent sessions are file-backed so the full message
+   * stream survives disposal — matching Claude Code's `agent-<id>.jsonl` per-subagent
+   * transcripts. When omitted, subagents use in-memory sessions.
+   */
+  transcriptDir?: string;
   /** Resume: cached agent results keyed by deterministic call index. */
   resumeJournal?: Map<number, JournalEntry>;
   /** Resume: the run being resumed (informational; enables resume mode). */
@@ -248,6 +263,16 @@ export async function runWorkflow<T = unknown>(
   options: WorkflowRunOptions = {},
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
+  // Reject oversized scripts up front — matches Claude Code's `A2` (524288-byte)
+  // input-schema cap. The size is measured on the raw script source (which is
+  // what the model supplies); checking before parse/execute avoids wasted work.
+  if (script.length > MAX_SCRIPT_BYTES) {
+    throw new WorkflowError(
+      `Script exceeds ${MAX_SCRIPT_BYTES} bytes (got ${script.length}); Claude Code caps workflow scripts at ${MAX_SCRIPT_BYTES} bytes`,
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
   const { meta, body } = parseWorkflowScript(script);
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
@@ -282,7 +307,10 @@ export async function runWorkflow<T = unknown>(
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
   const concurrency = normalizeConcurrency(
-    options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
+    // Claude Code's default concurrency floor is 2 (min(16, max(2, cores-2))) —
+    // verified in claude.exe 2.1.185. Keep the floor at 2 so single/dual-core boxes
+    // still run 2 agents in parallel, matching Claude.
+    options.concurrency ?? Math.max(2, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
   );
   // Global caps + budget are shared with any nested workflow() so they hold across nesting.
   const shared: SharedRuntime = options.sharedRuntime ?? {
@@ -467,6 +495,7 @@ export async function runWorkflow<T = unknown>(
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
                 cwd: runCwd,
+                transcriptDir: options.transcriptDir,
                 onModelResolved: (id: string) => {
                   displayModel = id;
                 },
@@ -553,6 +582,13 @@ export async function runWorkflow<T = unknown>(
     if (thunks.some((thunk) => typeof thunk !== "function")) {
       throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
     }
+    if (thunks.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `parallel() accepts at most ${MAX_FANOUT_ITEMS} items (got ${thunks.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     return Promise.all(
       thunks.map(async (thunk, index) => {
         try {
@@ -579,6 +615,13 @@ export async function runWorkflow<T = unknown>(
     if (!Array.isArray(items)) throw new TypeError("pipeline() expects an array as the first argument");
     if (stages.some((stage) => typeof stage !== "function")) {
       throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
+    }
+    if (items.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `pipeline() accepts at most ${MAX_FANOUT_ITEMS} items (got ${items.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
     }
     return Promise.all(
       items.map(async (item, index) => {
@@ -858,7 +901,12 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  // Guard synchronous script setup with the 30000 ms runInContext timeout
+  // (Claude's `Pjn`). The async agent body runs after the Promise is returned,
+  // so the timeout only bounds synchronous parse/setup — exactly like Claude.
+  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
+    timeout: SCRIPT_TIMEOUT_MS,
+  });
 
   // Persist logs
   const logFile = logger.persist();

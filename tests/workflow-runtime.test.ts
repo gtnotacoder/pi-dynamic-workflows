@@ -79,6 +79,169 @@ return xs`;
   assert.equal(result.agentCount, 4);
 });
 
+test("runWorkflow default concurrency floors at 2 even on a 1-core box (Claude parity, EDIT 6)", async () => {
+  // Claude Code's default concurrency is min(16, max(2, cores-2)) — floor 2 — so a
+  // single/dual-core box still runs 2 agents in parallel. The package's default is
+  // `Math.max(2, (navigator.hardwareConcurrency ?? 8) - 2)`; stub the core count to 1
+  // and assert the limiter still allows 2 in flight (not 1).
+  const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { hardwareConcurrency: 1 },
+    configurable: true,
+    writable: true,
+  });
+  let active = 0;
+  let maxActive = 0;
+  const release = createDeferred<void>();
+  const started: Array<string> = [];
+  const runner = {
+    async run(prompt: string) {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      started.push(prompt);
+      await release.promise;
+      active--;
+      return `ok:${prompt}`;
+    },
+  };
+  const script = `export const meta = { name: 'floor2', description: 'default floor 2' }
+const xs = await parallel(['a','b','c'].map((p) => () => agent(p, { label: p })))
+return xs`;
+  try {
+    // No explicit concurrency → uses the default (floored at 2).
+    const run = runWorkflow(script, { agent: runner, persistLogs: false });
+    while (started.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(started.length, 2, "default floor is 2: two agents start even with 1 core");
+    release.resolve();
+    const result = await run;
+    assert.equal(maxActive, 2);
+    assert.deepEqual(result.result, ["ok:a", "ok:b", "ok:c"]);
+  } finally {
+    if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});
+
+test("parallel() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+  let calls = 0;
+  const runner = {
+    async run(_prompt: string) {
+      calls++;
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'fanout_over', description: 'over cap' }
+const xs = await parallel(Array.from({ length: 4097 }, (_, i) => () => agent(String(i))))
+return xs`,
+      { agent: runner, persistLogs: false },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /4096/.test(error.message),
+  );
+  assert.equal(calls, 0, "the cap must reject before any thunk runs");
+});
+
+test("parallel() accepts exactly 4096 items (boundary)", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'fanout_at', description: 'at cap' }
+const xs = await parallel(Array.from({ length: 4096 }, () => () => Promise.resolve('x')))
+return xs.length`,
+    { persistLogs: false },
+  );
+  assert.equal(result.result, 4096);
+  assert.equal(result.agentCount, 0, "non-agent thunks must not consume agent slots");
+});
+
+test("pipeline() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+  let calls = 0;
+  const runner = {
+    async run(_prompt: string) {
+      calls++;
+      return "ok";
+    },
+  };
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'pipe_over', description: 'over cap' }
+const xs = await pipeline(Array.from({ length: 4097 }, (_, i) => i), (x) => agent(String(x)))
+return xs`,
+      { agent: runner, persistLogs: false },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /4096/.test(error.message),
+  );
+  assert.equal(calls, 0, "the cap must reject before any stage runs");
+});
+
+test("pipeline() accepts exactly 4096 items (boundary)", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'pipe_at', description: 'at cap' }
+const xs = await pipeline(Array.from({ length: 4096 }, (_, i) => i), (x) => x * 2)
+return xs.length`,
+    { persistLogs: false },
+  );
+  assert.equal(result.result, 4096);
+  assert.equal(result.agentCount, 0);
+});
+
+test("runWorkflow rejects scripts larger than 524288 bytes (Claude Code A2 script cap)", async () => {
+  // Build a minimal valid script whose body is exactly 524289 bytes (one over
+  // the cap). The size check measures the full script source, so pad the body
+  // with a long comment.
+  const header = `export const meta = { name: 'script_over', description: 'over byte cap' }\n//`;
+  const pad = 524_289 - header.length;
+  const script = header + "x".repeat(pad);
+  assert.equal(script.length, 524_289);
+  await assert.rejects(
+    runWorkflow(script, { persistLogs: false }),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.recoverable === false &&
+      /524288/.test(error.message),
+  );
+});
+
+test("runWorkflow accepts a script exactly 524288 bytes (boundary)", async () => {
+  const header = `export const meta = { name: 'script_at', description: 'at byte cap' }\nreturn 1\n//`;
+  const pad = 524_288 - header.length;
+  assert.ok(pad > 0, `header already exceeds the cap: ${header.length}`);
+  const script = header + "x".repeat(pad);
+  assert.equal(script.length, 524_288);
+  const result = await runWorkflow(script, { persistLogs: false });
+  assert.equal(result.result, 1);
+});
+
+test("runWorkflow rejects a synchronous infinite loop after ~30000 ms (Claude Code Pjn script timeout)", async () => {
+  const start = Date.now();
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'sync_loop', description: 'sync infinite loop' }
+while (true) {}`,
+      { persistLogs: false },
+    ),
+    // Node throws a vm-script-timeout error on the synchronous runInContext
+    // timeout. The error originates in the vm realm, so it is NOT an
+    // `instanceof Error` of the host realm — match on the message string.
+    (error: unknown) => {
+      const msg = String((error as { message?: unknown } | null)?.message ?? error);
+      return /timeout|timed out|ScriptTimeout/i.test(msg);
+    },
+  );
+  const elapsed = Date.now() - start;
+  // Should have aborted around 30s. Allow generous slack for CI scheduling.
+  assert.ok(elapsed >= 29_000, `expected ~30s timeout, took ${elapsed}ms`);
+  assert.ok(elapsed < 60_000, `timeout took too long: ${elapsed}ms`);
+});
+
 test("runWorkflow retries recoverable empty output then succeeds", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];

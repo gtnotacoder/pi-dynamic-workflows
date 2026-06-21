@@ -9,6 +9,7 @@
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
+import type { RunStatus } from "./run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
@@ -38,7 +39,7 @@ export interface TaskPanelOptions {
   /**
    * Live settings loader. When provided, the panel reads it fresh (with a short
    * TTL cache) on each render so `/workflows-progress` takes effect without a
-   * restart. Omitted in tests / minimal hosts → always compact.
+   * restart. Omitted in tests / minimal hosts → always detailed.
    */
   loadSettings?: () => WorkflowSettings;
 }
@@ -69,16 +70,98 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, maxWidth);
 }
 
+/**
+ * Escape `&`, `<`, `>` for safe inclusion in XML element text. (Quotes are
+ * left alone — we never emit these strings inside attributes.)
+ */
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Cap a serialized result string at 8000 chars (matches Claude Code's
+ * `<result>` truncation; the full result lives in `<output-file>` when
+ * present). We don't write a separate output file, so the note just reports the
+ * truncation size.
+ */
+const RESULT_MAX_CHARS = 8000;
+function truncResult(s: string): string {
+  return s.length > RESULT_MAX_CHARS
+    ? `${s.slice(0, RESULT_MAX_CHARS)}\n... (truncated ${s.length - RESULT_MAX_CHARS} chars)`
+    : s;
+}
+
+/**
+ * Build a Claude-Code-style `<task-notification>` XML block for a finished
+ * (or failed/paused) run, delivered back into the conversation so the model sees
+ * the exact same structured result Claude delivers. Verified child order in
+ * claude.exe 2.1.185 `.bun` section:
+ *   `<task-id>` `<tool-use-id>`? `<output-file>`? `<status>` `<summary>`
+ *   `<recovery>`? (non-completed only) `<result>`? (completed only)
+ *   `<failures>`? (if non-empty) `<usage>`.
+ * There is no `<outcome>` element — outcome text folds into `<summary>`.
+ *
+ * `overrides` lets the error/paused event handlers inject the event payload's
+ * status/error/resetHint (the run object may not yet reflect them in tests).
+ */
+function formatTaskNotification(
+  run: ManagedRun,
+  overrides: { status?: RunStatus; error?: { message?: string }; resetHint?: string } = {},
+): string {
+  const status = overrides.status ?? run.status ?? (run.result ? "completed" : "failed");
+  const err = overrides.error ?? run.error;
+  const name = run.snapshot?.name ?? "Dynamic workflow";
+  const result = run.result?.result;
+  const agentCount = run.result?.agentCount ?? run.snapshot?.agentCount ?? 0;
+  const tokens = run.result?.tokenUsage?.total ?? run.snapshot?.tokenUsage?.total ?? 0;
+  // qshaw does not currently track per-run tool-uses; report 0 for XML parity.
+  const toolUses = 0;
+  const durationMs = run.result?.durationMs ?? 0;
+  const failures = (run.snapshot?.agents ?? [])
+    .filter((a) => a.status === "error")
+    .map((a) => ({ label: a.label, error: a.error, errorCode: a.errorCode }));
+
+  let summary: string;
+  if (status === "completed") {
+    summary = `${name} — ${summarizeResult(result)}`;
+  } else {
+    summary = err?.message ? `${name} ${status}: ${err.message}` : `${name} ${status}`;
+  }
+
+  const lines: string[] = [
+    "<task-notification>",
+    `<task-id>${run.runId}</task-id>`,
+    `<status>${status}</status>`,
+    `<summary>${xmlEscape(summary)}</summary>`,
+  ];
+
+  if (status !== "completed") {
+    const resume = `/workflows resume ${run.runId}`;
+    const reset = overrides.resetHint ? ` (resets: ${overrides.resetHint})` : "";
+    let recovery = `To resume after editing the script, run: ${resume}${reset}. Completed agents return cached results.`;
+    if (run.transcriptDir) recovery += `\nAgent transcripts: ${run.transcriptDir}`;
+    lines.push(`<recovery>${xmlEscape(recovery)}</recovery>`);
+  } else if (result !== undefined) {
+    lines.push(`<result>${xmlEscape(truncResult(JSON.stringify(result)))}</result>`);
+  }
+
+  if (failures.length) {
+    lines.push(`<failures>${xmlEscape(JSON.stringify(failures))}</failures>`);
+  }
+  lines.push(
+    `<usage><agent_count>${agentCount}</agent_count><subagent_tokens>${tokens}</subagent_tokens><tool_uses>${toolUses}</tool_uses><duration_ms>${durationMs}</duration_ms></usage>`,
+  );
+  lines.push("</task-notification>");
+  return lines.join("\n");
+}
+
+/**
+ * Deliver a finished (completed) run's result as a `<task-notification>` XML
+ * block. Failed/paused runs go through {@link formatTaskNotification} directly
+ * from the event handlers with the event payload's status/error.
+ */
 export function deliverText(run: ManagedRun): string {
-  const summary = summarizeResult(run.result?.result);
-  const tokens = run.result?.tokenUsage ? ` · ${run.result.tokenUsage.total.toLocaleString()} tokens` : "";
-  const agents = run.result?.agentCount ?? run.snapshot.agentCount;
-  const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";
-  return [
-    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).`,
-    "",
-    summary,
-  ].join("\n");
+  return formatTaskNotification(run);
 }
 
 /**
@@ -126,8 +209,9 @@ export function installResultDelivery(pi: ExtensionAPI, manager: WorkflowManager
     if (run?.background) deliver(deliverText(run));
   });
   manager.on("error", ({ runId, error }: { runId: string; error?: { message?: string } }) => {
-    if (!manager.getRun(runId)?.background) return;
-    deliver(`✗ Background workflow ${runId} failed: ${error?.message ?? "unknown error"}`);
+    const run = manager.getRun(runId);
+    if (!run?.background) return;
+    deliver(formatTaskNotification(run, { status: "failed", error }));
   });
   // A provider usage/quota limit checkpoints the run as paused (not failed): tell the
   // user it is resumable once their budget refills, rather than letting it look dead.
@@ -147,13 +231,9 @@ export function installResultDelivery(pi: ExtensionAPI, manager: WorkflowManager
       resetHint?: string;
     }) => {
       if (reason !== "usage_limit") return;
-      if (!manager.getRun(runId)?.background) return;
-      const when = resetHint ? ` (${resetHint})` : "";
-      const cause = error?.message ?? "provider usage limit reached";
-      deliver(
-        `⏸ Background workflow ${runId} paused: ${cause}${when}. ` +
-          `Completed steps are saved — run /workflows resume ${runId} once your usage limit resets.`,
-      );
+      const run = manager.getRun(runId);
+      if (!run?.background) return;
+      deliver(formatTaskNotification(run, { status: "paused", error, resetHint }));
     },
   );
 }
@@ -277,7 +357,14 @@ function renderRunBody(
       const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
       const mdl = shortModel(a.model);
       const model = mdl ? dim(` · ${mdl}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
+      // Show each finished agent's result preview so the panel is watchable as a
+      // run progresses — the manager already populates `resultPreview` on agentEnd.
+      const previewTxt = a.status === "done" && a.resultPreview ? dim(` — ${shorten(a.resultPreview, 50)}`) : "";
+      // Surface why an agent failed (visibility for errored subagents): the
+      // manager populates `error` on agentEnd failure — render it inline so a
+      // developer can see which agents air out and why without opening transcripts.
+      const errTxt = a.status === "error" && a.error ? theme.fg("error", ` — ${shorten(a.error, 60)}`) : "";
+      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}${previewTxt}${errTxt}`);
     }
     if (phaseAgents.length > visible.length) {
       lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
@@ -386,11 +473,11 @@ export function installTaskPanel(
       for (const ev of RUN_EVENTS) manager.on(ev, onEvent);
       const onRunEnd = ({ runId }: { runId: string }) => clearTokenSamples(runId);
       for (const ev of RUN_END_EVENTS) manager.on(ev, onRunEnd);
-      // In detailed mode, force a redraw every 2s while a run is active so the
-      // token/s rate keeps updating between sparse token events — and decays to 0
-      // when an agent stalls. Gated + unref'd so it costs nothing when idle.
+      // In detailed mode (the default), force a redraw every 2s while a run is active
+      // so the token/s rate keeps updating between sparse token events — and decays
+      // to 0 when an agent stalls. Gated + unref'd so it costs nothing when idle.
       const timer = setInterval(() => {
-        if (settings().progressPanelMode === "detailed" && hasActiveRun()) tui.requestRender();
+        if (settings().progressPanelMode !== "compact" && hasActiveRun()) tui.requestRender();
       }, 2000);
       (timer as { unref?: () => void }).unref?.();
       // Purely informational: it lists running runs and re-renders on events. To
@@ -398,7 +485,8 @@ export function installTaskPanel(
       const comp: Component & { dispose?(): void } = {
         render: (width: number) => {
           const s = settings();
-          if (s.progressPanelMode === "detailed") {
+          // Default to the detailed per-phase/per-agent tree unless explicitly compact.
+          if (s.progressPanelMode !== "compact") {
             return renderPanelDetailed(manager, theme, width, clampMaxAgents(s.progressPanelMaxAgents), Date.now());
           }
           return renderPanel(manager, theme, width);

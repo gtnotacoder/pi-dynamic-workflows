@@ -3,16 +3,16 @@ import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
-test("registerBuiltinWorkflows registers deep-research and adversarial-review commands", () => {
+test("registerBuiltinWorkflows registers deep-research, adversarial-review, and code-review commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
-  assert.equal(commands.length, 2);
+  assert.equal(commands.length, 3);
   const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, ["adversarial-review", "deep-research"]);
+  assert.deepEqual(names, ["adversarial-review", "code-review", "deep-research"]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
-  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review"]);
+  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review", "code-review"]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.equal(commands.length, 0, "should not re-register when already present");
 });
@@ -21,9 +21,9 @@ test("registerBuiltinWorkflows registers only missing commands", () => {
   const { pi, commands } = makeCommandRegistryPi(["deep-research"]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.deepEqual(
-    commands.map((c) => c.name),
-    ["adversarial-review"],
-    "should only register the missing command",
+    commands.map((c) => c.name).sort(),
+    ["adversarial-review", "code-review"],
+    "should only register the missing commands",
   );
 });
 

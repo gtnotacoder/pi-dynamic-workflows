@@ -620,7 +620,9 @@ describe("deliverText", () => {
     });
     const text = deliverText(run);
     assert.ok(text.includes("null"), "should say null");
-    assert.ok(text.includes("finished"), "should include finished message");
+    // EDIT 3: deliverText emits a <task-notification> XML block (no prose "finished").
+    assert.ok(text.startsWith("<task-notification>"), "should be a task-notification XML block");
+    assert.ok(text.includes("<status>completed</status>"), "should report completed status");
   });
 
   it("includes token count when available", async () => {
@@ -633,21 +635,23 @@ describe("deliverText", () => {
   it("includes agent count", async () => {
     const { deliverText } = await loadTaskPanel();
     const text = deliverText(fakeManagedRun());
-    assert.ok(text.includes("5"), "should show 5 agents");
-    assert.ok(text.includes("agents"), "should mention agents");
+    // EDIT 3: agent count is in <usage><agent_count>5</agent_count>.
+    assert.ok(text.includes("<agent_count>5</agent_count>"), "should report agent_count 5");
   });
 
   it("includes duration in seconds", async () => {
     const { deliverText } = await loadTaskPanel();
     const text = deliverText(fakeManagedRun());
-    assert.ok(text.includes("12.3"), "should show duration in seconds");
-    assert.ok(text.includes("s"), "should show unit");
+    // EDIT 3: duration is reported in ms inside <duration_ms>12345</duration_ms>.
+    assert.ok(text.includes("<duration_ms>12345</duration_ms>"), "should report duration_ms 12345");
   });
 
-  it("starts with checkmark and workflow name", async () => {
+  it("starts with task-notification XML and includes workflow name", async () => {
     const { deliverText } = await loadTaskPanel();
     const text = deliverText(fakeManagedRun());
-    assert.ok(text.startsWith("✓"), "should start with checkmark");
+    // EDIT 3: deliverText now emits a Claude-Code-style <task-notification> XML block.
+    assert.ok(text.startsWith("<task-notification>"), "should start with <task-notification>");
+    assert.ok(text.trim().endsWith("</task-notification>"), "should end with </task-notification>");
     assert.ok(text.includes("my-wf"), "should include workflow name");
   });
 
@@ -694,6 +698,20 @@ describe("backgroundStartedText", () => {
     const { backgroundStartedText } = await loadTool();
     const text = backgroundStartedText("audit", "r-1");
     assert.ok(text.includes("/workflows"), "should mention /workflows");
+  });
+
+  // ── EDIT 5: surface the transcript dir on async launch ──
+
+  it("includes Transcript dir line when transcriptDir is provided", async () => {
+    const { backgroundStartedText } = await loadTool();
+    const text = backgroundStartedText("audit", "r-1", "/tmp/wf/runs/r-1/subagents");
+    assert.ok(text.includes("Transcript dir: /tmp/wf/runs/r-1/subagents"), "should surface transcript dir");
+  });
+
+  it("omits Transcript dir line when transcriptDir is absent", async () => {
+    const { backgroundStartedText } = await loadTool();
+    const text = backgroundStartedText("audit", "r-1");
+    assert.ok(!text.includes("Transcript dir:"), "should not mention transcript dir when absent");
   });
 });
 
@@ -837,5 +855,113 @@ describe("TUI rendering has no markdown syntax", () => {
     assert.doesNotThrow(() => {
       tool.renderResult(resultWithMarkdown as never, { isPartial: false }, theme as never);
     });
+  });
+});
+
+// ─── EDIT 3: <task-notification> XML structure (deliverText) ────────────────────
+
+describe("deliverText <task-notification> XML (EDIT 3)", () => {
+  function fakeManagedRun(overrides: Record<string, unknown> = {}) {
+    return {
+      runId: "r-123",
+      workflowName: "my-wf",
+      snapshot: {
+        name: "my-wf",
+        agentCount: 5,
+        phases: [],
+        logs: [],
+        agents: [],
+        ...((overrides.snapshot as Record<string, unknown>) ?? {}),
+      },
+      background: true,
+      status: "completed",
+      result: {
+        result: { verdict: "All checks passed" },
+        agentCount: 5,
+        tokenUsage: { input: 100, output: 50, total: 150, cost: 0.003 },
+        durationMs: 12345,
+      },
+      ...overrides,
+    } as never;
+  }
+
+  it("emits a <task-notification> block with the verified child order", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const text = deliverText(fakeManagedRun());
+    // Verified child order in claude.exe 2.1.185: task-id, status, summary,
+    // result (completed), failures?, usage. (tool-use-id/output-file omitted —
+    // qshaw has none.)
+    const tid = text.indexOf("<task-id>r-123</task-id>");
+    const status = text.indexOf("<status>completed</status>");
+    const summary = text.indexOf("<summary>");
+    const result = text.indexOf("<result>");
+    const usage = text.indexOf("<usage>");
+    assert.ok(tid !== -1, "has <task-id>");
+    assert.ok(status !== -1, "has <status>");
+    assert.ok(summary !== -1, "has <summary>");
+    assert.ok(result !== -1, "has <result>");
+    assert.ok(usage !== -1, "has <usage>");
+    assert.ok(tid < status, "task-id before status");
+    assert.ok(status < summary, "status before summary");
+    assert.ok(summary < result, "summary before result");
+    assert.ok(result < usage, "result before usage");
+    assert.ok(usage < text.indexOf("</task-notification>"), "usage before close");
+  });
+
+  it("omits <result> and includes <recovery> for a failed run", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      status: "failed",
+      error: { message: "boom" } as never,
+      result: undefined,
+      transcriptDir: "/tmp/wf/runs/r-123/subagents",
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("<status>failed</status>"), "reports failed status");
+    assert.ok(!text.includes("<result>"), "no <result> for a failed run");
+    assert.ok(text.includes("<recovery>"), "has <recovery>");
+    // EDIT 5: the recovery surfaces the subagent transcript dir.
+    assert.ok(text.includes("Agent transcripts: /tmp/wf/runs/r-123/subagents"), "recovery names transcript dir");
+    assert.ok(text.includes("/workflows resume r-123"), "recovery names the resume command");
+  });
+
+  it("escapes XML-special characters in summary and result", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      result: { result: "a < b & c > d", agentCount: 1 },
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("a &lt; b &amp; c &gt; d"), "should XML-escape <, &, > in <result>");
+    assert.ok(!text.includes("a < b & c > d"), "should not leak raw special chars");
+  });
+
+  it("includes <failures> when agents errored", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      snapshot: {
+        name: "my-wf",
+        agentCount: 2,
+        phases: [],
+        logs: [],
+        agents: [
+          { id: 1, label: "a1", status: "done" },
+          { id: 2, label: "a2", status: "error", error: "timeout", errorCode: "AGENT_TIMEOUT" },
+        ],
+      },
+    });
+    const text = deliverText(run);
+    assert.ok(text.includes("<failures>"), "has <failures> when an agent errored");
+    assert.ok(text.includes("a2"), "failures name the errored agent");
+  });
+
+  it("truncates <result> at 8000 chars", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const huge = { data: "x".repeat(20000) };
+    const run = fakeManagedRun({ result: { result: huge, agentCount: 1 } });
+    const text = deliverText(run);
+    assert.ok(text.includes("truncated"), "should mark the result as truncated");
+    // The <result> body itself is capped at 8000 chars (+ the truncation note).
+    const resultBody = text.slice(text.indexOf("<result>") + "<result>".length, text.indexOf("</result>"));
+    assert.ok(resultBody.length < 8200, "result body should be near the 8000-char cap");
   });
 });

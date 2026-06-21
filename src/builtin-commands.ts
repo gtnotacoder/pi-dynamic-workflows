@@ -1,10 +1,11 @@
 /**
- * Bundled workflow commands: `/deep-research` and `/adversarial-review`.
+ * Bundled workflow commands: `/deep-research`, `/adversarial-review`, and `/code-review`.
  * They run a generated workflow script and print the final report.
  */
 
 import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow } from "./adversarial-review.js";
+import { generateCodeReviewWorkflow } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
@@ -70,6 +71,30 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         } catch (error) {
           ctx.ui.setStatus("adversarial-review", undefined);
           ctx.ui.notify(`adversarial-review failed: ${error instanceof Error ? error.message : error}`, "error");
+        }
+      },
+    });
+  }
+
+  if (!alreadyRegistered(pi, "code-review")) {
+    pi.registerCommand("code-review", {
+      description: "Multi-angle code review with independent verification and synthesis",
+      async handler(args: string, ctx: ExtensionCommandContext) {
+        ctx.ui.notify("Reviewing — scoping, finding, verifying, synthesizing…", "info");
+        try {
+          // The script parses its level (high|xhigh|max) + target from the raw args
+          // string at runtime, mirroring Claude Code's own arg parsing.
+          const result = await runWorkflow(generateCodeReviewWorkflow(), {
+            cwd,
+            args,
+            tools: createCodingTools(cwd),
+            onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
+          });
+          ctx.ui.setStatus("code-review", undefined);
+          await pi.sendMessage({ customType: "code-review", content: reportText(result), display: true });
+        } catch (error) {
+          ctx.ui.setStatus("code-review", undefined);
+          ctx.ui.notify(`code-review failed: ${error instanceof Error ? error.message : error}`, "error");
         }
       },
     });

@@ -3,7 +3,10 @@
  */
 
 import { EventEmitter } from "node:events";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
+import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
@@ -15,6 +18,8 @@ import {
   type RunStatus,
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { workflowProjectPaths } from "./workflow-paths.js";
+import { loadWorkflowSettings, type WorkflowSettings } from "./workflow-settings.js";
 
 export interface ManagedRun {
   runId: string;
@@ -38,6 +43,13 @@ export interface ManagedRun {
    * result, so re-delivering would duplicate it.
    */
   background: boolean;
+  /**
+   * Directory each subagent's NDJSON transcript is written to (one file per
+   * subagent), so a failed run is debuggable — matching Claude Code's per-
+   * subagent `agent-<id>.jsonl` transcripts. Undefined when transcript persistence
+   * is disabled via `persistSubagentTranscripts: false`.
+   */
+  transcriptDir?: string;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -60,6 +72,11 @@ export interface ExecOptions {
   agentRetries?: number;
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
+  /**
+   * Directory to persist each subagent's NDJSON transcript into for this run.
+   * Overrides the manager's default (computed from the run id) when set.
+   */
+  transcriptDir?: string;
 }
 
 export interface WorkflowManagerOptions {
@@ -92,6 +109,8 @@ export class WorkflowManager extends EventEmitter {
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
   private defaultAgentRetries: number;
+  /** Cached setting: whether subagent transcripts are persisted to disk. */
+  private persistSubagentTranscripts: boolean;
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -104,7 +123,34 @@ export class WorkflowManager extends EventEmitter {
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.persistence = createRunPersistence(this.cwd);
+    // Read the opt-out once (run start is rare). Default true matches Claude Code.
+    try {
+      const settings: WorkflowSettings = loadWorkflowSettings({ cwd: this.cwd });
+      this.persistSubagentTranscripts = settings.persistSubagentTranscripts ?? PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT;
+    } catch {
+      this.persistSubagentTranscripts = PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT;
+    }
     this.recoverStaleRuns();
+  }
+
+  /** Directory each subagent's transcript is written to for a given run id. */
+  private transcriptDirFor(runId: string): string {
+    return join(workflowProjectPaths(this.cwd).runsDir, runId, "subagents");
+  }
+
+  /**
+   * Resolve the transcript dir for a run, creating it (best-effort) when
+   * persistence is enabled. Returns undefined when the user opted out.
+   */
+  private resolveTranscriptDir(runId: string): string | undefined {
+    if (!this.persistSubagentTranscripts) return undefined;
+    const dir = this.transcriptDirFor(runId);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      // Best-effort: SessionManager.create will also mkdirSync on first agent.
+    }
+    return dir;
   }
 
   /** Bind the manager to the current pi session, so new runs are tagged with it and
@@ -178,6 +224,7 @@ export class WorkflowManager extends EventEmitter {
       journal: [],
       background: true,
       lease,
+      transcriptDir: this.resolveTranscriptDir(runId),
     };
 
     this.runs.set(runId, managed);
@@ -235,8 +282,9 @@ export class WorkflowManager extends EventEmitter {
   /** Build a fresh managed run with an empty snapshot. */
   private createManaged(script: string, args?: unknown): ManagedRun {
     const parsed = parseWorkflowScript(script);
+    const runId = generateRunId();
     return {
-      runId: generateRunId(),
+      runId,
       status: "running",
       snapshot: {
         name: parsed.meta.name,
@@ -255,6 +303,7 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: false,
+      transcriptDir: this.resolveTranscriptDir(runId),
     };
   }
 
@@ -298,6 +347,7 @@ export class WorkflowManager extends EventEmitter {
         tokenBudget,
         confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
+        transcriptDir: exec.transcriptDir ?? managed.transcriptDir,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
         onAgentJournal: (entry) => {
@@ -530,6 +580,7 @@ export class WorkflowManager extends EventEmitter {
       journal: persisted.journal ?? [],
       background: true,
       lease,
+      transcriptDir: this.resolveTranscriptDir(runId),
     };
     this.runs.set(runId, managed);
 
