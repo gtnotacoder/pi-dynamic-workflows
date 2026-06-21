@@ -307,7 +307,10 @@ export async function runWorkflow<T = unknown>(
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
   const concurrency = normalizeConcurrency(
-    options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
+    // Claude Code's default concurrency floor is 2 (min(16, max(2, cores-2))) —
+    // verified in claude.exe 2.1.185. Keep the floor at 2 so single/dual-core boxes
+    // still run 2 agents in parallel, matching Claude.
+    options.concurrency ?? Math.max(2, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
   );
   // Global caps + budget are shared with any nested workflow() so they hold across nesting.
   const shared: SharedRuntime = options.sharedRuntime ?? {

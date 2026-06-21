@@ -39,7 +39,7 @@ export interface TaskPanelOptions {
   /**
    * Live settings loader. When provided, the panel reads it fresh (with a short
    * TTL cache) on each render so `/workflows-progress` takes effect without a
-   * restart. Omitted in tests / minimal hosts → always compact.
+   * restart. Omitted in tests / minimal hosts → always detailed.
    */
   loadSettings?: () => WorkflowSettings;
 }
@@ -357,7 +357,10 @@ function renderRunBody(
       const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
       const mdl = shortModel(a.model);
       const model = mdl ? dim(` · ${mdl}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
+      // Show each finished agent's result preview so the panel is watchable as a
+      // run progresses — the manager already populates `resultPreview` on agentEnd.
+      const previewTxt = a.status === "done" && a.resultPreview ? dim(` — ${shorten(a.resultPreview, 50)}`) : "";
+      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}${previewTxt}`);
     }
     if (phaseAgents.length > visible.length) {
       lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
@@ -466,11 +469,11 @@ export function installTaskPanel(
       for (const ev of RUN_EVENTS) manager.on(ev, onEvent);
       const onRunEnd = ({ runId }: { runId: string }) => clearTokenSamples(runId);
       for (const ev of RUN_END_EVENTS) manager.on(ev, onRunEnd);
-      // In detailed mode, force a redraw every 2s while a run is active so the
-      // token/s rate keeps updating between sparse token events — and decays to 0
-      // when an agent stalls. Gated + unref'd so it costs nothing when idle.
+      // In detailed mode (the default), force a redraw every 2s while a run is active
+      // so the token/s rate keeps updating between sparse token events — and decays
+      // to 0 when an agent stalls. Gated + unref'd so it costs nothing when idle.
       const timer = setInterval(() => {
-        if (settings().progressPanelMode === "detailed" && hasActiveRun()) tui.requestRender();
+        if (settings().progressPanelMode !== "compact" && hasActiveRun()) tui.requestRender();
       }, 2000);
       (timer as { unref?: () => void }).unref?.();
       // Purely informational: it lists running runs and re-renders on events. To
@@ -478,7 +481,8 @@ export function installTaskPanel(
       const comp: Component & { dispose?(): void } = {
         render: (width: number) => {
           const s = settings();
-          if (s.progressPanelMode === "detailed") {
+          // Default to the detailed per-phase/per-agent tree unless explicitly compact.
+          if (s.progressPanelMode !== "compact") {
             return renderPanelDetailed(manager, theme, width, clampMaxAgents(s.progressPanelMaxAgents), Date.now());
           }
           return renderPanel(manager, theme, width);

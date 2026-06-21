@@ -626,13 +626,16 @@ describe("installTaskPanel mode selection", () => {
     return lines;
   }
 
-  it("uses compact rendering when no loadSettings is provided", () => {
+  it("uses detailed rendering by default when no loadSettings is provided", () => {
     const lines = captureRender();
     assert.ok(
-      lines.some((l) => /1 agents/.test(l)),
-      "compact one-liner",
+      lines.some((l) => /▶ P1/.test(l)),
+      "per-phase detail is the default",
     );
-    assert.ok(!lines.some((l) => /▶ P1/.test(l)), "no per-phase detail in compact");
+    assert.ok(
+      lines.some((l) => /\[1\] ● a/.test(l)),
+      "per-agent row is the default",
+    );
   });
 
   it("uses compact rendering when the mode is compact", () => {
@@ -650,5 +653,44 @@ describe("installTaskPanel mode selection", () => {
       lines.some((l) => /\[1\] ● a/.test(l)),
       "per-agent row in detailed mode",
     );
+  });
+
+  it("detailed panel shows each finished agent's result preview (EDIT 6)", async () => {
+    // A run with one done agent carrying a resultPreview — the panel should surface it
+    // so a developer can watch results accrue without opening the navigator.
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const snapshot = {
+      name: "wf",
+      phases: ["P1"],
+      currentPhase: undefined,
+      logs: [],
+      agents: [
+        { id: 1, label: "research 1", status: "done", phase: "P1", tokens: 1200, resultPreview: "capital is paris" },
+        { id: 2, label: "research 2", status: "running", phase: "P1", tokens: 300 },
+      ],
+      tokenUsage: { total: 1500, input: 800, output: 700 },
+    };
+    const manager = {
+      listRuns: () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
+      getRun: (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+      on: () => {},
+      off: () => {},
+    };
+    clearTokenSamples("r1");
+    const rendered = renderPanelDetailed(manager as never, theme as never, 120, 8, 1000) as string[];
+    assert.ok(
+      rendered.some((l) => /research 1/.test(l) && /capital is paris/.test(l)),
+      "done agent shows its result preview",
+    );
+    const runningRow = rendered.find((l) => /research 2/.test(l));
+    assert.ok(runningRow && !/capital is paris/.test(runningRow), "running agent has no preview");
   });
 });

@@ -79,6 +79,49 @@ return xs`;
   assert.equal(result.agentCount, 4);
 });
 
+test("runWorkflow default concurrency floors at 2 even on a 1-core box (Claude parity, EDIT 6)", async () => {
+  // Claude Code's default concurrency is min(16, max(2, cores-2)) — floor 2 — so a
+  // single/dual-core box still runs 2 agents in parallel. The package's default is
+  // `Math.max(2, (navigator.hardwareConcurrency ?? 8) - 2)`; stub the core count to 1
+  // and assert the limiter still allows 2 in flight (not 1).
+  const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { hardwareConcurrency: 1 },
+    configurable: true,
+    writable: true,
+  });
+  let active = 0;
+  let maxActive = 0;
+  const release = createDeferred<void>();
+  const started: Array<string> = [];
+  const runner = {
+    async run(prompt: string) {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      started.push(prompt);
+      await release.promise;
+      active--;
+      return `ok:${prompt}`;
+    },
+  };
+  const script = `export const meta = { name: 'floor2', description: 'default floor 2' }
+const xs = await parallel(['a','b','c'].map((p) => () => agent(p, { label: p })))
+return xs`;
+  try {
+    // No explicit concurrency → uses the default (floored at 2).
+    const run = runWorkflow(script, { agent: runner, persistLogs: false });
+    while (started.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(started.length, 2, "default floor is 2: two agents start even with 1 core");
+    release.resolve();
+    const result = await run;
+    assert.equal(maxActive, 2);
+    assert.deepEqual(result.result, ["ok:a", "ok:b", "ok:c"]);
+  } finally {
+    if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});
+
 test("parallel() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
   let calls = 0;
   const runner = {
