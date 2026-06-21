@@ -12,12 +12,14 @@ internal reverse-engineering work on Claude Code's "Workflows" feature, ported t
 - **Upstream tip tracked:** commit `b11fdbd` (v2.7.0) — `chore(release): bump version to 2.7.0` (a version-string-only release; no code changes vs 2.6.0)
 - **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
 
-The `main` branch mirrors upstream `main` (currently v2.7.0) plus one documentation
-commit (this file + a README banner). Our code modifications live on the
-`edit1/fanout-cap-4096` and `edit2/script-size-timeout-cap` branches, which were
-**forked from v2.6.0 (`622f6df`) and merged forward to v2.7.0 on 2026-06-21**
-(conflict-free; the only v2.6.0→v2.7.0 delta is the version string). Upstream is
-re-merged periodically to stay current.
+`main` is the functional branch — upstream v2.7.0 with **all of our EDITs (1–6)
+merged in**, plus this PROVENANCE file and a simplified README. The edits were
+developed on `edit1/fanout-cap-4096` and `edit2/script-size-timeout-cap` (forked
+from v2.6.0 / `622f6df`, merged forward to v2.7.0 on 2026-06-21, conflict-free)
+and then consolidated into `main`; those working branches were removed from the
+public repo. The clean per-edit commits are also preserved as git format-patches
+in the `gtnotacoder/re` workspace at `cc-pi/patches/` (for any future upstream
+PRs). Upstream is re-merged into `main` periodically to stay current.
 
 ## Why a fork
 
@@ -32,18 +34,18 @@ Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
 - Per-subagent logging mechanism + EDIT 5 fix spec: `cc-pi/findings/cc-subagent-logging.md`
 - Token-free comparison harness + parity money chart: `cc-pi/findings/comparison-test-suite.md`
 
-## Our edits (forked from v2.6.0, merged forward to v2.7.0)
+## Our edits (all merged into `main`)
 
-| Edit   | Branch                     | Summary                                                                 |
-|--------|---------------------------|-------------------------------------------------------------------------|
-| EDIT 1 | `edit1/fanout-cap-4096`   | 4096-item fan-out cap                                                   |
-| EDIT 2 | `edit2/...`               | 524,288-byte script size cap + 30,000 ms `runInContext` timeout          |
-| EDIT 3 | `edit2/...`               | `<task-notification>` XML delivery                                      |
-| EDIT 4 | `edit2/...`               | built-in `code-review` workflow matching CC 2.1.185 topology            |
-| EDIT 5 | `edit2/...`               | per-subagent transcript logging (`ManagedRun.transcriptDir`)            |
-| EDIT 6 | `edit2/...`               | live progress panel polish + Claude concurrency floor                    |
+| Edit   | Summary                                                                 |
+|--------|-------------------------------------------------------------------------|
+| EDIT 1 | 4096-item fan-out cap                                                   |
+| EDIT 2 | 524,288-byte script size cap + 30,000 ms `runInContext` timeout          |
+| EDIT 3 | `<task-notification>` XML delivery                                      |
+| EDIT 4 | built-in `code-review` workflow matching CC 2.1.185 topology            |
+| EDIT 5 | per-subagent transcript logging (`ManagedRun.transcriptDir`)            |
+| EDIT 6 | live progress panel polish + Claude concurrency floor                    |
 
-All of EDITs 2–6 are stacked on `edit2/script-size-timeout-cap`.
+EDITs 2–6 were stacked on `edit2`; the full series is now in `main`.
 
 ## Install (our patched build)
 

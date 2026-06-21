@@ -1,179 +1,28 @@
-> ## ⚠️ Vendored + patched fork (gtnotacoder)
->
-> This is **not** the upstream package. It is a local fork of
-> [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0 (MIT)
-> with internal Claude-Code-fidelity patches. See **[PROVENANCE.md](./PROVENANCE.md)**.
-> Upstream: <https://github.com/QuintinShaw/pi-dynamic-workflows>.
+# pi-dynamic-workflows (gtnotacoder fork)
 
-# pi-dynamic-workflows
+A vendored, patched fork of [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) — Claude-Code-style dynamic workflows for [Pi](https://pi.dev).
 
-[![npm](https://img.shields.io/npm/v/@quintinshaw/pi-dynamic-workflows?color=cb3837&logo=npm)](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows)
-[![license](https://img.shields.io/badge/license-MIT-blue)](#license)
-[![for Pi](https://img.shields.io/badge/for-Pi-7c3aed)](https://pi.dev)
-[![tests](https://img.shields.io/badge/tests-679%20passing-success)](#development)
+**This is not the upstream package.** We vendor it, apply internal "Claude-Code-fidelity" patches, and maintain it for our own use. See **[PROVENANCE.md](./PROVENANCE.md)** for exactly what changed (EDITs 1–6), the fork point, and upstream-tracking history.
 
-> **Claude Code–style dynamic workflows for [Pi](https://pi.dev).**
-> Turn one prompt into a fleet of subagents that fan out in parallel, cross-check each other, and hand back a single synthesized answer.
-
-**[Website](https://quintinshaw.github.io/pi-dynamic-workflows/) · [npm](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows) · [Pi package](https://pi.dev/packages/@quintinshaw/pi-dynamic-workflows) · [GitHub](https://github.com/QuintinShaw/pi-dynamic-workflows)**
-
-![pi-dynamic-workflows demo](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/demo.gif)
-
-Instead of one model grinding a task step by step, Pi writes a small JavaScript **orchestration script** that spawns many subagents at once, keeps the intermediate work in script variables (not your chat context), and returns only the result. It's the "code mode for subagents" from Claude Code — on any model Pi can reach.
-
-Built for **codebase-wide audits, multi-perspective review, large refactors, and cross-checked research** — anything one context window can't hold.
+- **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows
+- **npm:** https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows
+- **Based on:** v2.6.0 — now tracking upstream **v2.7.0**
+- **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
 
 ## Install
 
-```bash
-pi install npm:@quintinshaw/pi-dynamic-workflows
+Point Pi's agent settings at this checkout, build, and restart Pi:
+
+```jsonc
+// ~/.pi/agent/settings.json
+{ "packages": [ "/path/to/this/repo" ] }
 ```
-
-Then `/reload` in Pi. You get the `workflow` tool plus the `/workflows`, `/deep-research`, and `/adversarial-review` commands.
-
-## Try it
-
-Ask in plain language:
-
-```text
-Run a workflow to audit every route under src/routes/ for missing auth checks.
-```
-
-Pi writes the script and runs it in the background — your turn ends immediately and a live panel tracks progress while you keep working. Or just type the word **workflows** in any message to force one. If you only want to discuss workflows without triggering one, run `/workflows-trigger off`; the preference is saved for new sessions in `~/.pi/workflows/settings.json`. Check the current state with `/workflows-trigger status`, and turn it back on with `/workflows-trigger on`.
-
-![Workflows mode in the input box](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/workflows-mode.jpg)
-
-If another Pi extension has already installed a custom editor component, pi-dynamic-workflows leaves it in place and keeps the submit-time workflow trigger active. In that compatibility mode, the animated keyword highlight and Backspace one-shot disarm affordance are skipped because the existing editor remains responsible for rendering and input handling; use `/workflows-trigger off` when you need to discuss workflow/workflows without auto-triggering, including in future sessions. Editor composition is load-order dependent: whichever extension installs a visual editor last owns the editor surface, while pi-dynamic-workflows still keeps its submit-time hook registered.
-
-## What a workflow looks like
-
-Plain JavaScript. The first statement exports literal metadata; then you orchestrate:
-
-```js
-export const meta = {
-  name: 'auth_audit',
-  description: 'Find routes missing auth checks and verify the findings',
-  phases: [{ title: 'Scan' }, { title: 'Review' }, { title: 'Verify' }],
-}
-
-phase('Scan')
-const files = await agent('List every route file under src/routes/.', { tier: 'small' })
-
-phase('Review')
-const findings = await parallel(
-  files.split('\n').filter(Boolean).map((file) =>
-    () => agent(`Audit ${file} for missing auth checks.`, { tier: 'medium', isolation: 'worktree' }),
-  ),
-)
-
-phase('Verify')
-return await agent('Synthesize and double-check these findings:\n' + findings.join('\n\n'), { tier: 'big' })
-```
-
-`agent()` spawns an isolated subagent, `parallel()` runs many at once, `phase()` groups them in the live view, and `tier` routes each one to the right model. That's the whole idea.
-
-## Highlights
-
-- **Fan-out orchestration** — `agent()`, `parallel()`, `pipeline()`, `phase()` in a sandboxed script. Up to 16 concurrent / 1000 total subagents; intermediate results stay in variables, not the chat.
-- **Real model routing** — `small` / `medium` / `big` tiers (or an exact `model`) per agent. It actually switches the subagent's model — cheap work on a light one, hard synthesis on a big one.
-- **Journaled resume** — an interrupted run replays finished agents from a journal (no re-run, no tokens) and runs only what's left or what you changed.
-- **Git worktree isolation** — `isolation: "worktree"` gives an agent its own branch, so parallel agents can edit the same files without clobbering each other.
-- **Real token & cost accounting** — read from each subagent's session, not estimated. Runs have no default token cap; `tokenBudget`, phase budgets, and `budget` let you add explicit gates when you want them.
-- **Background by default** — the turn ends right away, a live "Workflows running" panel tracks runs, and each result is delivered back so the conversation auto-continues when it finishes. The panel is compact by default; `/workflows-progress detailed` expands it inline to per-phase/per-agent rows with tokens, cost, and a live tok/s rate (so a stalled agent shows as 0 tok/s) — no need to open `/workflows`.
-- **Interactive `/workflows` TUI** — drill runs → phases → agents → detail; inspect per-agent failures and compact subagent history; pause, stop, restart, and save runs from the keyboard.
-- **Quality patterns built in** — `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` for adversarial review, best-of-N, and exhaustive discovery.
-- **Ultracode** — `/ultracode` is a standing opt-in that auto-arms an exhaustive multi-agent workflow for every substantive message, the way Claude Code's ultracode does. `/effort high` is the lighter tier.
-- **Bundled `/deep-research` + `/adversarial-review`** — real web search, source cross-checking, and cited reports.
-- **Saved & nested workflows** — turn any run into a `/<name>` command, and compose saved workflows from inside other scripts.
-
-## How it maps to Claude Code dynamic workflows
-
-The same model — on Pi, plus the production pieces a real run needs:
-
-| Claude Code dynamic workflows | pi-dynamic-workflows (on Pi) |
-| --- | --- |
-| Code-mode orchestration — the model writes a script that drives subagents | A JS `workflow` tool running `agent()` / `parallel()` / `pipeline()` / `phase()` in a vm sandbox |
-| Subagents with isolated context | Fresh in-memory Pi sessions; results held in script variables, not the chat |
-| Structured outputs | JSON-Schema `schema` → a validated object, with bounded repair if the model misses |
-| Background runs | Non-blocking by default, a live task panel, and auto-continue delivery |
-| Resume | **Journaled + replayable** — survives restarts and replays the unchanged prefix |
-| Model selection | **Per-agent / per-phase routing** across any provider Pi is authenticated for |
-| Ultracode (standing maximal-effort opt-in) | **`/ultracode`** (or `/effort ultra`) — auto-arms an exhaustive workflow for every substantive message |
-| — | **Git worktree isolation**, **real cost accounting**, **`/deep-research`**, and a **quality-pattern stdlib** |
-
-## Commands
-
-```text
-/workflows                  open the interactive navigator (plain list in print mode)
-/workflows status <id>      watch a run live; print its result when it finishes
-/workflows save <name>      save the latest run's script as a reusable /<name> command
-/workflows pause|resume|stop|rm <id>
-/workflows-trigger off|on|status
-                            persistently disable, restore, or inspect keyword-triggered workflows mode
-/workflows-progress compact|detailed|status
-                            switch the live panel between the compact one-liner and the detailed
-                            per-phase/per-agent view (with tokens, cost, and a live tok/s rate)
-/workflows-progress-max <N> cap agents shown per phase in detailed mode (1-1000, default 8)
-/workflows-models           map the small / medium / big tiers to real models
-/ultracode [off]            ultracode: auto-arm an exhaustive workflow for every substantive message
-/effort off|high|ultra      finer control over the standing opt-in (high = thorough, ultra = ultracode)
-
-/deep-research <question>   web-researched, source-cross-checked report
-/adversarial-review <task>  findings vetted by skeptical reviewers
-```
-
-In the navigator: `↑/↓` select · `enter`/`→` open · `esc`/`←` back · `p` pause · `x` stop · `r` restart · `s` save · `q` quit. Each agent shows the model it ran on; the detail view shows its prompt, result, error diagnostics, and compact message/tool history.
-
-## Storage
-
-Workflow state is stored under `~/.pi/workflows` so projects do not accumulate extension-owned `.pi/workflows` directories. Global settings and model tiers live at `~/.pi/workflows/settings.json` and `~/.pi/workflows/model-tiers.json`; project-scoped run history, resume journals, locks, and saved workflow overrides live under `~/.pi/workflows/projects/<project>/`. Older project-local `.pi/workflows/runs` and `.pi/workflows/saved` data is still read as a fallback, but new writes go to the user-level workflow store.
-
-## Reference
-
-The full guide — every global, agent option, `agentType` definitions, structured output, and determinism — lives on the **[website](https://quintinshaw.github.io/pi-dynamic-workflows/)**. The essentials:
-
-| Global | What it does |
-| --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text, or a validated object with `opts.schema`; recoverable failures return `null` with diagnostics in `/workflows`. |
-| `parallel(thunks)` | Run `() => agent(...)` thunks concurrently; results in input order. |
-| `pipeline(items, ...stages)` | Fan items through sequential stages `(prev, original, index)`. |
-| `phase(title, { budget? })` | Group agents in the live view; optional per-phase token sub-budget. |
-| `verify` / `judgePanel` / `loopUntilDry` / `completenessCheck` | Built-in quality patterns. |
-| `workflow(name, args)` | Run a saved workflow inline (shares the global caps). |
-| `checkpoint(prompt, opts)` | A journaled, replayable human approval gate. |
-| `budget` | `{ total, spent(), remaining() }` real-token tracker. |
-
-| Agent option | Description |
-| --- | --- |
-| `tier` | `"small"` \| `"medium"` \| `"big"` — coarse model routing (configure via `/workflows-models`). |
-| `model` | Exact `provider/modelId` (always wins over `tier`). |
-| `agentType` | A named definition (`.pi/agents/<name>.md`) binding tools + model + role prompt. |
-| `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
-| `schema` | JSON Schema → the subagent returns a validated object. |
-| `label` / `phase` / `timeoutMs` | Display label / phase override / optional per-agent hard timeout. Omit `timeoutMs` for no hard timeout. |
-| `retries` | Retry attempts after a recoverable failure (timeout, connection failure, empty output) for this agent. Overrides the run-level `agentRetries`. Default `0`. |
-
-By default, workflows do not set a run-wide token budget or per-agent hard timeout. Use the `workflow` tool's `tokenBudget` / `agentTimeoutMs`, per-phase budgets, or per-agent `timeoutMs` only when you want an explicit cap. A global fallback timeout can also be set in `~/.pi/workflows/settings.json` as `{ "defaultAgentTimeoutMs": 600000 }`; set it to `null` or omit it for no default hard timeout.
-
-For larger or flakier fan-outs, the `workflow` tool also accepts `concurrency` (max agents running at once, clamped to the runtime maximum of `16`) and `agentRetries` (retry attempts after a recoverable agent failure such as a timeout, connection failure, or empty output). Both can be defaulted in `~/.pi/workflows/settings.json` as `{ "defaultConcurrency": 4, "defaultAgentRetries": 2 }`; a per-run tool value overrides the default, and a per-agent `retries` overrides `agentRetries`. Retries default to `0` (off) unless configured or passed, and only recoverable failures retry — nonrecoverable errors still abort the run.
-
-The live "Workflows running" panel is configured in the same `~/.pi/workflows/settings.json`: `"progressPanelMode"` is `"compact"` (default, one line per run) or `"detailed"` (per-phase/per-agent rows with tokens, cost, and a live tok/s rate), and `"progressPanelMaxAgents"` (default `8`, range `1`–`1000`) caps how many agents each phase shows in detailed mode before a `… N earlier agents` line. Toggle them live with `/workflows-progress compact|detailed` and `/workflows-progress-max <N>` — changes take effect on the next render without a restart.
-
-Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()`, and `require`/`import`/`fs`/network are unavailable, so runs stay reproducible — which is what makes resume reliable.
-
-## Development
 
 ```bash
-npm install
-npm test     # biome + tsc + unit tests
+npx tsc        # build dist/
+# then restart pi
 ```
 
-Every feature is also verified end-to-end against a real Pi subagent session before release.
+## Status
 
-## Credits
-
-The "code mode for subagents" idea comes from Michael Livs' original [pi-dynamic-workflows](https://github.com/Michaelliv/pi-dynamic-workflows) and Anthropic's [dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). This project builds on it with real model routing, journaled resume, git-worktree isolation, cost accounting, an interactive TUI, and deep research.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+Patched-fork parity vs. Claude Code 2.1.185: **15/17** (matches CC best). **764/764** unit tests pass. Details in [PROVENANCE.md](./PROVENANCE.md).
