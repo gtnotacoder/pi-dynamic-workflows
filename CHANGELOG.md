@@ -5,6 +5,18 @@ All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derive
 Only changes from upstream are listed here; upstream history is preserved in git.
 See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
+## [0.1.1] — 2026-06-22
+
+### Fixed
+- Require the exact `workflow-run` editor trigger phrase for rainbow/workflows mode; ordinary `workflow` / `workflows` text no longer auto-arms workflow execution.
+- Keep the model-facing tool name as `workflow` for compatibility.
+- Update the workflows-mode forcing prompt to require a concise final synthesis after the `workflow` tool returns, preventing blank final assistant messages.
+- Make worktree tests independent of local git commit hooks in temporary repositories.
+
+### Documentation
+- Add `docs/issues.md` as the local issue tracker index for migrated/cross-repo issues.
+- Update README command/help text and status to 827/827 tests.
+
 ## [0.1.0] — first standalone release (derived from upstream v2.7.0)
 
 Originally derived from `@quintinshaw/pi-dynamic-workflows` v2.6.0 (`622f6df`),
