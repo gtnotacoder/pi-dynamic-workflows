@@ -11,3 +11,6 @@ dist/
 scripts/verify-npm-install.sh
 __pycache__/
 .context/
+
+# Generated local sample decks/PDF outputs
+docs/sample-outputs/
