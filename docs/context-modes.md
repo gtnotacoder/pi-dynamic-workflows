@@ -180,6 +180,6 @@ shared `AGENTS.md` and a main-only `.pi/APPEND_SYSTEM.md`:
   options; slash `--mode` is a run-level convenience on the bundled commands.
 - `replace` (used by `isolated`/`scoped`) installs the agentType body as the base
   system prompt and the workflow layer omits it from the task to avoid duplication.
-- Reliability for headless drivers (e.g. an Eino orchestrator running `pi --mode
-  rpc`): the main-rules block is the **default with no flags**, works in the
-  non-interactive path, and no-ops when `.pi/APPEND_SYSTEM.md` is absent.
+- Reliability for headless drivers (e.g. an external orchestrator running `pi
+  --mode rpc`): the main-rules block is the **default with no flags**, works in
+  the non-interactive path, and no-ops when `.pi/APPEND_SYSTEM.md` is absent.
