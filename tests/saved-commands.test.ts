@@ -3,8 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import type { SavedWorkflow } from "../src/workflow-saved.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
+
+function savedWorkflow(overrides: Partial<SavedWorkflow> & Pick<SavedWorkflow, "name" | "script">): SavedWorkflow {
+  return {
+    description: "Test workflow",
+    location: "user",
+    path: `/tmp/${overrides.name}.json`,
+    savedAt: "2026-06-22T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 async function load() {
   return import("../src/saved-commands.js");
@@ -46,7 +57,11 @@ describe("parseCommandArgs", () => {
 
   it("fills parameter defaults for missing keys", async () => {
     const { parseCommandArgs } = await load();
-    const result = parseCommandArgs("foo=bar", { foo: {}, limit: { default: 10 }, label: { default: "test" } });
+    const result = parseCommandArgs("foo=bar", {
+      foo: { type: "string" },
+      limit: { type: "number", default: 10 },
+      label: { type: "string", default: "test" },
+    });
     assert.equal(result.foo, "bar");
     assert.equal(result.limit, 10);
     assert.equal(result.label, "test");
@@ -54,7 +69,7 @@ describe("parseCommandArgs", () => {
 
   it("does NOT override explicit values with defaults", async () => {
     const { parseCommandArgs } = await load();
-    const result = parseCommandArgs("limit=5", { limit: { default: 10 } });
+    const result = parseCommandArgs("limit=5", { limit: { type: "number", default: 10 } });
     assert.equal(result.limit, "5");
   });
 
@@ -76,11 +91,11 @@ describe("registerSavedWorkflow", () => {
   it("registers a command with the workflow name", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands } = makeCommandRegistryPi();
-    const wf = {
+    const wf = savedWorkflow({
       name: "test-workflow",
       script: "export const meta = { name: 't', description: 't' };",
       description: "A test",
-    };
+    });
 
     registerSavedWorkflow(pi, "/cwd", wf);
     assert.equal(commands.length, 1);
@@ -90,7 +105,7 @@ describe("registerSavedWorkflow", () => {
   it("is idempotent — second registration is skipped", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands } = makeCommandRegistryPi(["test-workflow"]);
-    const wf = { name: "test-workflow", script: "export const meta = { name: 't', description: 't' };" };
+    const wf = savedWorkflow({ name: "test-workflow", script: "export const meta = { name: 't', description: 't' };" });
 
     registerSavedWorkflow(pi, "/cwd", wf);
     assert.equal(commands.length, 0, "should not re-register when already present");
@@ -121,16 +136,20 @@ describe("registerSavedWorkflow", () => {
         startedBackground = true;
         return { runId: "test-run", promise: Promise.resolve({ result: { report: "done" } }) };
       },
+      getRun: (_runId: string) => ({ transcriptDir: "/tmp/subagents" }),
     };
 
-    const { pi, commands } = makeCommandRegistryPi();
-    const wf = { name: "run-via-manager", script: "export..." };
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({ name: "run-via-manager", script: "export..." });
     registerSavedWorkflow(pi, "/cwd", wf, manager as never);
 
     const { ctx } = makeNotifyCtx();
     await commands[0].handler("", ctx);
 
     assert.equal(startedBackground, true, "should use startInBackground when manager provided");
+    assert.equal(sent.length, 1, "manager path should immediately announce the background run");
+    assert.equal(sent[0].customType, "workflow:run-via-manager:started");
+    assert.match(sent[0].content ?? "", /Run ID: test-run/);
   });
 
   it("falls back to runWorkflow (inline) when no manager is provided", async () => {
@@ -138,16 +157,18 @@ describe("registerSavedWorkflow", () => {
     const { pi, commands, sent } = makeCommandRegistryPi();
 
     // A script with no agent() calls runs to completion inline without a manager.
-    const wf = {
+    const wf = savedWorkflow({
       name: "run-inline",
       script: "export const meta = { name: 't', description: 't' };\nreturn { report: 'done' };",
-    };
+    });
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
     try {
       registerSavedWorkflow(pi, "/cwd", wf); // no manager
 
       const { ctx } = makeNotifyCtx();
-      await withFakeHomeAsync(fakeHome, () => commands[0].handler("", ctx));
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("", ctx);
+      });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
     }
@@ -163,7 +184,10 @@ describe("registerSavedWorkflow", () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands, sent } = makeCommandRegistryPi();
 
-    const wf = { name: "gone", script: "export const meta = { name: 't', description: 't' };\nreturn 1;" };
+    const wf = savedWorkflow({
+      name: "gone",
+      script: "export const meta = { name: 't', description: 't' };\nreturn 1;",
+    });
     // exists() reports the workflow has been deleted from storage.
     registerSavedWorkflow(pi, "/cwd", wf, undefined, () => false);
 

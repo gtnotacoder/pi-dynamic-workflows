@@ -54,6 +54,31 @@ test("registerBuiltinWorkflows adversarial-review handler validates empty args (
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
+test("/adversarial-review uses WorkflowManager background path when provided", async () => {
+  let started = false;
+  const manager = {
+    startInBackground: (_script: string, args: unknown, exec: unknown) => {
+      started = true;
+      assert.deepEqual(args, { task: "check this" });
+      assert.deepEqual(exec, { contextMode: undefined });
+      return { runId: "adv-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/adv-run/subagents" }),
+  };
+  const { pi, commands, sent } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const advHandler = commands.find((c) => c.name === "adversarial-review")?.handler;
+  assert.ok(advHandler, "adversarial-review handler should exist");
+
+  const { ctx } = makeNotifyCtx();
+  await advHandler("check this", ctx);
+
+  assert.equal(started, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].customType, "adversarial-review:started");
+  assert.match(sent[0].content ?? "", /Run ID: adv-run/);
+});
+
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });

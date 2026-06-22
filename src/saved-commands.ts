@@ -22,6 +22,17 @@ function reportText(result: WorkflowRunResult): string {
   return JSON.stringify(result.result, null, 2);
 }
 
+function backgroundStartedText(name: string, runId: string, transcriptDir?: string): string {
+  const lines = [`Workflow /${name} started in the background.`, `Run ID: ${runId}`];
+  if (transcriptDir) lines.push(`Transcript dir: ${transcriptDir}`);
+  lines.push(
+    `Live progress should appear in the workflow task panel.`,
+    `Use /workflows status ${runId} or /workflows watch ${runId} for status, and /workflows stop ${runId} to cancel.`,
+    `The final result will be delivered back into this conversation automatically when it finishes.`,
+  );
+  return lines.join("\n");
+}
+
 /**
  * Parse a command argument string into an `args` object for the script.
  * Supports `key=value` tokens; everything else collects into `_` (and `_raw`).
@@ -71,22 +82,32 @@ export function registerSavedWorkflow(
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
 
-        let result: WorkflowRunResult;
         if (manager) {
-          // Run through the WorkflowManager: background execution, visible in
-          // /workflows TUI, task panel, pause/resume/stop support.
+          // Run through the WorkflowManager and RETURN immediately. The manager's
+          // task panel + /workflows command provide live visibility, and
+          // installResultDelivery posts the final result when the background run
+          // completes. Awaiting here would make the slash command feel frozen and
+          // show only a static "running" status.
           const { runId, promise } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters));
-          ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: running (${runId})`);
-          result = await promise;
-        } else {
-          // Fallback: inline runWorkflow (foreground, no TUI tracking).
-          result = await runWorkflow(wf.script, {
-            cwd,
-            args: parseCommandArgs(args, wf.parameters),
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
+          const key = `wf:${wf.name}`;
+          ctx.ui.setStatus(key, `${wf.name}: running (${runId})`);
+          void promise.finally(() => ctx.ui.setStatus(key, undefined)).catch(() => {});
+          const transcriptDir = manager.getRun(runId)?.transcriptDir;
+          await pi.sendMessage({
+            customType: `workflow:${wf.name}:started`,
+            content: backgroundStartedText(wf.name, runId, transcriptDir),
+            display: true,
           });
+          return;
         }
+
+        // Fallback: inline runWorkflow (foreground, no TUI tracking).
+        const result = await runWorkflow(wf.script, {
+          cwd,
+          args: parseCommandArgs(args, wf.parameters),
+          tools: createCodingTools(cwd),
+          onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
+        });
 
         ctx.ui.setStatus(`wf:${wf.name}`, undefined);
         await pi.sendMessage({ customType: `workflow:${wf.name}`, content: reportText(result), display: true });

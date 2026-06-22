@@ -15,6 +15,7 @@ import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import type { WorkflowManager } from "./workflow-manager.js";
 
 function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
   try {
@@ -30,7 +31,18 @@ function reportText(result: WorkflowRunResult): string {
   return JSON.stringify(result.result, null, 2);
 }
 
-export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }): void {
+function backgroundStartedText(name: string, runId: string, transcriptDir?: string): string {
+  const lines = [`Workflow /${name} started in the background.`, `Run ID: ${runId}`];
+  if (transcriptDir) lines.push(`Transcript dir: ${transcriptDir}`);
+  lines.push(
+    `Live progress should appear in the workflow task panel.`,
+    `Use /workflows status ${runId} or /workflows watch ${runId} for status, and /workflows stop ${runId} to cancel.`,
+    `The final result will be delivered back into this conversation automatically when it finishes.`,
+  );
+  return lines.join("\n");
+}
+
+export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
   const cwd = opts.cwd;
 
   if (!alreadyRegistered(pi, "deep-research")) {
@@ -70,6 +82,22 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!task) return ctx.ui.notify("Usage: /adversarial-review [--mode <name>] <task or question>", "warning");
         ctx.ui.notify("Reviewing — investigating then refuting each finding…", "info");
         try {
+          if (opts.manager) {
+            const { runId, promise } = opts.manager.startInBackground(
+              generateAdversarialReviewWorkflow(),
+              { task },
+              { contextMode: mode },
+            );
+            ctx.ui.setStatus("adversarial-review", `review running (${runId})`);
+            void promise.finally(() => ctx.ui.setStatus("adversarial-review", undefined)).catch(() => {});
+            await pi.sendMessage({
+              customType: "adversarial-review:started",
+              content: backgroundStartedText("adversarial-review", runId, opts.manager.getRun(runId)?.transcriptDir),
+              display: true,
+            });
+            return;
+          }
+
           const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
             cwd,
             args: { task },

@@ -41,7 +41,7 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowCommands(pi, manager, { storage, cwd });
   registerWorkflowModelsCommand(pi);
   registerModesCommand(pi, { cwd });
-  registerBuiltinWorkflows(pi, { cwd });
+  registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below.

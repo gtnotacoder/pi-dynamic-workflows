@@ -150,7 +150,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
-| `/adversarial-review` | `[--mode <name>] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. |
+| `/adversarial-review` | `[--mode <name>] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
@@ -168,7 +168,7 @@ Run a workflow, then register it for reuse:
 /workflows save research_topic <runId>
 ```
 
-This creates a `/<name>` command (with `key=value` args). Call it from another workflow via `await workflow('research_topic', { key: 'value' })`. Storage is `WorkflowStorage` (`workflow-saved.ts`).
+This creates a `/<name>` command (with `key=value` args). Saved-workflow slash commands start through the shared `WorkflowManager`, print the run ID immediately, show live progress in the task panel/`/workflows`, and deliver the final result back to chat when complete. Call a saved workflow from another workflow via `await workflow('research_topic', { key: 'value' })`. Storage is `WorkflowStorage` (`workflow-saved.ts`).
 
 ---
 

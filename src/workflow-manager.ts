@@ -82,6 +82,8 @@ export interface ExecOptions {
   agentRetries?: number;
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
+  /** Run-level default context posture for this execution (e.g. slash --mode). */
+  contextMode?: string;
   /**
    * Directory to persist each subagent's NDJSON transcript into for this run.
    * Overrides the manager's default (computed from the run id) when set.
@@ -354,6 +356,7 @@ export class WorkflowManager extends EventEmitter {
       concurrency,
       agentRetries,
       confirm,
+      contextMode,
     } = exec;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
@@ -379,6 +382,7 @@ export class WorkflowManager extends EventEmitter {
         workflowTimeoutMs,
         tokenBudget,
         confirm,
+        contextMode,
         loadSavedWorkflow: this.loadSavedWorkflow,
         transcriptDir: exec.transcriptDir ?? managed.transcriptDir,
         resumeJournal,
