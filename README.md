@@ -32,7 +32,7 @@ npm test          # full gate: biome check . && build && unit tests
 
 ## The `workflow` tool
 
-The model-facing primitive. A workflow is a plain JavaScript string with a required `meta` header and at least one `agent()` call:
+The model-facing primitive. The tool name remains `workflow` for compatibility; only the editor auto-trigger phrase is now the exact `workflow-run` phrase so ordinary discussion of workflows does not auto-trigger orchestration. A workflow is a plain JavaScript string with a required `meta` header and at least one `agent()` call:
 
 ```js
 export const meta = { name: 'research_topic', description: 'Cross-check a topic', phases: [{ title: 'Scope' }, { title: 'Synthesize' }] };
@@ -153,7 +153,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
 | `/workflows-models` | — | View and edit model tiers (small/medium/big). |
-| `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, mentioning "workflow(s)" auto-arms workflows mode. |
+| `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
 
@@ -203,7 +203,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **825/825** unit tests pass; full `npm test` gate (biome + build + unit) green.
+**Status:** **827/827** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now

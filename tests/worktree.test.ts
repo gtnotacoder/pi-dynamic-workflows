@@ -29,7 +29,7 @@ test("createWorktree isolates in a git repo, then removeWorktree cleans up", asy
     git("config", "user.name", "t");
     writeFileSync(join(repo, "file.txt"), "base\n");
     git("add", ".");
-    git("commit", "-q", "-m", "init");
+    git("commit", "--no-verify", "-q", "-m", "init");
 
     const wt = await createWorktreeLive(repo, "run-9-0-edit");
     assert.equal(wt.isolated, true);
@@ -73,7 +73,7 @@ test("removeWorktree does not throw when worktree directory is already missing",
     git("config", "user.name", "t");
     writeFileSync(join(repo, "file.txt"), "base\n");
     git("add", ".");
-    git("commit", "-q", "-m", "init");
+    git("commit", "--no-verify", "-q", "-m", "init");
 
     const wt = await createWorktreeLive(repo, "run-missing-dir");
     assert.equal(wt.isolated, true);
@@ -98,7 +98,7 @@ test("createWorktree falls back when target branch already exists", async () => 
     git("config", "user.name", "t");
     writeFileSync(join(repo, "file.txt"), "base\n");
     git("add", ".");
-    git("commit", "-q", "-m", "init");
+    git("commit", "--no-verify", "-q", "-m", "init");
 
     // Pre-create the branch that createWorktree will try to create.
     // slug("conflict-branch") → "conflict-branch"
@@ -124,7 +124,7 @@ test("removeWorktree does not throw when git operations fail (corrupted metadata
     git("config", "user.name", "t");
     writeFileSync(join(repo, "file.txt"), "base\n");
     git("add", ".");
-    git("commit", "-q", "-m", "init");
+    git("commit", "--no-verify", "-q", "-m", "init");
 
     const wt = await createWorktreeLive(repo, "run-fail-rm");
     assert.equal(wt.isolated, true);
