@@ -14,6 +14,12 @@ prompt plus its own role, but does **not** inherit the main-agent append channel
 
 > Tracking issue: [#1](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/1).
 
+> [!IMPORTANT]
+> **`focused` is the default for every subagent — this is the standard behavior, no flags required.** Subagents inherit the shared `AGENTS.md` and skills, but the main agent's rules (`.pi/APPEND_SYSTEM.md`) are **blocked by default** so they don't leak into children. This is a deliberate change from the pre-feature behavior, where subagents inherited everything. To restore full inheritance, set `contextMode: legacy` (or `inheritMainRules: true`) at the agent `.md`, the `agent()` call, or the run level (`--mode legacy`).
+
+> [!WARNING]
+> `replace` (used by `isolated` / `scoped`) installs the agent's role **as** the base system prompt, which **drops pi's entire base prompt** (tool list + guidelines). Use it only for true clean-room agents; the default `focused` keeps the base via `append`.
+
 ---
 
 ## How pi assembles a session prompt (verified)

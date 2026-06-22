@@ -116,6 +116,9 @@ shared (general instructions for *all* agents); main-agent-only rules live in
 The default mode **`focused`** needs zero config; `legacy` restores full
 inheritance (byte-identical to before).
 
+> [!IMPORTANT]
+> **`focused` is the default for every subagent — this is the standard behavior, no flags required.** Subagents inherit the shared `AGENTS.md` and skills, but the main agent's rules (`.pi/APPEND_SYSTEM.md`) are **blocked by default** so they don't leak into children. This is a deliberate change from the pre-feature behavior, where subagents inherited everything. To restore full inheritance, set `contextMode: legacy` (or `inheritMainRules: true`) at the agent `.md`, the `agent()` call, or the run level (`--mode legacy`).
+
 | Mode | context (`AGENTS.md`) | main-rules (`.pi/APPEND_SYSTEM.md`) | prompt | skills | Posture |
 |------|------|------|--------|--------|---------|
 | `focused` *(default)* | in | **out** | append | in | Shared context+skills, main rules blocked. |
