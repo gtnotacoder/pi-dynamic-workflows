@@ -21,7 +21,13 @@ import {
   type RunStatus,
   runStateJsonPath,
 } from "./run-persistence.js";
-import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import {
+  type JournalEntry,
+  parseWorkflowScript,
+  runWorkflow,
+  type WorkflowRunOptions,
+  type WorkflowRunResult,
+} from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 import { loadWorkflowSettings, type WorkflowSettings } from "./workflow-settings.js";
 
@@ -80,6 +86,8 @@ export interface ExecOptions {
   concurrency?: number;
   /** Retry attempts after recoverable agent failures for this execution. */
   agentRetries?: number;
+  /** Full subagent tool set for this execution; when omitted, the default coding tools are used. */
+  tools?: WorkflowRunOptions["tools"];
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
   /** Run-level default context posture for this execution (e.g. slash --mode). */
@@ -355,6 +363,7 @@ export class WorkflowManager extends EventEmitter {
       tokenBudget,
       concurrency,
       agentRetries,
+      tools,
       confirm,
       contextMode,
     } = exec;
@@ -376,6 +385,7 @@ export class WorkflowManager extends EventEmitter {
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,
+        tools,
         contextModeRegistry: this.contextModeRegistry,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,

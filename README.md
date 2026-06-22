@@ -150,7 +150,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
-| `/adversarial-review` | `[--mode <name>] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
+| `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
@@ -158,6 +158,23 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
+
+### Adversarial review evidence mode
+
+Baseline `/adversarial-review <task>` preserves the original fast workflow: investigate → skeptical refutation → consensus. Add `--evidence` to insert an Evidence phase before refutation:
+
+```text
+/adversarial-review --evidence check this claim against https://github.com/org/repo/blob/main/README.md
+/adversarial-review --evidence=web_search,github --reviewers=3 --threshold=0.75 check this external claim
+```
+
+Built-in evidence components are intentionally no-key:
+
+- `web_fetch` — fetch and quote known URLs.
+- `github` — GitHub URLs/files via `web_fetch`; no API key required.
+- `web_search` — optional best-effort web discovery, then `web_fetch` to read sources.
+
+Brave/Exa provider-backed search can be layered in by installing a web-tools package or saved workflow that exposes those tools, but the built-in command starts with reliable no-key fetch/GitHub evidence.
 
 ### Saved workflows
 
@@ -205,7 +222,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **837/837** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
+**Status:** **845/845** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now

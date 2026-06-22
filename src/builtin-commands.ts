@@ -9,12 +9,12 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { generateAdversarialReviewWorkflow } from "./adversarial-review.js";
+import { generateAdversarialReviewWorkflow, parseAdversarialReviewArgs } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
-import { createWebTools } from "./web-tools.js";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
+import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 
 function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
@@ -40,6 +40,20 @@ function backgroundStartedText(name: string, runId: string, transcriptDir?: stri
     `The final result will be delivered back into this conversation automatically when it finishes.`,
   );
   return lines.join("\n");
+}
+
+function adversarialReviewTools(cwd: string, evidenceComponents: string[]): WorkflowRunOptions["tools"] | undefined {
+  if (evidenceComponents.length === 0) return undefined;
+  const tools = [...createCodingTools(cwd)] as unknown as NonNullable<WorkflowRunOptions["tools"]>;
+  if (evidenceComponents.includes("web_search")) tools.push(createWebSearchTool());
+  if (
+    evidenceComponents.includes("web_fetch") ||
+    evidenceComponents.includes("github") ||
+    evidenceComponents.includes("web_search")
+  ) {
+    tools.push(createWebFetchTool());
+  }
+  return tools;
 }
 
 export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
@@ -78,15 +92,37 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
       description: "Investigate a task, then cross-check each finding with skeptical reviewers",
       async handler(args: string, ctx: ExtensionCommandContext) {
         const { mode, rest } = extractModeFlag(args);
-        const task = rest;
-        if (!task) return ctx.ui.notify("Usage: /adversarial-review [--mode <name>] <task or question>", "warning");
-        ctx.ui.notify("Reviewing — investigating then refuting each finding…", "info");
+        const parsed = parseAdversarialReviewArgs(rest);
+        const usage =
+          "Usage: /adversarial-review [--mode <name>] [--evidence[=web_fetch,github|web_search]] " +
+          "[--no-evidence] [--reviewers N] [--threshold N] <task or question>";
+        if (!parsed.task) return ctx.ui.notify(usage, "warning");
+        for (const component of parsed.unknownEvidenceComponents) {
+          ctx.ui.notify(`Ignoring unsupported evidence component: ${component}`, "warning");
+        }
+        const workflowArgs = {
+          task: parsed.task,
+          reviewers: parsed.reviewers,
+          threshold: parsed.threshold,
+          evidence: parsed.evidence,
+          evidenceComponents: parsed.evidenceComponents,
+        };
+        const tools = parsed.evidence ? adversarialReviewTools(cwd, parsed.evidenceComponents) : undefined;
+        ctx.ui.notify(
+          parsed.evidence
+            ? `Reviewing with evidence (${parsed.evidenceComponents.join(", ")}) — investigating, sourcing, then refuting…`
+            : "Reviewing — investigating then refuting each finding…",
+          "info",
+        );
         try {
           if (opts.manager) {
             const { runId, promise } = opts.manager.startInBackground(
               generateAdversarialReviewWorkflow(),
-              { task },
-              { contextMode: mode },
+              workflowArgs,
+              {
+                contextMode: mode,
+                ...(tools ? { tools } : {}),
+              },
             );
             ctx.ui.setStatus("adversarial-review", `review running (${runId})`);
             void promise.finally(() => ctx.ui.setStatus("adversarial-review", undefined)).catch(() => {});
@@ -100,8 +136,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
 
           const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
             cwd,
-            args: { task },
-            tools: createCodingTools(cwd),
+            args: workflowArgs,
+            tools: tools ?? createCodingTools(cwd),
             contextMode: mode,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),

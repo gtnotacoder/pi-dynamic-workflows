@@ -35,11 +35,11 @@ test("generateAdversarialReviewWorkflow produces a valid, parseable script", () 
   assert.match(body, /survives/);
 });
 
-test("generateAdversarialReviewWorkflow phases are Investigate, Refute, Consensus", () => {
+test("generateAdversarialReviewWorkflow phases include optional Evidence before Refute", () => {
   const { meta } = parseWorkflowScript(generateAdversarialReviewWorkflow());
   assert.deepEqual(
     meta.phases?.map((p) => p.title),
-    ["Investigate", "Refute", "Consensus"],
+    ["Investigate", "Evidence", "Refute", "Consensus"],
   );
 });
 

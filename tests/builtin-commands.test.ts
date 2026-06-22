@@ -59,7 +59,13 @@ test("/adversarial-review uses WorkflowManager background path when provided", a
   const manager = {
     startInBackground: (_script: string, args: unknown, exec: unknown) => {
       started = true;
-      assert.deepEqual(args, { task: "check this" });
+      assert.deepEqual(args, {
+        task: "check this",
+        reviewers: 2,
+        threshold: 0.5,
+        evidence: false,
+        evidenceComponents: [],
+      });
       assert.deepEqual(exec, { contextMode: undefined });
       return { runId: "adv-run", promise: new Promise(() => {}) };
     },
@@ -77,6 +83,38 @@ test("/adversarial-review uses WorkflowManager background path when provided", a
   assert.equal(sent.length, 1);
   assert.equal(sent[0].customType, "adversarial-review:started");
   assert.match(sent[0].content ?? "", /Run ID: adv-run/);
+});
+
+test("/adversarial-review evidence flag enables no-key evidence tools", async () => {
+  const manager = {
+    startInBackground: (_script: string, args: unknown, exec: { contextMode?: string; tools?: unknown[] }) => {
+      assert.deepEqual(args, {
+        task: "check https://github.com/example/repo/blob/main/README.md",
+        reviewers: 3,
+        threshold: 0.75,
+        evidence: true,
+        evidenceComponents: ["github", "web_fetch"],
+      });
+      assert.equal(exec.contextMode, undefined);
+      assert.ok(Array.isArray(exec.tools), "evidence mode should inject tools into the managed run");
+      assert.ok(exec.tools.length >= 1, "tool set should not be empty");
+      return { runId: "adv-evidence-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/adv-evidence-run/subagents" }),
+  };
+  const { pi, commands, sent } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const advHandler = commands.find((c) => c.name === "adversarial-review")?.handler;
+  assert.ok(advHandler, "adversarial-review handler should exist");
+
+  const { ctx, notified } = makeNotifyCtx();
+  await advHandler(
+    "--evidence=github --reviewers=3 --threshold=0.75 check https://github.com/example/repo/blob/main/README.md",
+    ctx,
+  );
+
+  assert.equal(sent.length, 1);
+  assert.match(notified.at(-1)?.message ?? "", /Reviewing with evidence/);
 });
 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {
