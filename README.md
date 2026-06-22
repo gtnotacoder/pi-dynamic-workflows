@@ -168,11 +168,26 @@ Baseline `/adversarial-review <task>` preserves the original fast workflow: inve
 /adversarial-review --evidence=web_search,github --reviewers=3 --threshold=0.75 check this external claim
 ```
 
-Built-in evidence components are intentionally no-key:
+Options:
+
+- `--mode <name>` / `--mode=<name>` — choose the run-level context mode for all subagents.
+- `--evidence` — enable source-ledger collection with the default no-key components: `web_fetch,github`.
+- `--evidence=<components>` — enable only selected components. Comma/plus separated, e.g. `web_fetch,github` or `web_search+github`.
+- `--evidence-components=<components>` — alias for selecting evidence components explicitly.
+- `--no-evidence` — force baseline mode even if an earlier flag enabled evidence.
+- `--reviewers <N>` / `--reviewers=<N>` — skeptical reviewers per finding. Default: `2`.
+- `--reviewer-count <N>` / `--reviewer-count=<N>` — alias for `--reviewers`.
+- `--threshold <N>` / `--threshold=<N>` — required real-vote ratio for a finding to survive, clamped to `0..1`. Default: `0.5`.
+- `--agreement-threshold <N>` / `--agreement-threshold=<N>` — alias for `--threshold`.
+- `--` — stop option parsing; everything after it becomes the task text.
+
+Evidence components:
 
 - `web_fetch` — fetch and quote known URLs.
-- `github` — GitHub URLs/files via `web_fetch`; no API key required.
-- `web_search` — optional best-effort web discovery, then `web_fetch` to read sources.
+- `github` — GitHub URLs/files via `web_fetch`; no API key required. Aliases: `gh`, `github_fetch`.
+- `web_search` — optional best-effort web discovery, then `web_fetch` to read sources. Aliases: `search`, `bing`.
+- `all` — enable `web_fetch`, `github`, and `web_search`.
+- `off` / `none` / `false` / `no` / `0` — disable evidence when used as the value for `--evidence=`.
 
 Brave/Exa provider-backed search can be layered in by installing a web-tools package or saved workflow that exposes those tools, but the built-in command starts with reliable no-key fetch/GitHub evidence.
 
