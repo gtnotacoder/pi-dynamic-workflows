@@ -7,6 +7,8 @@ export enum WorkflowErrorCode {
   AGENT_TIMEOUT = "AGENT_TIMEOUT",
   /** Workflow was aborted by user. */
   WORKFLOW_ABORTED = "WORKFLOW_ABORTED",
+  /** Workflow exceeded its wall-clock runtime timeout. */
+  WORKFLOW_TIMEOUT = "WORKFLOW_TIMEOUT",
   /** Agent limit exceeded. */
   AGENT_LIMIT_EXCEEDED = "AGENT_LIMIT_EXCEEDED",
   /** Token budget exhausted. */

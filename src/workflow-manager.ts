@@ -11,8 +11,10 @@ import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
+  assertValidRunId,
   createRunPersistence,
   generateRunId,
+  isValidRunId,
   type PersistedRunState,
   type RunLease,
   type RunPersistence,
@@ -66,6 +68,8 @@ export interface ExecOptions {
   maxAgents?: number;
   /** Per-agent timeout in milliseconds. null/omitted means no hard timeout. */
   agentTimeoutMs?: number | null;
+  /** Wall-clock timeout for the whole async workflow script. null means no hard timeout. */
+  workflowTimeoutMs?: number | null;
   /** Host signal (e.g. tool/Esc) that should abort this run when fired. */
   externalSignal?: AbortSignal;
   /** Called with the live snapshot on every progress event. */
@@ -150,6 +154,7 @@ export class WorkflowManager extends EventEmitter {
 
   /** Directory each subagent's transcript is written to for a given run id. */
   private transcriptDirFor(runId: string): string {
+    assertValidRunId(runId);
     return join(workflowProjectPaths(this.cwd).runsDir, runId, "subagents");
   }
 
@@ -157,6 +162,7 @@ export class WorkflowManager extends EventEmitter {
    *  delegates to the shared runStateJsonPath so this can never drift from where
    *  RunPersistence actually writes the file. */
   private runStatePathFor(runId: string): string {
+    assertValidRunId(runId);
     return runStateJsonPath(workflowProjectPaths(this.cwd).runsDir, runId);
   }
 
@@ -341,6 +347,7 @@ export class WorkflowManager extends EventEmitter {
       resumeJournal,
       maxAgents,
       agentTimeoutMs,
+      workflowTimeoutMs,
       externalSignal,
       onProgress,
       tokenBudget,
@@ -369,6 +376,7 @@ export class WorkflowManager extends EventEmitter {
         contextModeRegistry: this.contextModeRegistry,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
+        workflowTimeoutMs,
         tokenBudget,
         confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
@@ -573,6 +581,7 @@ export class WorkflowManager extends EventEmitter {
    * and run the rest live. Returns false if there is nothing resumable.
    */
   async resume(runId: string): Promise<boolean> {
+    if (!isValidRunId(runId)) return false;
     // Guard: refuse to resume a run that is already running, or one that was
     // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
     const active = this.runs.get(runId);
@@ -677,6 +686,7 @@ export class WorkflowManager extends EventEmitter {
    * Delete a persisted run.
    */
   deleteRun(runId: string): boolean {
+    if (!isValidRunId(runId)) return false;
     const managed = this.runs.get(runId);
     if (managed) this.releaseRunLease(managed);
     this.runs.delete(runId);

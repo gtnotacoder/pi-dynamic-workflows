@@ -5,6 +5,16 @@ All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derive
 Only changes from upstream are listed here; upstream history is preserved in git.
 See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
+## [0.1.2] — 2026-06-22
+
+### Security / hardening
+- Document the trusted-code workflow security model: Node `vm` is a determinism realm, not a sandbox for untrusted workflow scripts.
+- Add workflow run ID validation before persistence, lease, resume, delete, transcript, and run-state path joins.
+- Include resolved context primitives in resume journal hashes so `legacy` output cannot replay under `focused` or a changed project mode.
+- Add an async workflow wall-clock timeout for suspended scripts and make per-agent timeouts abort and settle before limiter/worktree release.
+- Make `/code-review` use read-only tools and host-computed structured git argv/patch data instead of model-produced command strings.
+- Ship security and provenance docs in the npm package.
+
 ## [0.1.1] — 2026-06-22
 
 ### Fixed

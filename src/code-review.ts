@@ -1,3 +1,8 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+
 /**
  * Built-in `code-review` workflow — an effort-parameterized multi-angle review.
  *
@@ -14,10 +19,9 @@
  * default). Synthesis ranks correctness over cleanup, CONFIRMED over PLAUSIBLE, merges
  * semantic dupes by index, caps at maxFindings, and backfills unmerged findings.
  *
- * The generated script is static and reads its inputs from the `args` string at runtime
- * (with an own-property level check so `Object.prototype` keys like "constructor" never
- * parse as a level) — no string interpolation of user input into source, so no escaping
- * hazards.
+ * The generated script is static and reads host-prepared inputs from `args` at runtime.
+ * Host code owns all git argv + patch collection; reviewer agents are read-only and
+ * never receive a model-produced shell command to run.
  */
 
 /** Level parameters (own-property check protects the level parse). */
@@ -29,6 +33,228 @@ const LEVEL_PARAMS: Record<
   xhigh: { correctnessAngles: 5, perAngle: 8, maxFindings: 15, sweep: true },
   max: { correctnessAngles: 5, perAngle: 8, maxFindings: 15, sweep: true },
 };
+
+type CodeReviewLevel = keyof typeof LEVEL_PARAMS;
+
+export interface CodeReviewDiffCommand {
+  cmd: "git";
+  args: string[];
+  display: string;
+}
+
+export interface PreparedCodeReviewArgs {
+  level: CodeReviewLevel;
+  target?: string;
+  instructions?: string;
+  diff: {
+    commands: CodeReviewDiffCommand[];
+    files: string[];
+    patch: string;
+  };
+}
+
+export type CodeReviewExecRunner = (
+  file: string,
+  args: string[],
+  options: { cwd: string; maxBuffer: number; shell: false },
+) => Promise<{ stdout: string; stderr: string }>;
+
+const DIFF_MAX_BUFFER = 10 * 1024 * 1024;
+const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._/@{}^~:+-]*$/;
+const RANGE_RE = /^(.+?)(\.\.\.?)\s*(.+)$/;
+
+async function defaultExecRunner(
+  file: string,
+  args: string[],
+  options: { cwd: string; maxBuffer: number; shell: false },
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolvePromise({ stdout, stderr });
+    });
+  });
+}
+
+function shellQuoteForDisplay(arg: string): string {
+  return /^[A-Za-z0-9_./:@{}^~+=,-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
+function gitDisplay(args: string[]): string {
+  return ["git", ...args].map(shellQuoteForDisplay).join(" ");
+}
+
+async function runGit(cwd: string, args: string[], runner: CodeReviewExecRunner): Promise<string> {
+  const { stdout } = await runner("git", args, { cwd, maxBuffer: DIFF_MAX_BUFFER, shell: false });
+  return stdout;
+}
+
+function parseCodeReviewRawArgs(rawArgs: string): { level: CodeReviewLevel; rest: string; tokens: string[] } {
+  const raw = rawArgs.trim();
+  const tokens = splitArgs(raw);
+  const first = tokens[0] ?? "";
+  const isLevel = Object.hasOwn(LEVEL_PARAMS, first);
+  const level = (isLevel ? first : "high") as CodeReviewLevel;
+  const rest = isLevel ? raw.slice(first.length).trim() : raw;
+  const restTokens = isLevel ? tokens.slice(1) : tokens;
+  return { level, rest, tokens: restTokens };
+}
+
+function splitArgs(input: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (quote)
+    throw new WorkflowError("Unclosed quote in /code-review target", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  if (current) out.push(current);
+  return out;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const ch of value) {
+    if (ch.charCodeAt(0) < 32) return true;
+  }
+  return false;
+}
+
+function validatePathspec(cwd: string, pathspec: string): string {
+  if (!pathspec || pathspec.startsWith("-")) {
+    throw new WorkflowError(`Unsafe /code-review path target: ${pathspec}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  }
+  if (hasControlCharacter(pathspec) || isAbsolute(pathspec)) {
+    throw new WorkflowError(`Unsafe /code-review path target: ${pathspec}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  }
+  const abs = resolve(cwd, pathspec);
+  const rel = relative(cwd, abs);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new WorkflowError(
+      `Path target escapes the repository: ${pathspec}`,
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+    );
+  }
+  return rel;
+}
+
+function looksLikePathToken(cwd: string, token: string): boolean {
+  if (token.includes("/") || token.includes("\\") || token.includes(".")) return true;
+  return existsSync(resolve(cwd, token));
+}
+
+function assertSafeRef(ref: string): string {
+  if (!SAFE_REF.test(ref) || ref.startsWith("-") || ref.includes("..")) {
+    throw new WorkflowError(`Unsafe /code-review git ref: ${ref}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  }
+  return ref;
+}
+
+async function validateRef(cwd: string, ref: string, runner: CodeReviewExecRunner): Promise<void> {
+  assertSafeRef(ref);
+  await runGit(cwd, ["rev-parse", "--verify", `${ref}^{commit}`], runner);
+}
+
+async function validateRange(cwd: string, range: string, runner: CodeReviewExecRunner): Promise<string> {
+  const m = range.match(RANGE_RE);
+  if (!m)
+    throw new WorkflowError(`Unsupported /code-review range: ${range}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  const left = assertSafeRef(m[1].trim());
+  const sep = m[2];
+  const right = assertSafeRef(m[3].trim());
+  await validateRef(cwd, left, runner);
+  await validateRef(cwd, right, runner);
+  return `${left}${sep}${right}`;
+}
+
+async function collectDiff(
+  cwd: string,
+  runner: CodeReviewExecRunner,
+  range: string | undefined,
+  pathspecs: string[] = [],
+): Promise<PreparedCodeReviewArgs["diff"]> {
+  const diffArgs = ["-c", "core.pager=cat", "diff", "--no-ext-diff", "--no-color", "--no-textconv"];
+  if (range) diffArgs.push(range);
+  if (pathspecs.length) diffArgs.push("--", ...pathspecs);
+  const nameArgs = ["-c", "core.pager=cat", "diff", "--name-only", "--no-ext-diff", "--no-color", "--no-textconv"];
+  if (range) nameArgs.push(range);
+  if (pathspecs.length) nameArgs.push("--", ...pathspecs);
+  const [patch, names] = await Promise.all([runGit(cwd, diffArgs, runner), runGit(cwd, nameArgs, runner)]);
+  const files = names
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { commands: [{ cmd: "git", args: diffArgs, display: gitDisplay(diffArgs) }], files, patch };
+}
+
+async function defaultDiff(cwd: string, runner: CodeReviewExecRunner, pathspecs: string[] = []) {
+  const candidates = ["@{upstream}...HEAD", "main...HEAD", "HEAD~1"];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const diff = await collectDiff(cwd, runner, candidate, pathspecs);
+      if (diff.patch.trim() || diff.files.length > 0) return diff;
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return collectDiff(cwd, runner, "HEAD", pathspecs);
+}
+
+/**
+ * Prepare /code-review input in host code. Review agents receive a patch/files
+ * object and read-only tools; no model output is allowed to author shell strings.
+ */
+export async function prepareCodeReviewArgs(
+  rawArgs: string,
+  cwd: string,
+  runner: CodeReviewExecRunner = defaultExecRunner,
+): Promise<PreparedCodeReviewArgs> {
+  const { level, rest, tokens } = parseCodeReviewRawArgs(rawArgs);
+  let diff: PreparedCodeReviewArgs["diff"];
+  let instructions: string | undefined;
+  const target: string | undefined = rest || undefined;
+
+  if (tokens.length === 1 && tokens[0].startsWith("-")) {
+    throw new WorkflowError(`Unsafe /code-review target: ${tokens[0]}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+  }
+
+  if (tokens.length === 1 && RANGE_RE.test(tokens[0])) {
+    const range = await validateRange(cwd, tokens[0], runner);
+    diff = await collectDiff(cwd, runner, range);
+  } else if (tokens.length === 1 && looksLikePathToken(cwd, tokens[0])) {
+    const pathspec = validatePathspec(cwd, tokens[0]);
+    diff = await defaultDiff(cwd, runner, [pathspec]);
+  } else if (tokens.length === 1 && SAFE_REF.test(tokens[0]) && !Object.hasOwn(LEVEL_PARAMS, tokens[0])) {
+    const ref = assertSafeRef(tokens[0]);
+    await validateRef(cwd, ref, runner);
+    diff = await collectDiff(cwd, runner, `${ref}...HEAD`);
+  } else {
+    instructions = rest || undefined;
+    diff = await defaultDiff(cwd, runner);
+  }
+
+  return { level, target, instructions, diff };
+}
 
 /** Max findings the sweep phase may add (xhigh/max only). */
 const SWEEP_MAX = 8;
@@ -130,7 +356,7 @@ const META_WHEN_TO_USE =
 const META_PHASES = [
   {
     title: "Scope",
-    detail: "Pin the diff command, changed files, applicable AGENTS.md / CLAUDE.md files, and conventions",
+    detail: "Summarize the host-supplied diff/files, applicable AGENTS.md / CLAUDE.md files, and conventions",
   },
   {
     title: "Find",
@@ -144,9 +370,8 @@ const META_PHASES = [
 /**
  * Generate a `code-review` workflow script — the multi-angle review topology + prompts.
  *
- * The script reads its level + target from the `args` string at runtime:
- *   `<level> <target>` where level ∈ {high, xhigh, max} (default `high`).
- * `target` is a PR number, branch, ref range, path, or free-form review instructions.
+ * The script consumes a PreparedCodeReviewArgs object from host code. Git argv,
+ * changed files, and patch text are computed before the workflow starts.
  */
 export function generateCodeReviewWorkflow(): string {
   return `export const meta = {
@@ -164,12 +389,17 @@ export function generateCodeReviewWorkflow(): string {
 const LEVEL_PARAMS = ${JSON.stringify(LEVEL_PARAMS)}
 const SWEEP_MAX = ${SWEEP_MAX}
 
-const RAW_ARGS = (typeof args === "string" ? args : "").trim()
-const FIRST = RAW_ARGS.split(/\\s+/)[0] || ""
-// Own-property check so Object.prototype keys ("constructor", "toString") never parse as a level.
-const FIRST_IS_LEVEL = Object.prototype.hasOwnProperty.call(LEVEL_PARAMS, FIRST)
-const LEVEL = FIRST_IS_LEVEL ? FIRST : "high"
-const TARGET = FIRST_IS_LEVEL ? RAW_ARGS.slice(FIRST.length).trim() : RAW_ARGS
+const PREPARED = args && typeof args === "object" ? args : null
+if (!PREPARED || !PREPARED.diff || !Array.isArray(PREPARED.diff.files) || typeof PREPARED.diff.patch !== "string") {
+  return { error: "code-review requires host-prepared args from prepareCodeReviewArgs(); refusing to let a model plan shell commands." }
+}
+const LEVEL = Object.prototype.hasOwnProperty.call(LEVEL_PARAMS, PREPARED.level) ? PREPARED.level : "high"
+const TARGET = typeof PREPARED.target === "string" ? PREPARED.target : ""
+const USER_INSTRUCTIONS = typeof PREPARED.instructions === "string" ? PREPARED.instructions : ""
+const HOST_DIFF = PREPARED.diff
+const HOST_COMMANDS = Array.isArray(HOST_DIFF.commands) ? HOST_DIFF.commands : []
+const HOST_FILES = HOST_DIFF.files
+const HOST_PATCH = HOST_DIFF.patch
 const P = LEVEL_PARAMS[LEVEL]
 
 // Prompt fragments shared with the inline /code-review cells (one source of truth).
@@ -182,10 +412,8 @@ const SWEEP_GAP_FOCUS = ${JSON.stringify(SWEEP_GAP_FOCUS)}
 
 // \u2500\u2500\u2500 Schemas \u2500\u2500\u2500
 const SCOPE_SCHEMA = {
-  type: "object", required: ["diffCommand", "files", "summary"],
+  type: "object", required: ["summary"],
   properties: {
-    diffCommand: { type: "string" },
-    files: { type: "array", items: { type: "string" } },
     claudeMdFiles: { type: "array", items: { type: "string" } },
     summary: { type: "string" },
     conventions: { type: "string" },
@@ -228,48 +456,51 @@ const REPORT_SCHEMA = {
 
 // \u2500\u2500\u2500 Phase 0: Scope \u2500\u2500\u2500
 phase("Scope")
+if (!HOST_FILES || HOST_FILES.length === 0) {
+  return { level: LEVEL, target: TARGET || undefined, summary: "No changes found to review.", findings: [], stats: { finders: 0, candidates: 0, verified: 0 } }
+}
+const commandDisplay = HOST_COMMANDS.map(c => c.display || (c.cmd + " " + (Array.isArray(c.args) ? c.args.join(" ") : ""))).join("\\n")
 const scope = await agent(
-  "Establish the scope of a code review.\\n\\n" +
-  (TARGET
-    ? "Review target / instructions (passed by the user, verbatim): \\"" + TARGET + "\\". If it names a PR number, branch, ref range, or file path, build the matching git diff command for it; if it is a free-form instruction (e.g. only review certain files, focus on certain areas), honor any scope restriction when building the diff command and start from the current branch diff ('git diff @{upstream}...HEAD', falling back to 'git diff main...HEAD' or 'git diff HEAD~1') for whatever it does not narrow.\\n"
-    : "No explicit target \u2014 review the current branch: prefer 'git diff @{upstream}...HEAD' (fall back to 'git diff main...HEAD' or 'git diff HEAD~1'), and if there are uncommitted changes also include 'git diff HEAD'.\\n") +
-  "\\n1. Determine the exact diff command(s) for the review and run them to confirm they produce a non-empty diff.\\n" +
-  "2. List the changed files.\\n" +
-  "3. Summarize what changed in one paragraph.\\n" +
-  "4. List the project convention files that apply to the changed files — AGENTS.md and CLAUDE.md (the repo-root AGENTS.md or CLAUDE.md, any AGENTS.md / CLAUDE.md / CLAUDE.local.md in a directory that is an ancestor of a changed file, plus any user-level convention file such as ~/.pi/AGENTS.md or ~/.claude/CLAUDE.md). Read each one that exists and note conventions a reviewer should know.\\n\\n" +
-  "Return diffCommand exactly as a reviewer should run it. Structured output only.",
+  "Establish the scope of a code review from host-prepared read-only inputs.\\n\\n" +
+  "The host already computed the git argv, changed files, and patch. Do NOT run shell commands and do NOT invent or modify command strings. Use read-only file tools only for extra context.\\n\\n" +
+  (TARGET ? 'Review target / instructions (verbatim): "' + TARGET + '".\\n' : "") +
+  (USER_INSTRUCTIONS ? "Additional user instructions: " + USER_INSTRUCTIONS + "\\n" : "") +
+  "Host-computed changed files (" + HOST_FILES.length + "):\\n" + HOST_FILES.map(f => "  - " + f).join("\\n") + "\\n\\n" +
+  "Host-computed git argv (diagnostic only, do not run):\\n" + (commandDisplay || "(none)") + "\\n\\n" +
+  "Supplied patch:\\n\`\`\`diff\\n" + HOST_PATCH + "\\n\`\`\`\\n\\n" +
+  "1. Summarize what changed in one paragraph.\\n" +
+  "2. List the project convention files that apply to the changed files — AGENTS.md and CLAUDE.md (the repo-root AGENTS.md or CLAUDE.md, any AGENTS.md / CLAUDE.md / CLAUDE.local.md in a directory that is an ancestor of a changed file, plus any user-level convention file such as ~/.pi/AGENTS.md or ~/.claude/CLAUDE.md). Read each one that exists and note conventions a reviewer should know.\\n\\n" +
+  "Structured output only.",
   { label: "scope", tier: "big", schema: SCOPE_SCHEMA }
 )
 if (!scope) {
-  return { error: "Scope agent returned no result \u2014 cannot establish the review scope." }
+  return { error: "Scope agent returned no result — cannot establish the review scope." }
 }
-if (!scope.files || scope.files.length === 0) {
-  return { level: LEVEL, target: TARGET || undefined, summary: "No changes found to review.", findings: [], stats: { finders: 0, candidates: 0, verified: 0 } }
-}
-log(LEVEL + " review: " + scope.files.length + " changed files")
+log(LEVEL + " review: " + HOST_FILES.length + " changed files")
 
 const claudeMdFiles = scope.claudeMdFiles || []
 const SCOPE_BLOCK =
   "## Review scope\\n" +
-  "Diff command: " + scope.diffCommand + "\\n" +
-  "Changed files (" + scope.files.length + "):\\n" +
-  scope.files.map(f => "  - " + f).join("\\n") + "\\n" +
+  "Host-computed git argv (diagnostic only; reviewers must not run shell):\\n" + (commandDisplay || "(none)") + "\\n" +
+  "Changed files (" + HOST_FILES.length + "):\\n" +
+  HOST_FILES.map(f => "  - " + f).join("\\n") + "\\n" +
   "Applicable AGENTS.md / CLAUDE.md files (" + claudeMdFiles.length + "):\\n" +
   (claudeMdFiles.length > 0 ? claudeMdFiles.map(f => "  - " + f).join("\\n") : "  (none)") + "\\n\\n" +
   "## What changed\\n" + scope.summary + "\\n\\n" +
-  "## Conventions\\n" + (scope.conventions || "(none noted)") + "\\n" +
-  (TARGET
-    ? "\\n## User instructions (verbatim)\\n" + TARGET + "\\nHonor any scope restrictions or focus areas stated above \u2014 they take precedence over your angle's default breadth. Do not surface findings the instructions ask to skip.\\n"
+  "## Conventions\\n" + (scope.conventions || "(none noted)") + "\\n\\n" +
+  "## Supplied patch\\n\`\`\`diff\\n" + HOST_PATCH + "\\n\`\`\`\\n" +
+  (TARGET || USER_INSTRUCTIONS
+    ? "\\n## User instructions (verbatim)\\n" + (USER_INSTRUCTIONS || TARGET) + "\\nHonor any scope restrictions or focus areas stated above — they take precedence over your angle's default breadth. Do not surface findings the instructions ask to skip.\\n"
     : "")
 
 // \u2500\u2500\u2500 Prompts \u2500\u2500\u2500
 const FINDER_PROMPT = f =>
-  "## Code-review finder \u2014 " + f.label + "\\n\\n" + SCOPE_BLOCK + "\\n" +
-  "Run the diff command above and review ONLY through the lens of your assigned angle:\\n\\n" +
+  "## Code-review finder — " + f.label + "\\n\\n" + SCOPE_BLOCK + "\\n" +
+  "Review the supplied patch and related files using ONLY read-only tools, through the lens of your assigned angle:\\n\\n" +
   f.text + "\\n" +
   (f.kind === "cleanup" ? CLEANUP_PRECEDENCE + "\\n" : "") +
-  "Surface up to " + P.perAngle + " candidate findings, each with file, line, a one-line summary, and a concrete failure_scenario \u2014 the user-visible consequence (error, wrong output, data loss), not an intermediate state (value stale, set grows). " +
-  "Pass every candidate with a nameable failure scenario through \u2014 do not silently drop half-believed candidates; an independent verifier judges them next. " +
+  "Surface up to " + P.perAngle + " candidate findings, each with file, line, a one-line summary, and a concrete failure_scenario — the user-visible consequence (error, wrong output, data loss), not an intermediate state (value stale, set grows). " +
+  "Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next. " +
   "If nothing qualifies, return an empty list.\\n\\nStructured output only."
 
 const VERIFIER_PROMPT = c =>
@@ -278,7 +509,7 @@ const VERIFIER_PROMPT = c =>
   "File: " + c.file + (c.line != null ? ":" + c.line : "") + "\\n" +
   "Summary: " + c.summary + "\\n" +
   "Failure scenario: " + c.failure_scenario + "\\n\\n" +
-  "Run the diff command above, read the relevant file(s), and return exactly one verdict:\\n\\n" +
+  "Read the supplied patch and relevant file(s) with read-only tools, then return exactly one verdict:\\n\\n" +
   VERDICT_LADDER + "\\n\\n" + VERDICT_LADDER_RECALL + "\\n\\n" +
   "Structured output only. Evidence must quote or cite the relevant line(s)."
 

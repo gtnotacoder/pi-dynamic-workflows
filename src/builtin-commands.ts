@@ -3,9 +3,14 @@
  * They run a generated workflow script and print the final report.
  */
 
-import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  createCodingTools,
+  createReadOnlyTools,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow } from "./adversarial-review.js";
-import { generateCodeReviewWorkflow } from "./code-review.js";
+import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { createWebTools } from "./web-tools.js";
@@ -90,13 +95,13 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         const { mode, rest } = extractModeFlag(args);
         ctx.ui.notify("Reviewing — scoping, finding, verifying, synthesizing…", "info");
         try {
-          // The script parses its level (high|xhigh|max) + target from the raw args
-          // string at runtime, mirroring Claude Code's own arg parsing. The --mode
-          // flag is stripped first so it never leaks into level/target parsing.
+          // Host code owns all git argv/patch collection. Review agents get only
+          // read-only tools, so prompt text is not the security boundary.
+          const prepared = await prepareCodeReviewArgs(rest, cwd);
           const result = await runWorkflow(generateCodeReviewWorkflow(), {
             cwd,
-            args: rest,
-            tools: createCodingTools(cwd),
+            args: prepared,
+            tools: createReadOnlyTools(cwd),
             contextMode: mode,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),

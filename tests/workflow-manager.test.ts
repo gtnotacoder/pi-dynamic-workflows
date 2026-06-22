@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { workflowProjectPaths } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Agent runner that reports fixed usage so token accounting is exercised. */
@@ -443,6 +444,21 @@ test(
     const manager = new WorkflowManager({ cwd });
     const resumed = await manager.resume("nonexistent");
     assert.equal(resumed, false);
+  }),
+);
+
+test(
+  "resume/deleteRun reject invalid runId traversal and preserve adjacent files",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const root = workflowProjectPaths(cwd).rootDir;
+    mkdirSync(root, { recursive: true });
+    const sentinel = join(root, "escape.json");
+    writeFileSync(sentinel, "keep");
+
+    assert.equal(await manager.resume("../escape"), false);
+    assert.equal(manager.deleteRun("../escape"), false);
+    assert.equal(readFileSync(sentinel, "utf-8"), "keep");
   }),
 );
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
-import { generateCodeReviewWorkflow } from "../src/code-review.js";
+import { type CodeReviewExecRunner, generateCodeReviewWorkflow, prepareCodeReviewArgs } from "../src/code-review.js";
 import { parseWorkflowScript, runWorkflow } from "../src/workflow.js";
 import { makeCommandRegistryPi } from "./helpers/mock-pi.js";
 
@@ -35,11 +35,15 @@ test("code-review embeds the level parameters", () => {
   assert.match(body, /SWEEP_MAX = 8/);
 });
 
-test("code-review script parses level + target from the args string", () => {
+test("code-review requires host-prepared args and never asks models for shell commands", () => {
   const body = generateCodeReviewWorkflow();
-  assert.match(body, /RAW_ARGS = \(typeof args === "string"/);
-  assert.match(body, /FIRST_IS_LEVEL \? FIRST : "high"/);
-  assert.match(body, /FIRST_IS_LEVEL \? RAW_ARGS\.slice\(FIRST\.length\)/);
+  assert.match(body, /PREPARED = args && typeof args === "object"/);
+  assert.match(body, /prepareCodeReviewArgs/);
+  assert.match(body, /HOST_PATCH/);
+  assert.match(body, /read-only tools/i);
+  assert.doesNotMatch(body, /diffCommand/);
+  assert.doesNotMatch(body, /Run the diff command/);
+  assert.doesNotMatch(body, /Return diffCommand/);
 });
 
 test("code-review uses the verdict ladder CONFIRMED/PLAUSIBLE/REFUTED", () => {
@@ -155,7 +159,61 @@ test("/code-review is idempotent (alreadyRegistered guard)", () => {
   assert.ok(!commands.some((c) => c.name === "code-review"));
 });
 
+// ─── Host diff preparation ───────────────────────────────────────────────────────
+
+function fakeGit(records: Array<{ file: string; args: string[]; shell: false }>): CodeReviewExecRunner {
+  return async (file, args, options) => {
+    records.push({ file, args: [...args], shell: options.shell });
+    assert.equal(file, "git");
+    assert.equal(options.shell, false);
+    if (args[0] === "rev-parse") return { stdout: "ok\n", stderr: "" };
+    if (args.includes("--name-only")) return { stdout: "src/a.ts\n", stderr: "" };
+    return { stdout: "diff --git a/src/a.ts b/src/a.ts\n+new\n", stderr: "" };
+  };
+}
+
+test("prepareCodeReviewArgs keeps free-form/malicious text out of git argv", async () => {
+  const records: Array<{ file: string; args: string[]; shell: false }> = [];
+  const prepared = await prepareCodeReviewArgs("high main...HEAD; touch /tmp/pwned", "/repo", fakeGit(records));
+  assert.equal(prepared.level, "high");
+  assert.equal(prepared.instructions, "main...HEAD; touch /tmp/pwned");
+  assert.ok(records.length > 0);
+  const allArgs = records.flatMap((r) => r.args);
+  assert.ok(!allArgs.some((arg) => /touch|pwned|;/.test(arg)), "free-form text must not become git argv");
+});
+
+test("prepareCodeReviewArgs rejects unsafe range and path targets", async () => {
+  const records: Array<{ file: string; args: string[]; shell: false }> = [];
+  await assert.rejects(() => prepareCodeReviewArgs("high main...HEAD;touch", "/repo", fakeGit(records)));
+  await assert.rejects(() => prepareCodeReviewArgs("high ../secret.ts", "/repo", fakeGit(records)));
+  await assert.rejects(() => prepareCodeReviewArgs("high --cached", "/repo", fakeGit(records)));
+});
+
+test("prepareCodeReviewArgs passes path targets after -- as structured argv", async () => {
+  const records: Array<{ file: string; args: string[]; shell: false }> = [];
+  const prepared = await prepareCodeReviewArgs('high "src/a b.ts"', "/repo", fakeGit(records));
+  assert.equal(prepared.level, "high");
+  const diffCall = records.find((r) => r.args.includes("diff") && !r.args.includes("--name-only"));
+  assert.ok(diffCall, "expected a git diff call");
+  const sep = diffCall.args.indexOf("--");
+  assert.ok(sep >= 0, "pathspec separator is required");
+  assert.equal(diffCall.args[sep + 1], "src/a b.ts");
+});
+
 // ─── Token-free run: topology + caps with a mock agent ───────────────────────────
+
+function preparedArgs(level: "high" | "xhigh" | "max" = "high", target?: string) {
+  return {
+    level,
+    target,
+    instructions: target,
+    diff: {
+      commands: [{ cmd: "git" as const, args: ["diff", "main...HEAD"], display: "git diff main...HEAD" }],
+      files: ["src/a.ts", "src/b.ts"],
+      patch: ["diff --git a/src/a.ts b/src/a.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n"),
+    },
+  };
+}
 
 /**
  * Mock agent that returns canned, deterministic results keyed on the agent label /
@@ -174,8 +232,8 @@ function mockReviewer(level: "high" | "xhigh" | "max") {
         const label = options.label ?? "";
         if (label === "scope") {
           return {
-            diffCommand: "git diff main...HEAD",
-            files: ["src/a.ts", "src/b.ts"],
+            // A malicious/obsolete model-produced command must be ignored by the workflow.
+            diffCommand: "git diff main...HEAD; touch /tmp/pwned",
             summary: "changed a and b",
             claudeMdFiles: [],
             conventions: "",
@@ -228,7 +286,7 @@ test("code-review high run: ≤10 findings, no REFUTED leaks, sweep skipped", as
   const phases: string[] = [];
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
-    args: "high",
+    args: preparedArgs("high"),
     agent: mock.runner,
     persistLogs: false,
     onAgentStart: (e) => phases.push(e.phase ?? ""),
@@ -267,7 +325,7 @@ test("code-review xhigh run: sweep runs, survivors + sweep capped at 15", async 
   const phases: string[] = [];
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
-    args: "xhigh main..HEAD",
+    args: preparedArgs("xhigh", "main..HEAD"),
     agent: mock.runner,
     persistLogs: false,
     onAgentStart: (e) => phases.push(e.phase ?? ""),
@@ -300,8 +358,7 @@ test("code-review default level is high when the first token is not a known leve
   const mock = mockReviewer("high");
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
-    // "somepath" is not a level → defaults to high, target = "somepath".
-    args: "somepath",
+    args: preparedArgs("high", "somepath"),
     agent: mock.runner,
     persistLogs: false,
   });
@@ -314,7 +371,7 @@ test("code-review own-property check: 'constructor' does not parse as a level", 
   const mock = mockReviewer("high");
   const result = await runWorkflow(generateCodeReviewWorkflow(), {
     cwd: "/tmp",
-    args: "constructor src/x.ts",
+    args: preparedArgs("high", "constructor src/x.ts"),
     agent: mock.runner,
     persistLogs: false,
   });
