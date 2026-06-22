@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "./config.js";
+import { type ContextPrimitives, DEFAULT_CONTEXT_MODE, isSystemPromptMode } from "./context-mode.js";
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface WorkflowSettings {
@@ -28,6 +29,14 @@ export interface WorkflowSettings {
    * Set false to keep subagent sessions in-memory only.
    */
   persistSubagentTranscripts?: boolean;
+  /**
+   * Project-defined context modes, merged OVER the built-ins (inherit|isolated|scoped)
+   * for `--mode <name>` and agentType frontmatter. Each name maps to the three
+   * inheritance primitives. `inherit` is reserved and silently ignored. Entries
+   * missing or mistyping any field are dropped (the whole feature stays opt-in and
+   * the built-ins remain available regardless).
+   */
+  contextModes?: Record<string, ContextPrimitives>;
 }
 
 export interface WorkflowSettingsStore {
@@ -140,7 +149,39 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   if (typeof raw.persistSubagentTranscripts === "boolean") {
     settings.persistSubagentTranscripts = raw.persistSubagentTranscripts;
   }
+  const contextModes = normalizeContextModes(raw.contextModes);
+  if (contextModes) settings.contextModes = contextModes;
   return settings;
+}
+
+/**
+ * Validate a `contextModes` map. Each entry must fully specify the triple
+ * (two booleans + a valid systemPromptMode); partial/mistyped entries and the
+ * reserved name `inherit` are dropped. Returns undefined when nothing valid
+ * remains so the built-in registry is used unchanged.
+ */
+function normalizeContextModes(value: unknown): Record<string, ContextPrimitives> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, ContextPrimitives> = {};
+  let any = false;
+  for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (name === DEFAULT_CONTEXT_MODE || !entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    if (
+      typeof e.inheritProjectContext !== "boolean" ||
+      typeof e.inheritSkills !== "boolean" ||
+      !isSystemPromptMode(e.systemPromptMode)
+    ) {
+      continue;
+    }
+    out[name] = {
+      inheritProjectContext: e.inheritProjectContext,
+      systemPromptMode: e.systemPromptMode,
+      inheritSkills: e.inheritSkills,
+    };
+    any = true;
+  }
+  return any ? out : undefined;
 }
 
 function normalizeInteger(value: unknown, min: number, max: number): number | undefined {

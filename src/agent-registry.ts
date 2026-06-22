@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { AGENTS_DIR } from "./config.js";
+import { isSystemPromptMode, type SystemPromptMode } from "./context-mode.js";
 
 export interface AgentDefinition {
   /** Stable identity used as the `agentType` value. */
@@ -35,6 +36,14 @@ export interface AgentDefinition {
   model?: string;
   /** Markdown body, prepended to the subagent's task as role guidance. */
   prompt: string;
+  /** Named context-inheritance posture (expands to the three primitives below). */
+  contextMode?: string;
+  /** Load project AGENTS.md / context files into the subagent session. Default true. */
+  inheritProjectContext?: boolean;
+  /** "append": keep base prompt + role-as-task (default); "replace": role IS the system prompt. */
+  systemPromptMode?: SystemPromptMode;
+  /** Load skills into the subagent session. Default true. */
+  inheritSkills?: boolean;
   /** Where the definition was loaded from (project wins over user). */
   source: "project" | "user";
 }
@@ -45,6 +54,17 @@ function toStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const arr = value.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim());
   return arr.length ? arr : undefined;
+}
+
+/** Read a frontmatter boolean, accepting real booleans and the strings "true"/"false". */
+function toBool(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "true") return true;
+    if (v === "false") return false;
+  }
+  return undefined;
 }
 
 /**
@@ -69,6 +89,8 @@ export function parseAgentDefinition(
   const prompt = parsed.body.trim();
   if (!name && !prompt) return null;
 
+  const systemPromptMode = isSystemPromptMode(fm.systemPromptMode) ? fm.systemPromptMode : undefined;
+
   return {
     name,
     description: typeof fm.description === "string" ? fm.description.trim() || undefined : undefined,
@@ -76,6 +98,10 @@ export function parseAgentDefinition(
     disallowedTools: toStringArray(fm.disallowedTools),
     model: typeof fm.model === "string" ? fm.model.trim() || undefined : undefined,
     prompt,
+    contextMode: typeof fm.contextMode === "string" ? fm.contextMode.trim() || undefined : undefined,
+    inheritProjectContext: toBool(fm.inheritProjectContext),
+    systemPromptMode,
+    inheritSkills: toBool(fm.inheritSkills),
     source,
   };
 }
@@ -157,6 +183,10 @@ export function agentDefinitionKey(def: AgentDefinition | undefined): string | n
     disallowedTools: def.disallowedTools ?? null,
     model: def.model ?? null,
     prompt: def.prompt,
+    contextMode: def.contextMode ?? null,
+    inheritProjectContext: def.inheritProjectContext ?? null,
+    systemPromptMode: def.systemPromptMode ?? null,
+    inheritSkills: def.inheritSkills ?? null,
   });
 }
 

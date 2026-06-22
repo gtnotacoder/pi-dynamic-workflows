@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  buildContextModeRegistry,
   createEffortState,
   createWorkflowStorage,
   createWorkflowTool,
@@ -10,6 +11,7 @@ import {
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
   registerEffortCommand,
+  registerModesCommand,
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
   saveWorkflowSettingsForCwd,
@@ -22,18 +24,23 @@ export default function extension(pi: ExtensionAPI) {
   const cwd = process.cwd();
   const storage = createWorkflowStorage(cwd);
   const settings = loadWorkflowSettings({ cwd });
+  // Built-ins + any project-defined `contextModes`, threaded into the manager so
+  // tool-driven runs resolve project modes (slash commands build their own per call).
+  const contextModeRegistry = buildContextModeRegistry(settings.contextModes);
   const manager = new WorkflowManager({
     cwd,
     loadSavedWorkflow: (name) => storage.load(name)?.script,
     defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
     concurrency: settings.defaultConcurrency,
     defaultAgentRetries: settings.defaultAgentRetries,
+    contextModeRegistry,
   });
 
   const workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
   registerWorkflowCommands(pi, manager, { storage, cwd });
   registerWorkflowModelsCommand(pi);
+  registerModesCommand(pi, { cwd });
   registerBuiltinWorkflows(pi, { cwd });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive

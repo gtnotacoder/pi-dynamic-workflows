@@ -22,6 +22,12 @@ import {
   MAX_SCRIPT_BYTES,
   SCRIPT_TIMEOUT_MS,
 } from "./config.js";
+import {
+  BUILTIN_CONTEXT_MODES,
+  type ContextModeRegistry,
+  resolveContextModeLayers,
+  type SystemPromptMode,
+} from "./context-mode.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -99,6 +105,22 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   resumeFromRunId?: string;
   /** Called after each live agent completes so the caller can persist the journal. */
   onAgentJournal?: (entry: JournalEntry) => void;
+  /**
+   * Run-level default context posture — the LOWEST-precedence layer, beneath the
+   * agentType frontmatter and the per-call `agent()` options. Set by a slash
+   * command's `--mode <name>` flag so e.g. `/code-review --mode isolated` runs
+   * every reviewer clean-room without editing any agent `.md`.
+   */
+  contextMode?: string;
+  inheritProjectContext?: boolean;
+  systemPromptMode?: SystemPromptMode;
+  inheritSkills?: boolean;
+  /**
+   * Named context-mode registry (built-ins + project-defined). Defaults to the
+   * built-ins. Threaded from settings by the extension entry so a project's
+   * `contextModes` are resolvable here and in tool-driven runs.
+   */
+  contextModeRegistry?: ContextModeRegistry;
   /** Internal: shared runtime inherited by a nested workflow() call. */
   sharedRuntime?: SharedRuntime;
   /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
@@ -179,6 +201,19 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    * and falls back to default tools/model (with the name as a prose hint).
    */
   agentType?: string;
+  /**
+   * Context-inheritance posture: a named mode (`inherit` | `isolated` | `scoped`
+   * | a project-defined mode) that expands to the three primitives below. The
+   * agentType definition may set its own; these call-level fields override it
+   * (runtime > frontmatter). Default `inherit` == today's behavior.
+   */
+  contextMode?: string;
+  /** Load project AGENTS.md / context files into this subagent. Default true. */
+  inheritProjectContext?: boolean;
+  /** "append": base prompt + role-as-task (default); "replace": role IS the system prompt. */
+  systemPromptMode?: SystemPromptMode;
+  /** Load skills into this subagent. Default true. */
+  inheritSkills?: boolean;
   /** Override timeout for this specific agent. null means no hard timeout. */
   timeoutMs?: number | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
@@ -402,6 +437,40 @@ export async function runWorkflow<T = unknown>(
       log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
     }
 
+    // Resolve the context-inheritance posture once: the agentType frontmatter is
+    // the lower-precedence layer, the agent() call options the higher. The result
+    // is passed to run() as explicit primitives (which win over any bare mode), so
+    // run()'s own resolveContextMode reproduces exactly this triple.
+    const { primitives: ctx } = resolveContextModeLayers(
+      [
+        // Lowest precedence: run-level default (e.g. a `--mode` flag).
+        {
+          contextMode: options.contextMode,
+          inheritProjectContext: options.inheritProjectContext,
+          systemPromptMode: options.systemPromptMode,
+          inheritSkills: options.inheritSkills,
+        },
+        // Middle: the agentType `.md` frontmatter.
+        {
+          contextMode: agentDef?.contextMode,
+          inheritProjectContext: agentDef?.inheritProjectContext,
+          systemPromptMode: agentDef?.systemPromptMode,
+          inheritSkills: agentDef?.inheritSkills,
+        },
+        // Highest: the per-call agent() options.
+        {
+          contextMode: agentOptions.contextMode,
+          inheritProjectContext: agentOptions.inheritProjectContext,
+          systemPromptMode: agentOptions.systemPromptMode,
+          inheritSkills: agentOptions.inheritSkills,
+        },
+      ],
+      options.contextModeRegistry ?? BUILTIN_CONTEXT_MODES,
+    );
+    // Under "replace" the role prompt becomes the system prompt, so it must NOT
+    // also be injected into the task. buildAgentInstructions is told to skip it.
+    const roleAsSystemPrompt = ctx.systemPromptMode === "replace";
+
     // Model precedence: explicit agentOptions.model > agentType.model > tier > phase model.
     // The "explicit-level" model is opts.model, else the definition's model — either
     // beats tier/phase. When only a tier is set, pass undefined here so the tier (not
@@ -489,11 +558,20 @@ export async function runWorkflow<T = unknown>(
                 label,
                 schema: agentOptions.schema,
                 signal: options.signal,
-                instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef),
+                instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
                 model: modelSpec,
                 tier: agentOptions.tier,
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
+                // The workflow layer is the single resolution authority: it passes
+                // the fully-resolved primitives, so the raw mode name is intentionally
+                // NOT forwarded (a project-mode name would be unknown to agent.ts's
+                // built-in registry and warn spuriously).
+                inheritProjectContext: ctx.inheritProjectContext,
+                systemPromptMode: ctx.systemPromptMode,
+                inheritSkills: ctx.inheritSkills,
+                // Role prompt → system prompt only under "replace"; otherwise undefined.
+                systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
                 cwd: runCwd,
                 transcriptDir: options.transcriptDir,
                 onModelResolved: (id: string) => {
@@ -1098,8 +1176,14 @@ function hashAgentCall(
     tier: options.tier ?? null,
     phase: phase ?? null,
     agentType: options.agentType ?? null,
-    // Resolved definition (tools/model/prompt) so editing an agent .md invalidates
-    // this call's cached result on a later resume.
+    // Context-inheritance posture: a different mode/primitive set produces a
+    // materially different session, so it must invalidate the cached result.
+    contextMode: options.contextMode ?? null,
+    inheritProjectContext: options.inheritProjectContext ?? null,
+    systemPromptMode: options.systemPromptMode ?? null,
+    inheritSkills: options.inheritSkills ?? null,
+    // Resolved definition (tools/model/prompt/context) so editing an agent .md
+    // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,
     schema: options.schema ?? null,
   });
@@ -1110,12 +1194,16 @@ function buildAgentInstructions(
   phase: string | undefined,
   options: AgentOptions,
   def: AgentDefinition | undefined,
+  roleAsSystemPrompt = false,
 ): string | undefined {
   const lines: string[] = [];
   // A resolved agentType binds a real role prompt (the definition body). Only
   // fall back to the prose hint when the agentType named no known definition.
-  if (def?.prompt) lines.push(def.prompt);
-  else if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
+  // When the resolved context mode is "replace", the role prompt is installed as
+  // the session system prompt instead of the task, so skip it here to avoid
+  // duplicating it across both the system prompt and the task turn.
+  if (def?.prompt && !roleAsSystemPrompt) lines.push(def.prompt);
+  else if (options.agentType && !def?.prompt) lines.push(`Act as workflow subagent type: ${options.agentType}`);
   if (phase) lines.push(`Workflow phase: ${phase}`);
   if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
   // Note: options.model is applied for real via the session, not injected as prose.

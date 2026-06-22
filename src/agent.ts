@@ -6,8 +6,10 @@ import {
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
+  DefaultResourceLoader,
   getAgentDir,
   ModelRegistry,
+  type ResourceLoader,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
@@ -16,6 +18,13 @@ import type { Static, TSchema } from "typebox";
 import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
+import {
+  DEFAULT_CONTEXT_MODE,
+  needsResourceLoader,
+  resolveContextMode,
+  resourceLoaderFlags,
+  type SystemPromptMode,
+} from "./context-mode.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
@@ -290,6 +299,25 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * structured_output) before falling back to strict prose extraction. Default 2.
    */
   maxSchemaRetries?: number;
+  /**
+   * Context-inheritance posture for this subagent (expands to the three
+   * primitives below). When omitted, the explicit fields — else `inherit` —
+   * apply. See context-mode.ts. Default `inherit` == today's behavior.
+   */
+  contextMode?: string;
+  /** Load project AGENTS.md / context files into the subagent session. Default true. */
+  inheritProjectContext?: boolean;
+  /** "append": base prompt intact, role-as-task (default); "replace": role IS the system prompt. */
+  systemPromptMode?: SystemPromptMode;
+  /** Load skills into the subagent session. Default true. */
+  inheritSkills?: boolean;
+  /**
+   * The agentType role prompt to install AS the system prompt when the resolved
+   * `systemPromptMode` is "replace". The workflow layer passes the agent `.md`
+   * body here (and omits it from the task to avoid duplication). Ignored unless
+   * the resolved mode is "replace".
+   */
+  systemPromptText?: string;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -378,6 +406,42 @@ export class WorkflowAgent {
     }
 
     const agentDir = getAgentDir();
+
+    // Resolve the context-inheritance posture (run options are the runtime layer;
+    // any frontmatter layer was already folded in by the workflow layer, which
+    // passes explicit primitives that win over a mode). `inherit` (the default)
+    // resolves to needsResourceLoader === false, so the block below is skipped and
+    // the session is constructed exactly as before — the backward-compat gate.
+    const { primitives: ctx, unknownMode } = resolveContextMode(undefined, {
+      contextMode: options.contextMode,
+      inheritProjectContext: options.inheritProjectContext,
+      systemPromptMode: options.systemPromptMode,
+      inheritSkills: options.inheritSkills,
+    });
+    if (unknownMode) {
+      console.warn(`[workflow] unknown contextMode "${unknownMode}"; using "${DEFAULT_CONTEXT_MODE}"`);
+    }
+    // Single SettingsManager shared by the session and (when built) the loader, so
+    // the subagent inherits the user's default provider/model exactly as today.
+    const settingsManager = SettingsManager.create(this.cwd, agentDir);
+    let resourceLoader: ResourceLoader | undefined;
+    if (needsResourceLoader(ctx)) {
+      // Enforcement mapping lives in resourceLoaderFlags (pure + unit-tested):
+      // inheritProjectContext:false → noContextFiles; inheritSkills:false → noSkills;
+      // replace → role prompt AS the system prompt (workflow layer omits it from the task).
+      const flags = resourceLoaderFlags(ctx, options.systemPromptText);
+      const loader = new DefaultResourceLoader({
+        cwd: runCwd,
+        agentDir,
+        settingsManager,
+        noContextFiles: flags.noContextFiles,
+        noSkills: flags.noSkills,
+        systemPrompt: flags.systemPrompt,
+      });
+      await loader.reload();
+      resourceLoader = loader;
+    }
+
     // Persist the subagent's full message stream to disk when a transcript dir is
     // provided (workflow runs), so a failed run is debuggable — matching Claude
     // Code's per-subagent `agent-<id>.jsonl` transcript. Ad-hoc `agent()` with no
@@ -402,8 +466,11 @@ export class WorkflowAgent {
       // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
       // would fall back to the first available model (e.g. openai-codex) which may
       // not have valid auth, causing silent empty responses.
-      settingsManager: SettingsManager.create(this.cwd, agentDir),
+      settingsManager,
       customTools,
+      // A custom resource loader is supplied only for a non-default context mode;
+      // otherwise createAgentSession builds its own DefaultResourceLoader as before.
+      ...(resourceLoader ? { resourceLoader } : {}),
       ...this.sessionOptions,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),

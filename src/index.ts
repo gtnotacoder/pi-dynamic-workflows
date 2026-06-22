@@ -8,6 +8,23 @@ export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export * from "./config.js";
+export {
+  BUILTIN_CONTEXT_MODES,
+  buildContextModeRegistry,
+  type ContextModeRegistry,
+  type ContextOverrides,
+  type ContextPrimitives,
+  DEFAULT_CONTEXT_MODE,
+  DEFAULT_PRIMITIVES,
+  isSystemPromptMode,
+  needsResourceLoader,
+  type ResolveResult,
+  type ResourceLoaderFlags,
+  resolveContextMode,
+  resolveContextModeLayers,
+  resourceLoaderFlags,
+  type SystemPromptMode,
+} from "./context-mode.js";
 export type { DeepResearchConfig } from "./deep-research.js";
 export { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
 export type {
@@ -55,6 +72,12 @@ export {
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";
+export {
+  buildRegistryForCwd,
+  extractModeFlag,
+  registerModesCommand,
+  renderModes,
+} from "./modes-command.js";
 export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
 export {

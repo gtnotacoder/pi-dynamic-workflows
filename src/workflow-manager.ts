@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
 import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
+import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
@@ -99,6 +100,8 @@ export interface WorkflowManagerOptions {
   defaultAgentTimeoutMs?: number | null;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
+  /** Named context-mode registry (built-ins + project-defined) for tool-driven runs. */
+  contextModeRegistry?: ContextModeRegistry;
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -118,6 +121,8 @@ export class WorkflowManager extends EventEmitter {
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
   private defaultAgentRetries: number;
+  /** Named context-mode registry threaded into every run so project modes resolve. */
+  private contextModeRegistry?: ContextModeRegistry;
   /** Cached setting: whether subagent transcripts are persisted to disk. */
   private persistSubagentTranscripts: boolean;
 
@@ -131,6 +136,7 @@ export class WorkflowManager extends EventEmitter {
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
+    this.contextModeRegistry = options.contextModeRegistry;
     this.persistence = createRunPersistence(this.cwd);
     // Read the opt-out once (run start is rare). Default true matches Claude Code.
     try {
@@ -360,6 +366,7 @@ export class WorkflowManager extends EventEmitter {
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,
+        contextModeRegistry: this.contextModeRegistry,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
         tokenBudget,
