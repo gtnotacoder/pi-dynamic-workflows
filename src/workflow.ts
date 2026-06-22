@@ -301,12 +301,12 @@ export async function runWorkflow<T = unknown>(
   options: WorkflowRunOptions = {},
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
-  // Reject oversized scripts up front — matches Claude Code's `A2` (524288-byte)
-  // input-schema cap. The size is measured on the raw script source (which is
-  // what the model supplies); checking before parse/execute avoids wasted work.
+  // Reject oversized scripts up front (524288-byte cap). The size is measured on
+  // the raw script source (which is what the model supplies); checking before
+  // parse/execute avoids wasted work.
   if (script.length > MAX_SCRIPT_BYTES) {
     throw new WorkflowError(
-      `Script exceeds ${MAX_SCRIPT_BYTES} bytes (got ${script.length}); Claude Code caps workflow scripts at ${MAX_SCRIPT_BYTES} bytes`,
+      `Script exceeds ${MAX_SCRIPT_BYTES} bytes (got ${script.length}); workflow scripts are capped at ${MAX_SCRIPT_BYTES} bytes`,
       WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
       { recoverable: false },
     );
@@ -985,9 +985,9 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
-  // Guard synchronous script setup with the 30000 ms runInContext timeout
-  // (Claude's `Pjn`). The async agent body runs after the Promise is returned,
-  // so the timeout only bounds synchronous parse/setup — exactly like Claude.
+  // Guard synchronous script setup with the 30000 ms runInContext timeout. The
+  // async agent body runs after the Promise is returned, so the timeout only
+  // bounds synchronous parse/setup.
   const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
     timeout: SCRIPT_TIMEOUT_MS,
   });

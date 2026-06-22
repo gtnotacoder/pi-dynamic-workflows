@@ -15,12 +15,12 @@
  * semantic dupes by index, caps at maxFindings, and backfills unmerged findings.
  *
  * The generated script is static and reads its inputs from the `args` string at runtime
- * (mirroring Claude's arg parsing, incl. the own-property level check so `Object.prototype`
- * keys like "constructor" never parse as a level) — no string interpolation of user input
- * into source, so no escaping hazards.
+ * (with an own-property level check so `Object.prototype` keys like "constructor" never
+ * parse as a level) — no string interpolation of user input into source, so no escaping
+ * hazards.
  */
 
-/** Claude's verified level parameters (own-property check protects the level parse). */
+/** Level parameters (own-property check protects the level parse). */
 const LEVEL_PARAMS: Record<
   string,
   { correctnessAngles: number; perAngle: number; maxFindings: number; sweep: boolean }
@@ -98,11 +98,11 @@ Check that each change is implemented at the right depth, not as a fragile banda
   },
   {
     label: "conventions",
-    text: `### Conventions (CLAUDE.md)
+    text: `### Conventions (AGENTS.md / CLAUDE.md)
 
-Find the CLAUDE.md files that govern the changed code: the user-level ~/.claude/CLAUDE.md, the repo-root CLAUDE.md, plus any CLAUDE.md or CLAUDE.local.md in a directory that is an ancestor of a changed file (a directory's CLAUDE.md only applies to files at or below it). Read each one that exists, then check the diff for clear violations of the rules they state.
+Find the project convention files that govern the changed code \u2014 AGENTS.md and CLAUDE.md (and CLAUDE.local.md): the repo-root AGENTS.md or CLAUDE.md, any AGENTS.md / CLAUDE.md / CLAUDE.local.md in a directory that is an ancestor of a changed file (a directory's convention file only applies to files at or below it), and any user-level convention file (e.g. ~/.pi/AGENTS.md or ~/.claude/CLAUDE.md). Read each one that exists, then check the diff for clear violations of the rules they state.
 
-Only flag a violation when you can quote the exact rule and the exact line that breaks it \u2014 no style preferences, no vague "spirit of the doc" inferences. In the finding, name the CLAUDE.md path and quote the rule so the report can cite it. If no CLAUDE.md applies, return nothing for this angle.`,
+Only flag a violation when you can quote the exact rule and the exact line that breaks it \u2014 no style preferences, no vague "spirit of the doc" inferences. In the finding, name the convention-file path and quote the rule so the report can cite it. If no AGENTS.md / CLAUDE.md applies, return nothing for this angle.`,
   },
 ];
 
@@ -117,7 +117,7 @@ const VERDICT_LADDER_RECALL = `**PLAUSIBLE by default** \u2014 do not refute a c
 **REFUTED** only when constructible from the code: factually wrong (quote the actual line); provably impossible (type/constant/invariant \u2014 show it); already handled in this diff (cite the guard); or pure style with no observable effect.`;
 
 /** Precedence note appended to cleanup-angle finder prompts. */
-const CLEANUP_PRECEDENCE = `Cleanup, altitude, and conventions candidates use the same \`file\`/\`line\`/\`summary\` shape; in \`failure_scenario\`, state the concrete cost (what is duplicated, wasted, harder to maintain, or which CLAUDE.md rule is broken) instead of a crash. Correctness bugs always outrank cleanup, altitude, and conventions findings when the output cap forces a cut.`;
+const CLEANUP_PRECEDENCE = `Cleanup, altitude, and conventions candidates use the same \`file\`/\`line\`/\`summary\` shape; in \`failure_scenario\`, state the concrete cost (what is duplicated, wasted, harder to maintain, or which AGENTS.md / CLAUDE.md rule is broken) instead of a crash. Correctness bugs always outrank cleanup, altitude, and conventions findings when the output cap forces a cut.`;
 
 /** Focus prompt for the sweep (gap-filling) phase. */
 const SWEEP_GAP_FOCUS = `moved/extracted code that dropped a guard or anchor; second-tier footguns (dataclass default evaluated once, \`hash()\` non-determinism, lock-scope shrink, predicate methods with side effects); setup/teardown asymmetry in tests; config defaults flipped.`;
@@ -128,7 +128,10 @@ const META_DESCRIPTION =
 const META_WHEN_TO_USE =
   'Launched by the /code-review skill at high, xhigh, or max effort when workflows are enabled. Pass args as "<level> [target]" \u2014 level is high, xhigh, or max; target is an optional PR number, branch, ref range, path, or free-form review instructions (e.g. "only review src/foo.ts", "focus on error handling").';
 const META_PHASES = [
-  { title: "Scope", detail: "Pin the diff command, changed files, applicable CLAUDE.md files, and conventions" },
+  {
+    title: "Scope",
+    detail: "Pin the diff command, changed files, applicable AGENTS.md / CLAUDE.md files, and conventions",
+  },
   {
     title: "Find",
     detail: "One finder agent per review angle (correctness + cleanup + conventions), streaming into verify",
@@ -233,7 +236,7 @@ const scope = await agent(
   "\\n1. Determine the exact diff command(s) for the review and run them to confirm they produce a non-empty diff.\\n" +
   "2. List the changed files.\\n" +
   "3. Summarize what changed in one paragraph.\\n" +
-  "4. List the CLAUDE.md files that apply to the changed files (the user-level ~/.claude/CLAUDE.md, the repo-root CLAUDE.md, plus any CLAUDE.md or CLAUDE.local.md in a directory that is an ancestor of a changed file). Read each one that exists and note conventions a reviewer should know.\\n\\n" +
+  "4. List the project convention files that apply to the changed files — AGENTS.md and CLAUDE.md (the repo-root AGENTS.md or CLAUDE.md, any AGENTS.md / CLAUDE.md / CLAUDE.local.md in a directory that is an ancestor of a changed file, plus any user-level convention file such as ~/.pi/AGENTS.md or ~/.claude/CLAUDE.md). Read each one that exists and note conventions a reviewer should know.\\n\\n" +
   "Return diffCommand exactly as a reviewer should run it. Structured output only.",
   { label: "scope", tier: "big", schema: SCOPE_SCHEMA }
 )
@@ -251,7 +254,7 @@ const SCOPE_BLOCK =
   "Diff command: " + scope.diffCommand + "\\n" +
   "Changed files (" + scope.files.length + "):\\n" +
   scope.files.map(f => "  - " + f).join("\\n") + "\\n" +
-  "Applicable CLAUDE.md files (" + claudeMdFiles.length + "):\\n" +
+  "Applicable AGENTS.md / CLAUDE.md files (" + claudeMdFiles.length + "):\\n" +
   (claudeMdFiles.length > 0 ? claudeMdFiles.map(f => "  - " + f).join("\\n") : "  (none)") + "\\n\\n" +
   "## What changed\\n" + scope.summary + "\\n\\n" +
   "## Conventions\\n" + (scope.conventions || "(none noted)") + "\\n" +

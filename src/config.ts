@@ -18,18 +18,17 @@ export const MAX_FANOUT_ITEMS = 4096;
 export const MAX_SCRIPT_BYTES = 524_288;
 
 /**
- * Timeout for the synchronous runInContext() call that evaluates the wrapped
- * workflow script. Matches Claude Code's `Pjn` = 30000 ms. Because the wrapper
- * is `(async () => { body })()`, runInContext returns a Promise synchronously,
- * so this only guards *synchronous* script setup — exactly like Claude's Pjn.
- * The async agent work is bounded separately by agentTimeoutMs / budget.
+ * Timeout (30000 ms) for the synchronous runInContext() call that evaluates the
+ * wrapped workflow script. Because the wrapper is `(async () => { body })()`,
+ * runInContext returns a Promise synchronously, so this only guards *synchronous*
+ * script setup. The async agent work is bounded separately by agentTimeoutMs / budget.
  */
 export const SCRIPT_TIMEOUT_MS = 30_000;
 
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;
 
-/** Maximum concurrent agents (matches Claude Code limit). */
+/** Maximum concurrent agents. */
 export const MAX_CONCURRENCY = 16;
 
 /** Maximum automatic retry attempts after a recoverable agent failure. */
@@ -42,10 +41,9 @@ export const DEFAULT_TOKEN_BUDGET = null;
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";
 
 /**
- * Whether per-subagent NDJSON transcripts are written to disk by default.
- * Matches Claude Code, which writes an `agent-<id>.jsonl` transcript per
- * subagent (Task tool and workflow `agent()`) so a failed run is debuggable.
- * Users can opt out via `persistSubagentTranscripts: false` in workflow settings.
+ * Whether per-subagent NDJSON transcripts are written to disk by default. Each
+ * subagent (workflow `agent()`) gets an `agent-<id>.jsonl` transcript so a failed
+ * run is debuggable. Opt out via `persistSubagentTranscripts: false` in settings.
  */
 export const PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT = true;
 

@@ -79,8 +79,8 @@ return xs`;
   assert.equal(result.agentCount, 4);
 });
 
-test("runWorkflow default concurrency floors at 2 even on a 1-core box (Claude parity, EDIT 6)", async () => {
-  // Claude Code's default concurrency is min(16, max(2, cores-2)) — floor 2 — so a
+test("runWorkflow default concurrency floors at 2 even on a 1-core box (EDIT 6)", async () => {
+  // The default concurrency is min(16, max(2, cores-2)) — floor 2 — so a
   // single/dual-core box still runs 2 agents in parallel. The package's default is
   // `Math.max(2, (navigator.hardwareConcurrency ?? 8) - 2)`; stub the core count to 1
   // and assert the limiter still allows 2 in flight (not 1).
@@ -122,7 +122,7 @@ return xs`;
   }
 });
 
-test("parallel() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+test("parallel() rejects more than 4096 items without spawning agents (fan-out cap)", async () => {
   let calls = 0;
   const runner = {
     async run(_prompt: string) {
@@ -157,7 +157,7 @@ return xs.length`,
   assert.equal(result.agentCount, 0, "non-agent thunks must not consume agent slots");
 });
 
-test("pipeline() rejects more than 4096 items without spawning agents (Claude Code fan-out cap)", async () => {
+test("pipeline() rejects more than 4096 items without spawning agents (fan-out cap)", async () => {
   let calls = 0;
   const runner = {
     async run(_prompt: string) {
@@ -192,7 +192,7 @@ return xs.length`,
   assert.equal(result.agentCount, 0);
 });
 
-test("runWorkflow rejects scripts larger than 524288 bytes (Claude Code A2 script cap)", async () => {
+test("runWorkflow rejects scripts larger than 524288 bytes (script size cap)", async () => {
   // Build a minimal valid script whose body is exactly 524289 bytes (one over
   // the cap). The size check measures the full script source, so pad the body
   // with a long comment.
@@ -220,7 +220,7 @@ test("runWorkflow accepts a script exactly 524288 bytes (boundary)", async () =>
   assert.equal(result.result, 1);
 });
 
-test("runWorkflow rejects a synchronous infinite loop after ~30000 ms (Claude Code Pjn script timeout)", async () => {
+test("runWorkflow rejects a synchronous infinite loop after ~30000 ms (script setup timeout)", async () => {
   const start = Date.now();
   await assert.rejects(
     runWorkflow(

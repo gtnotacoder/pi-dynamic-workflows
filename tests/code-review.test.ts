@@ -11,7 +11,7 @@ test("generateCodeReviewWorkflow produces a valid, parseable script", () => {
   const { meta, body } = parseWorkflowScript(generateCodeReviewWorkflow());
   assert.equal(meta.name, "code-review");
   assert.equal(typeof meta.description, "string");
-  // Claude's verified phase order: Scope → Find → Verify → Sweep → Synthesize.
+  // Phase order: Scope → Find → Verify → Sweep → Synthesize.
   assert.deepEqual(
     meta.phases?.map((p) => p.title),
     ["Scope", "Find", "Verify", "Sweep", "Synthesize"],
@@ -20,7 +20,7 @@ test("generateCodeReviewWorkflow produces a valid, parseable script", () => {
   assert.match(body, /hasOwnProperty\.call\(LEVEL_PARAMS/);
 });
 
-test("code-review embeds the verified level parameters", () => {
+test("code-review embeds the level parameters", () => {
   const body = generateCodeReviewWorkflow();
   // high: 3 correctness angles, ≤6 per angle, ≤10 findings, no sweep.
   assert.match(body, /"high":\s*\{\s*"correctnessAngles":\s*3/);
@@ -53,7 +53,7 @@ test("code-review uses the verdict ladder CONFIRMED/PLAUSIBLE/REFUTED", () => {
 
 test("code-review embeds the angle taxonomy (5 correctness + 5 cleanup)", () => {
   const body = generateCodeReviewWorkflow();
-  // 5 correctness angles, labelled angle-A..angle-E (Claude's H$p mapping).
+  // 5 correctness angles, labelled angle-A..angle-E.
   for (const l of ["angle-A", "angle-B", "angle-C", "angle-D", "angle-E"]) {
     assert.match(body, new RegExp(`"label":\\s*"${l}"`), `missing correctness angle ${l}`);
   }
@@ -75,7 +75,8 @@ test("code-review embeds the angle prompt text", () => {
   assert.match(body, /unnecessary complexity the diff adds/);
   assert.match(body, /wasted work the diff introduces/);
   assert.match(body, /right depth, not as a fragile bandaid/);
-  assert.match(body, /CLAUDE\.md files that govern the changed code/);
+  assert.match(body, /convention files that govern the changed code/);
+  assert.match(body, /AGENTS\.md and CLAUDE\.md/); // conventions angle reads AGENTS.md too
 });
 
 test("code-review embeds the verdict ladder + recall-bias + sweep focus", () => {
@@ -253,7 +254,7 @@ test("code-review high run: ≤10 findings, no REFUTED leaks, sweep skipped", as
   }
   // Sweep must NOT run at the high level.
   assert.equal(mock.state.sweepCalled(), false);
-  // Phase order matches Claude's topology (Find/Verify entered via the agent phase option).
+  // Find/Verify entered via the agent phase option.
   assert.equal(phases[0], "Scope");
   assert.equal(phases.filter((p) => p === "Find").length, 8); // 3 correctness + 5 cleanup
   assert.equal(phases.filter((p) => p === "Verify").length, 48); // 8 finders × 6 candidates

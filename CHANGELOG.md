@@ -5,10 +5,10 @@ All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derive
 Only changes from upstream are listed here; upstream history is preserved in git.
 See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
-## [unreleased] — fork on upstream v2.7.0
+## [0.1.0] — first standalone release (derived from upstream v2.7.0)
 
-Fork point: upstream `46faf18` (`chore(release): bump version to 2.7.0`).
-All changes below are on top of that, 2026-06-21.
+Originally derived from `@quintinshaw/pi-dynamic-workflows` v2.6.0 (`622f6df`),
+aligned to upstream v2.7.0. All changes below are on top of that.
 
 ### Workflow engine (EDITs 1–2)
 - Cap `parallel()` / `pipeline()` fan-out at 4096 items. (`9a65cb4`)
