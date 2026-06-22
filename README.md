@@ -86,6 +86,8 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
+| `contextMode` | Context-inheritance posture (`'inherit'` / `'isolated'` / `'scoped'` / project-defined) — see [Context modes](#context-modes). |
+| `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
 
 ---
 
@@ -105,14 +107,40 @@ Agents are routed to concrete models by **tier**, so workflow source stays porta
 
 ---
 
+## Context modes
+
+Per-subagent **context governance**: each subagent can control whether it
+inherits project `AGENTS.md` context, whether its role prompt **replaces** or
+augments the base system prompt, and whether it inherits skills — via a named
+mode or per-field overrides. Default `inherit` == prior behavior, so existing
+workflows are unchanged.
+
+| Mode | context | prompt | skills | Posture |
+|------|---------|--------|--------|---------|
+| `inherit` *(default)* | in | append | in | Status quo — full inheritance, role-as-task. |
+| `isolated` | out | replace | out | Clean room — no project context/skills, role replaces prompt. |
+| `scoped` | in | replace | out | Reviewer — project facts in, own persona, no skills. |
+
+Select it at the agent `.md` (`contextMode: scoped`), the `agent()` call
+(`agent(p, { contextMode: 'isolated' })`), or the run level
+(`/code-review --mode isolated`). Precedence, highest first: **per-call field >
+per-call mode > agent `.md` field > agent `.md` mode > run-level `--mode` >
+`inherit`**. Run `/modes` to list built-in + project-defined modes. Define your
+own under `contextModes` in `~/.pi/workflows/settings.json`.
+
+Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
+
+---
+
 ## Slash commands
 
 | Command | Usage | What it does |
 |---------|-------|--------------|
 | `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
-| `/code-review` | `[high\|xhigh\|max] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
-| `/deep-research` | `<question>` | Research a question across the web with cross-checked sources. |
-| `/adversarial-review` | `<task>` | Investigate a task, then cross-check each finding with skeptical reviewers. |
+| `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
+| `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
+| `/adversarial-review` | `[--mode <name>] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. |
+| `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
 | `/workflows-models` | — | View and edit model tiers (small/medium/big). |
@@ -157,6 +185,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 | EDIT 4 | Built-in `code-review` workflow matching CC 2.1.185 topology |
 | EDIT 5 | Per-subagent transcript logging (`ManagedRun.transcriptDir`) |
 | EDIT 6 | Live progress panel polish + Claude concurrency floor |
+| EDIT 7 | Per-subagent **context modes** + `/modes` command — see [Context modes](#context-modes) / [docs](./docs/context-modes.md) |
 | + | Error-surfacing in the task panel + 5 bug fixes (code-point-safe truncation, first-line extraction, whitespace-only errors, shared `agentErrorText()` helper) |
 | + | `code-review` agents pinned to `tier: "big"`; model-tier routing config |
 | + | Chat notification enrichment: `file://` log links on failure + real `tool_uses` from agent history |
@@ -172,7 +201,7 @@ This fork's fidelity patches are grounded in direct reverse engineering of Claud
 - `cc-pi/findings/cc-subagent-logging.md` — per-subagent logging mechanism + EDIT 5 fix spec
 - `cc-pi/findings/comparison-test-suite.md` — token-free comparison harness + parity money chart
 
-**Status:** patched-fork parity vs. Claude Code 2.1.185 — **15/17** (matches CC best). **775/775** unit tests pass; full `npm test` gate (biome + build + unit) green.
+**Status:** patched-fork parity vs. Claude Code 2.1.185 — **15/17** (matches CC best). **818/818** unit tests pass; full `npm test` gate (biome + build + unit) green.
 
 ---
 

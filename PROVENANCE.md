@@ -44,8 +44,10 @@ Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
 | EDIT 4 | built-in `code-review` workflow matching CC 2.1.185 topology            |
 | EDIT 5 | per-subagent transcript logging (`ManagedRun.transcriptDir`)            |
 | EDIT 6 | live progress panel polish + Claude concurrency floor                    |
+| EDIT 7 | per-subagent context modes + `/modes` command (see `docs/context-modes.md`) |
 
-EDITs 2–6 were stacked on `edit2`; the full series is now in `main`.
+EDITs 2–6 were stacked on `edit2`; the full series is now in `main`. EDIT 7
+(context modes) landed directly on `main` in `50fe3e9`.
 
 ## Install (our patched build)
 
