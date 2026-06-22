@@ -86,8 +86,8 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
-| `contextMode` | Context-inheritance posture (`'inherit'` / `'isolated'` / `'scoped'` / project-defined) — see [Context modes](#context-modes). |
-| `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
+| `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
+| `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
 
 ---
 
@@ -109,24 +109,29 @@ Agents are routed to concrete models by **tier**, so workflow source stays porta
 
 ## Context modes
 
-Per-subagent **context governance**: each subagent can control whether it
-inherits project `AGENTS.md` context, whether its role prompt **replaces** or
-augments the base system prompt, and whether it inherits skills — via a named
-mode or per-field overrides. Default `inherit` == prior behavior, so existing
-workflows are unchanged.
+Per-subagent **context governance**, OpenCode-style: **rules you put on the main
+agent don't leak into the subagents it spawns.** `AGENTS.md` stays small and
+shared (general instructions for *all* agents); main-agent-only rules live in
+`.pi/APPEND_SYSTEM.md` and are kept *out* of subagents so children stay focused.
+The default mode **`focused`** needs zero config; `legacy` restores full
+inheritance (byte-identical to before).
 
-| Mode | context | prompt | skills | Posture |
-|------|---------|--------|--------|---------|
-| `inherit` *(default)* | in | append | in | Status quo — full inheritance, role-as-task. |
-| `isolated` | out | replace | out | Clean room — no project context/skills, role replaces prompt. |
-| `scoped` | in | replace | out | Reviewer — project facts in, own persona, no skills. |
+| Mode | context (`AGENTS.md`) | main-rules (`.pi/APPEND_SYSTEM.md`) | prompt | skills | Posture |
+|------|------|------|--------|--------|---------|
+| `focused` *(default)* | in | **out** | append | in | Shared context+skills, main rules blocked. |
+| `isolated` | out | out | replace | out | True clean room (role replaces base). |
+| `scoped` | in | out | replace | out | Reviewer — facts in, own persona, no skills. |
+| `legacy` | in | **in** | append | in | Pre-feature behavior — everything inherited. |
 
-Select it at the agent `.md` (`contextMode: scoped`), the `agent()` call
-(`agent(p, { contextMode: 'isolated' })`), or the run level
-(`/code-review --mode isolated`). Precedence, highest first: **per-call field >
-per-call mode > agent `.md` field > agent `.md` mode > run-level `--mode` >
-`inherit`**. Run `/modes` to list built-in + project-defined modes. Define your
-own under `contextModes` in `~/.pi/workflows/settings.json`.
+A subagent's prompt has four independent channels — base, the main-rules append
+channel, `AGENTS.md`, and skills — each governed by one primitive
+(`systemPromptMode`, `inheritMainRules`, `inheritProjectContext`, `inheritSkills`).
+Select a posture at the agent `.md` (`contextMode: scoped`), the `agent()` call
+(`agent(p, { contextMode: 'legacy' })` or `{ inheritMainRules: true }`), or the
+run level (`/code-review --mode legacy`). Precedence, highest first: **per-call
+field > per-call mode > agent `.md` field > agent `.md` mode > run-level `--mode`
+> `focused`**. Run `/modes` to list modes. (Conversation context is already
+isolated — subagents spawn with fresh sessions.)
 
 Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
@@ -185,7 +190,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 | EDIT 4 | Built-in `code-review` workflow matching CC 2.1.185 topology |
 | EDIT 5 | Per-subagent transcript logging (`ManagedRun.transcriptDir`) |
 | EDIT 6 | Live progress panel polish + Claude concurrency floor |
-| EDIT 7 | Per-subagent **context modes** + `/modes` command — see [Context modes](#context-modes) / [docs](./docs/context-modes.md) |
+| EDIT 7 | Per-subagent **context modes** — main-agent rules don't leak into subagents (default `focused`) + `/modes` command. See [Context modes](#context-modes) / [docs](./docs/context-modes.md) |
 | + | Error-surfacing in the task panel + 5 bug fixes (code-point-safe truncation, first-line extraction, whitespace-only errors, shared `agentErrorText()` helper) |
 | + | `code-review` agents pinned to `tier: "big"`; model-tier routing config |
 | + | Chat notification enrichment: `file://` log links on failure + real `tool_uses` from agent history |

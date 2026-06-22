@@ -21,32 +21,53 @@ describe("WorkflowSettings.contextModes normalization", () => {
   };
 
   it("keeps a fully-specified valid mode", () => {
-    const s = load({
-      contextModes: {
-        "lean-builder": { inheritProjectContext: false, systemPromptMode: "append", inheritSkills: true },
-      },
-    });
-    assert.deepEqual(s.contextModes, {
-      "lean-builder": { inheritProjectContext: false, systemPromptMode: "append", inheritSkills: true },
-    });
+    const mode = {
+      inheritProjectContext: false,
+      systemPromptMode: "append",
+      inheritSkills: true,
+      inheritMainRules: false,
+    };
+    const s = load({ contextModes: { "lean-builder": mode } });
+    assert.deepEqual(s.contextModes, { "lean-builder": mode });
   });
 
-  it("drops entries missing a field or with a bad systemPromptMode", () => {
+  it("drops entries missing a field (incl. inheritMainRules) or with a bad systemPromptMode", () => {
     const s = load({
       contextModes: {
         partial: { inheritProjectContext: true }, // missing fields
-        badmode: { inheritProjectContext: true, systemPromptMode: "nonsense", inheritSkills: true },
-        good: { inheritProjectContext: true, systemPromptMode: "replace", inheritSkills: false },
+        noMainRules: { inheritProjectContext: true, systemPromptMode: "append", inheritSkills: true }, // missing inheritMainRules
+        badmode: {
+          inheritProjectContext: true,
+          systemPromptMode: "nonsense",
+          inheritSkills: true,
+          inheritMainRules: false,
+        },
+        good: {
+          inheritProjectContext: true,
+          systemPromptMode: "replace",
+          inheritSkills: false,
+          inheritMainRules: true,
+        },
       },
     });
     assert.deepEqual(Object.keys(s.contextModes ?? {}), ["good"]);
   });
 
-  it("ignores the reserved name `inherit`", () => {
+  it("ignores reserved built-in names (inherit, focused, legacy, isolated, scoped)", () => {
+    const triple = {
+      inheritProjectContext: false,
+      systemPromptMode: "replace",
+      inheritSkills: false,
+      inheritMainRules: false,
+    };
     const s = load({
       contextModes: {
-        inherit: { inheritProjectContext: false, systemPromptMode: "replace", inheritSkills: false },
-        custom: { inheritProjectContext: false, systemPromptMode: "replace", inheritSkills: false },
+        inherit: triple,
+        focused: triple,
+        legacy: triple,
+        isolated: triple,
+        scoped: triple,
+        custom: triple,
       },
     });
     assert.deepEqual(Object.keys(s.contextModes ?? {}), ["custom"]);

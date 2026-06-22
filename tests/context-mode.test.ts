@@ -17,29 +17,54 @@ import {
 // ── resolveContextMode: defaults & built-in expansion ───────────────────────
 
 describe("resolveContextMode", () => {
-  it("with no layers resolves to the inherit default (today's behavior)", () => {
+  it("with no layers resolves to the `focused` default (shared context+skills, main rules OUT)", () => {
     const { primitives, unknownMode } = resolveContextMode(undefined, undefined);
     assert.deepEqual(primitives, DEFAULT_PRIMITIVES);
     assert.equal(unknownMode, undefined);
-    // inherit must equal the default triple, byte for byte.
-    assert.deepEqual(BUILTIN_CONTEXT_MODES.inherit, DEFAULT_PRIMITIVES);
+    assert.equal(DEFAULT_CONTEXT_MODE, "focused");
+    // the default mode equals the default set, byte for byte.
+    assert.deepEqual(BUILTIN_CONTEXT_MODES.focused, DEFAULT_PRIMITIVES);
+    assert.deepEqual(primitives, {
+      inheritProjectContext: true,
+      systemPromptMode: "append",
+      inheritSkills: true,
+      inheritMainRules: false,
+    });
   });
 
-  it("expands a built-in mode (isolated) to its full triple", () => {
+  it("`legacy` restores full pre-feature inheritance (incl. main rules)", () => {
+    const { primitives } = resolveContextMode(undefined, { contextMode: "legacy" });
+    assert.deepEqual(primitives, {
+      inheritProjectContext: true,
+      systemPromptMode: "append",
+      inheritSkills: true,
+      inheritMainRules: true,
+    });
+  });
+
+  it("`inherit` is a back-compat alias of `legacy`", () => {
+    const a = resolveContextMode(undefined, { contextMode: "inherit" }).primitives;
+    const b = resolveContextMode(undefined, { contextMode: "legacy" }).primitives;
+    assert.deepEqual(a, b);
+  });
+
+  it("expands `isolated`: no context, role replaces prompt, no skills, no main rules", () => {
     const { primitives } = resolveContextMode(undefined, { contextMode: "isolated" });
     assert.deepEqual(primitives, {
       inheritProjectContext: false,
       systemPromptMode: "replace",
       inheritSkills: false,
+      inheritMainRules: false,
     });
   });
 
-  it("expands scoped: project context kept, prompt replaced, skills dropped", () => {
+  it("expands `scoped`: context kept, prompt replaced, skills dropped, no main rules", () => {
     const { primitives } = resolveContextMode(undefined, { contextMode: "scoped" });
     assert.deepEqual(primitives, {
       inheritProjectContext: true,
       systemPromptMode: "replace",
       inheritSkills: false,
+      inheritMainRules: false,
     });
   });
 
@@ -53,10 +78,18 @@ describe("resolveContextMode", () => {
     assert.equal(primitives.inheritProjectContext, true);
     assert.equal(primitives.systemPromptMode, "replace"); // untouched slot from mode
     assert.equal(primitives.inheritSkills, false);
+    assert.equal(primitives.inheritMainRules, false);
+  });
+
+  it("explicit inheritMainRules:true overrides the default block", () => {
+    const { primitives } = resolveContextMode(undefined, { inheritMainRules: true });
+    assert.equal(primitives.inheritMainRules, true);
+    // everything else stays at the focused default
+    assert.equal(primitives.inheritProjectContext, true);
+    assert.equal(primitives.inheritSkills, true);
   });
 
   it("runtime mode beats a frontmatter explicit field", () => {
-    // frontmatter says keep skills; runtime mode `isolated` drops them → runtime wins.
     const { primitives } = resolveContextMode({ inheritSkills: true }, { contextMode: "isolated" });
     assert.equal(primitives.inheritSkills, false);
   });
@@ -74,25 +107,21 @@ describe("resolveContextMode", () => {
     assert.deepEqual(primitives, BUILTIN_CONTEXT_MODES.scoped);
   });
 
-  it("frontmatter explicit field overrides frontmatter mode", () => {
-    const { primitives } = resolveContextMode({ contextMode: "isolated", inheritProjectContext: true }, undefined);
-    assert.equal(primitives.inheritProjectContext, true);
-  });
-
   it("full chain: runtime field > runtime mode > frontmatter field > frontmatter mode", () => {
     const { primitives } = resolveContextMode(
-      { contextMode: "inherit", systemPromptMode: "replace" }, // fm mode + fm field
+      { contextMode: "legacy", systemPromptMode: "replace" }, // fm mode + fm field
       { contextMode: "isolated", inheritProjectContext: true }, // rt mode + rt field
     );
-    // runtime mode isolated → (false, replace, false); runtime field flips ctx → true.
+    // runtime mode isolated → (false, replace, false, false); runtime field flips ctx → true.
     assert.deepEqual(primitives, {
       inheritProjectContext: true,
       systemPromptMode: "replace",
       inheritSkills: false,
+      inheritMainRules: false,
     });
   });
 
-  it("unknown mode falls back to default and surfaces the name", () => {
+  it("unknown mode falls back to the default and surfaces the name", () => {
     const { primitives, unknownMode } = resolveContextMode(undefined, { contextMode: "nope" });
     assert.deepEqual(primitives, DEFAULT_PRIMITIVES);
     assert.equal(unknownMode, "nope");
@@ -102,20 +131,28 @@ describe("resolveContextMode", () => {
 // ── needsResourceLoader: the backward-compat gate ───────────────────────────
 
 describe("needsResourceLoader", () => {
-  it("is false for the inherit default (no loader → identical session)", () => {
-    assert.equal(needsResourceLoader(DEFAULT_PRIMITIVES), false);
+  it("is FALSE only for `legacy` (no loader → byte-identical pre-feature session)", () => {
+    assert.equal(needsResourceLoader(BUILTIN_CONTEXT_MODES.legacy), false);
+  });
+
+  it("is TRUE for the `focused` default (must block the main-rules channel)", () => {
+    assert.equal(needsResourceLoader(DEFAULT_PRIMITIVES), true);
   });
 
   it("is true when project context is dropped", () => {
-    assert.equal(needsResourceLoader({ ...DEFAULT_PRIMITIVES, inheritProjectContext: false }), true);
+    assert.equal(needsResourceLoader({ ...BUILTIN_CONTEXT_MODES.legacy, inheritProjectContext: false }), true);
   });
 
   it("is true when skills are dropped", () => {
-    assert.equal(needsResourceLoader({ ...DEFAULT_PRIMITIVES, inheritSkills: false }), true);
+    assert.equal(needsResourceLoader({ ...BUILTIN_CONTEXT_MODES.legacy, inheritSkills: false }), true);
   });
 
   it("is true under systemPromptMode replace", () => {
-    assert.equal(needsResourceLoader({ ...DEFAULT_PRIMITIVES, systemPromptMode: "replace" }), true);
+    assert.equal(needsResourceLoader({ ...BUILTIN_CONTEXT_MODES.legacy, systemPromptMode: "replace" }), true);
+  });
+
+  it("is true when main rules are blocked", () => {
+    assert.equal(needsResourceLoader({ ...BUILTIN_CONTEXT_MODES.legacy, inheritMainRules: false }), true);
   });
 });
 
@@ -131,20 +168,32 @@ describe("buildContextModeRegistry", () => {
       inheritProjectContext: false,
       systemPromptMode: "append",
       inheritSkills: true,
+      inheritMainRules: false,
     };
     const reg = buildContextModeRegistry({ "lean-builder": custom });
     assert.deepEqual(reg["lean-builder"], custom);
-    // built-ins still present
     assert.deepEqual(reg.isolated, BUILTIN_CONTEXT_MODES.isolated);
     const { primitives } = resolveContextMode(undefined, { contextMode: "lean-builder" }, reg);
     assert.deepEqual(primitives, custom);
   });
 
-  it("refuses to let a project mode shadow inherit", () => {
+  it("refuses to let a project mode shadow a reserved built-in name", () => {
     const reg = buildContextModeRegistry({
-      inherit: { inheritProjectContext: false, systemPromptMode: "replace", inheritSkills: false },
+      focused: {
+        inheritProjectContext: false,
+        systemPromptMode: "replace",
+        inheritSkills: false,
+        inheritMainRules: true,
+      },
+      legacy: {
+        inheritProjectContext: false,
+        systemPromptMode: "replace",
+        inheritSkills: false,
+        inheritMainRules: false,
+      },
     });
-    assert.deepEqual(reg[DEFAULT_CONTEXT_MODE], DEFAULT_PRIMITIVES);
+    assert.deepEqual(reg.focused, DEFAULT_PRIMITIVES);
+    assert.deepEqual(reg.legacy, BUILTIN_CONTEXT_MODES.legacy);
   });
 });
 
@@ -164,7 +213,7 @@ describe("isSystemPromptMode", () => {
 // ── frontmatter parsing of the new fields ───────────────────────────────────
 
 describe("parseAgentDefinition — context fields", () => {
-  it("parses contextMode, inheritProjectContext, systemPromptMode, inheritSkills", () => {
+  it("parses contextMode, inheritProjectContext, systemPromptMode, inheritSkills, inheritMainRules", () => {
     const md = [
       "---",
       "name: reviewer",
@@ -172,6 +221,7 @@ describe("parseAgentDefinition — context fields", () => {
       "inheritProjectContext: true",
       "systemPromptMode: replace",
       "inheritSkills: false",
+      "inheritMainRules: true",
       "---",
       "You are an independent reviewer.",
     ].join("\n");
@@ -181,16 +231,24 @@ describe("parseAgentDefinition — context fields", () => {
     assert.equal(def.inheritProjectContext, true);
     assert.equal(def.systemPromptMode, "replace");
     assert.equal(def.inheritSkills, false);
+    assert.equal(def.inheritMainRules, true);
   });
 
   it("accepts string booleans and ignores an invalid systemPromptMode", () => {
-    const md = ["---", "name: x", 'inheritProjectContext: "false"', "systemPromptMode: nonsense", "---", "body"].join(
-      "\n",
-    );
+    const md = [
+      "---",
+      "name: x",
+      'inheritProjectContext: "false"',
+      'inheritMainRules: "true"',
+      "systemPromptMode: nonsense",
+      "---",
+      "body",
+    ].join("\n");
     const def = parseAgentDefinition(md, "user", "x.md");
     assert.ok(def);
     assert.equal(def.inheritProjectContext, false);
-    assert.equal(def.systemPromptMode, undefined); // invalid → dropped, resolver uses default
+    assert.equal(def.inheritMainRules, true);
+    assert.equal(def.systemPromptMode, undefined);
   });
 
   it("leaves the fields undefined when absent (backward compatible)", () => {
@@ -200,16 +258,17 @@ describe("parseAgentDefinition — context fields", () => {
     assert.equal(def.inheritProjectContext, undefined);
     assert.equal(def.systemPromptMode, undefined);
     assert.equal(def.inheritSkills, undefined);
+    assert.equal(def.inheritMainRules, undefined);
   });
 
-  it("agentDefinitionKey changes when a context field changes (resume invalidation)", () => {
+  it("agentDefinitionKey changes when inheritMainRules changes (resume invalidation)", () => {
     const base = parseAgentDefinition(["---", "name: a", "---", "b"].join("\n"), "project", "a.md");
-    const withMode = parseAgentDefinition(
-      ["---", "name: a", "contextMode: isolated", "---", "b"].join("\n"),
+    const withRules = parseAgentDefinition(
+      ["---", "name: a", "inheritMainRules: true", "---", "b"].join("\n"),
       "project",
       "a.md",
     );
-    assert.notEqual(agentDefinitionKey(base ?? undefined), agentDefinitionKey(withMode ?? undefined));
+    assert.notEqual(agentDefinitionKey(base ?? undefined), agentDefinitionKey(withRules ?? undefined));
   });
 });
 
@@ -223,17 +282,16 @@ describe("resolveContextModeLayers", () => {
   });
 
   it("run-level base is overridden by frontmatter, which is overridden by runtime", () => {
-    // base: isolated (false, replace, false); frontmatter: inherit mode resets all
-    // three to (true, append, true); runtime: drop skills only.
     const { primitives } = resolveContextModeLayers([
       { contextMode: "isolated" }, // run-level (lowest)
-      { contextMode: "inherit" }, // frontmatter
+      { contextMode: "legacy" }, // frontmatter resets all to legacy
       { inheritSkills: false }, // per-call (highest)
     ]);
     assert.deepEqual(primitives, {
       inheritProjectContext: true,
       systemPromptMode: "append",
       inheritSkills: false,
+      inheritMainRules: true,
     });
   });
 
@@ -244,55 +302,88 @@ describe("resolveContextModeLayers", () => {
 
   it("resolves a project mode through a custom registry across layers", () => {
     const reg = buildContextModeRegistry({
-      "lean-builder": { inheritProjectContext: false, systemPromptMode: "append", inheritSkills: true },
+      "lean-builder": {
+        inheritProjectContext: false,
+        systemPromptMode: "append",
+        inheritSkills: true,
+        inheritMainRules: false,
+      },
     });
     const { primitives, unknownMode } = resolveContextModeLayers([{ contextMode: "lean-builder" }], reg);
     assert.equal(unknownMode, undefined);
-    assert.deepEqual(primitives, { inheritProjectContext: false, systemPromptMode: "append", inheritSkills: true });
+    assert.deepEqual(primitives, {
+      inheritProjectContext: false,
+      systemPromptMode: "append",
+      inheritSkills: true,
+      inheritMainRules: false,
+    });
   });
 });
 
 // ── resourceLoaderFlags: the enforcement mapping (pure) ─────────────────────
 
 describe("resourceLoaderFlags", () => {
-  it("inherit default → no loader flags engaged, no system prompt", () => {
+  it("`focused` default → block ONLY the main-rules append channel", () => {
     assert.deepEqual(resourceLoaderFlags(DEFAULT_PRIMITIVES, "role prompt"), {
       noContextFiles: false,
       noSkills: false,
       systemPrompt: undefined,
+      appendSystemPrompt: [],
     });
   });
 
-  it("isolated → drops context + skills and installs the role prompt", () => {
+  it("`legacy` → no flags engaged at all (loader not even constructed upstream)", () => {
+    assert.deepEqual(resourceLoaderFlags(BUILTIN_CONTEXT_MODES.legacy, "role prompt"), {
+      noContextFiles: false,
+      noSkills: false,
+      systemPrompt: undefined,
+      appendSystemPrompt: undefined,
+    });
+  });
+
+  it("isolated → drops context + skills + main rules and installs the role prompt", () => {
     assert.deepEqual(resourceLoaderFlags(BUILTIN_CONTEXT_MODES.isolated, "  You are a reviewer.  "), {
       noContextFiles: true,
       noSkills: true,
       systemPrompt: "You are a reviewer.",
+      appendSystemPrompt: [],
     });
   });
 
-  it("scoped → keeps context, drops skills, installs the role prompt", () => {
+  it("scoped → keeps context, drops skills + main rules, installs the role prompt", () => {
     const flags = resourceLoaderFlags(BUILTIN_CONTEXT_MODES.scoped, "Reviewer.");
     assert.equal(flags.noContextFiles, false);
     assert.equal(flags.noSkills, true);
     assert.equal(flags.systemPrompt, "Reviewer.");
+    assert.deepEqual(flags.appendSystemPrompt, []);
   });
 
   it("replace with empty/whitespace prompt yields undefined systemPrompt (no blank prompt)", () => {
     assert.equal(
-      resourceLoaderFlags({ ...DEFAULT_PRIMITIVES, systemPromptMode: "replace" }, "   ").systemPrompt,
+      resourceLoaderFlags({ ...BUILTIN_CONTEXT_MODES.legacy, systemPromptMode: "replace" }, "   ").systemPrompt,
       undefined,
     );
     assert.equal(
-      resourceLoaderFlags({ ...DEFAULT_PRIMITIVES, systemPromptMode: "replace" }, undefined).systemPrompt,
+      resourceLoaderFlags({ ...BUILTIN_CONTEXT_MODES.legacy, systemPromptMode: "replace" }, undefined).systemPrompt,
       undefined,
     );
   });
 
   it("append never installs a system prompt even when text is supplied", () => {
     assert.equal(
-      resourceLoaderFlags({ ...DEFAULT_PRIMITIVES, systemPromptMode: "append" }, "ignored").systemPrompt,
+      resourceLoaderFlags({ ...BUILTIN_CONTEXT_MODES.legacy, systemPromptMode: "append" }, "ignored").systemPrompt,
       undefined,
+    );
+  });
+
+  it("inheritMainRules true → appendSystemPrompt undefined (loader discovers the file); false → []", () => {
+    assert.equal(
+      resourceLoaderFlags({ ...DEFAULT_PRIMITIVES, inheritMainRules: true }, undefined).appendSystemPrompt,
+      undefined,
+    );
+    assert.deepEqual(
+      resourceLoaderFlags({ ...DEFAULT_PRIMITIVES, inheritMainRules: false }, undefined).appendSystemPrompt,
+      [],
     );
   });
 });

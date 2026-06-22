@@ -33,19 +33,35 @@ describe("extractModeFlag", () => {
 });
 
 describe("renderModes", () => {
-  it("lists the built-ins with inherit first", () => {
+  it("lists the built-ins with the default (focused) first, and shows the main-rules column", () => {
     const out = renderModes(BUILTIN_CONTEXT_MODES);
-    const firstModeLine = out.split("\n").find((l) => l.trim().startsWith("inherit"));
-    assert.ok(firstModeLine, "inherit row present");
+    const rowLines = out.split("\n").filter((l) => /^\s{2}\S/.test(l));
+    assert.ok(rowLines[0]?.trim().startsWith("focused"), "focused row first");
     assert.ok(out.includes("isolated"));
     assert.ok(out.includes("scoped"));
-    // inherit should be listed before isolated/scoped
-    assert.ok(out.indexOf("inherit") < out.indexOf("isolated"));
+    assert.ok(out.includes("legacy"));
+    assert.ok(out.includes("main-rules:out"), "main-rules column present");
+    // focused listed before the others
+    assert.ok(out.indexOf("focused") < out.indexOf("isolated"));
+  });
+
+  it("hides the `inherit` alias from the listing (it duplicates legacy)", () => {
+    const rows = renderModes(BUILTIN_CONTEXT_MODES)
+      .split("\n")
+      .filter((l) => /^\s{2}\S/.test(l))
+      .map((l) => l.trim().split(/\s+/)[0]);
+    assert.ok(!rows.includes("inherit"), "no inherit row");
+    assert.ok(rows.includes("legacy"), "legacy row present");
   });
 
   it("includes a project-defined mode", () => {
     const reg = buildContextModeRegistry({
-      "lean-builder": { inheritProjectContext: false, systemPromptMode: "append", inheritSkills: true },
+      "lean-builder": {
+        inheritProjectContext: false,
+        systemPromptMode: "append",
+        inheritSkills: true,
+        inheritMainRules: false,
+      },
     });
     assert.ok(renderModes(reg).includes("lean-builder"));
   });

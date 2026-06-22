@@ -37,19 +37,24 @@ export function buildRegistryForCwd(cwd: string): ContextModeRegistry {
 
 function describe(p: ContextPrimitives): string {
   const context = p.inheritProjectContext ? "context:in " : "context:out";
+  const main = p.inheritMainRules ? "main-rules:in " : "main-rules:out";
   const skills = p.inheritSkills ? "skills:in " : "skills:out";
-  return `${context} · prompt:${p.systemPromptMode.padEnd(7)} · ${skills}`;
+  return `${context} · ${main} · prompt:${p.systemPromptMode.padEnd(7)} · ${skills}`;
 }
 
-/** Plain-text listing of a registry, `inherit` first then alphabetical. */
+/** Plain-text listing of a registry, the default mode first then alphabetical.
+ *  `inherit` is hidden — it is a back-compat alias of `legacy` (identical set). */
 export function renderModes(registry: ContextModeRegistry): string {
-  const names = Object.keys(registry).sort((a, b) =>
-    a === DEFAULT_CONTEXT_MODE ? -1 : b === DEFAULT_CONTEXT_MODE ? 1 : a.localeCompare(b),
-  );
+  const names = Object.keys(registry)
+    .filter((n) => n !== "inherit")
+    .sort((a, b) => (a === DEFAULT_CONTEXT_MODE ? -1 : b === DEFAULT_CONTEXT_MODE ? 1 : a.localeCompare(b)));
   const width = Math.max(...names.map((n) => n.length), 8);
   const rows = names.map((n) => `  ${n.padEnd(width)}  ${describe(registry[n])}`);
   return [
-    "Context-inheritance modes — use `--mode <name>` or set `contextMode:` in an agent `.md`:",
+    "Context-inheritance modes — use `--mode <name>` or set `contextMode:` in an agent `.md`.",
+    `Default is \`${DEFAULT_CONTEXT_MODE}\`: shared project context + skills, but the main agent's`,
+    "rules (`.pi/APPEND_SYSTEM.md`) do NOT leak into subagents. `legacy` restores full inheritance.",
+    "",
     ...rows,
     "",
     "Define your own under `contextModes` in ~/.pi/workflows/settings.json (or the project override).",

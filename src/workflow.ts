@@ -115,6 +115,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   inheritProjectContext?: boolean;
   systemPromptMode?: SystemPromptMode;
   inheritSkills?: boolean;
+  inheritMainRules?: boolean;
   /**
    * Named context-mode registry (built-ins + project-defined). Defaults to the
    * built-ins. Threaded from settings by the extension entry so a project's
@@ -202,18 +203,20 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    */
   agentType?: string;
   /**
-   * Context-inheritance posture: a named mode (`inherit` | `isolated` | `scoped`
-   * | a project-defined mode) that expands to the three primitives below. The
+   * Context-inheritance posture: a named mode (`focused` | `isolated` | `scoped`
+   * | `legacy` | a project-defined mode) that expands to the primitives below. The
    * agentType definition may set its own; these call-level fields override it
-   * (runtime > frontmatter). Default `inherit` == today's behavior.
+   * (runtime > frontmatter). Default `focused` (main-agent rules don't leak in).
    */
   contextMode?: string;
   /** Load project AGENTS.md / context files into this subagent. Default true. */
   inheritProjectContext?: boolean;
-  /** "append": base prompt + role-as-task (default); "replace": role IS the system prompt. */
+  /** "append": base prompt + role-as-task (default); "replace": role IS the base system prompt. */
   systemPromptMode?: SystemPromptMode;
   /** Load skills into this subagent. Default true. */
   inheritSkills?: boolean;
+  /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
+  inheritMainRules?: boolean;
   /** Override timeout for this specific agent. null means no hard timeout. */
   timeoutMs?: number | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
@@ -449,6 +452,7 @@ export async function runWorkflow<T = unknown>(
           inheritProjectContext: options.inheritProjectContext,
           systemPromptMode: options.systemPromptMode,
           inheritSkills: options.inheritSkills,
+          inheritMainRules: options.inheritMainRules,
         },
         // Middle: the agentType `.md` frontmatter.
         {
@@ -456,6 +460,7 @@ export async function runWorkflow<T = unknown>(
           inheritProjectContext: agentDef?.inheritProjectContext,
           systemPromptMode: agentDef?.systemPromptMode,
           inheritSkills: agentDef?.inheritSkills,
+          inheritMainRules: agentDef?.inheritMainRules,
         },
         // Highest: the per-call agent() options.
         {
@@ -463,6 +468,7 @@ export async function runWorkflow<T = unknown>(
           inheritProjectContext: agentOptions.inheritProjectContext,
           systemPromptMode: agentOptions.systemPromptMode,
           inheritSkills: agentOptions.inheritSkills,
+          inheritMainRules: agentOptions.inheritMainRules,
         },
       ],
       options.contextModeRegistry ?? BUILTIN_CONTEXT_MODES,
@@ -570,6 +576,7 @@ export async function runWorkflow<T = unknown>(
                 inheritProjectContext: ctx.inheritProjectContext,
                 systemPromptMode: ctx.systemPromptMode,
                 inheritSkills: ctx.inheritSkills,
+                inheritMainRules: ctx.inheritMainRules,
                 // Role prompt → system prompt only under "replace"; otherwise undefined.
                 systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
                 cwd: runCwd,
@@ -1182,6 +1189,7 @@ function hashAgentCall(
     inheritProjectContext: options.inheritProjectContext ?? null,
     systemPromptMode: options.systemPromptMode ?? null,
     inheritSkills: options.inheritSkills ?? null,
+    inheritMainRules: options.inheritMainRules ?? null,
     // Resolved definition (tools/model/prompt/context) so editing an agent .md
     // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,

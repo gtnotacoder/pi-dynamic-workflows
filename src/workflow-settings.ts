@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "./config.js";
-import { type ContextPrimitives, DEFAULT_CONTEXT_MODE, isSystemPromptMode } from "./context-mode.js";
+import { type ContextPrimitives, isSystemPromptMode, RESERVED_MODE_NAMES } from "./context-mode.js";
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface WorkflowSettings {
@@ -30,11 +30,11 @@ export interface WorkflowSettings {
    */
   persistSubagentTranscripts?: boolean;
   /**
-   * Project-defined context modes, merged OVER the built-ins (inherit|isolated|scoped)
-   * for `--mode <name>` and agentType frontmatter. Each name maps to the three
-   * inheritance primitives. `inherit` is reserved and silently ignored. Entries
-   * missing or mistyping any field are dropped (the whole feature stays opt-in and
-   * the built-ins remain available regardless).
+   * Project-defined context modes, merged OVER the built-ins (focused|isolated|
+   * scoped|legacy) for `--mode <name>` and agentType frontmatter. Each name maps
+   * to the full inheritance primitive set. Built-in names are reserved and
+   * silently ignored. Entries missing or mistyping any field are dropped (the
+   * feature stays opt-in and the built-ins remain available regardless).
    */
   contextModes?: Record<string, ContextPrimitives>;
 }
@@ -155,9 +155,9 @@ function normalizeSettings(value: unknown): WorkflowSettings {
 }
 
 /**
- * Validate a `contextModes` map. Each entry must fully specify the triple
- * (two booleans + a valid systemPromptMode); partial/mistyped entries and the
- * reserved name `inherit` are dropped. Returns undefined when nothing valid
+ * Validate a `contextModes` map. Each entry must fully specify the primitive set
+ * (three booleans + a valid systemPromptMode); partial/mistyped entries and any
+ * reserved built-in name are dropped. Returns undefined when nothing valid
  * remains so the built-in registry is used unchanged.
  */
 function normalizeContextModes(value: unknown): Record<string, ContextPrimitives> | undefined {
@@ -165,11 +165,12 @@ function normalizeContextModes(value: unknown): Record<string, ContextPrimitives
   const out: Record<string, ContextPrimitives> = {};
   let any = false;
   for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (name === DEFAULT_CONTEXT_MODE || !entry || typeof entry !== "object") continue;
+    if (RESERVED_MODE_NAMES.has(name) || !entry || typeof entry !== "object") continue;
     const e = entry as Record<string, unknown>;
     if (
       typeof e.inheritProjectContext !== "boolean" ||
       typeof e.inheritSkills !== "boolean" ||
+      typeof e.inheritMainRules !== "boolean" ||
       !isSystemPromptMode(e.systemPromptMode)
     ) {
       continue;
@@ -178,6 +179,7 @@ function normalizeContextModes(value: unknown): Record<string, ContextPrimitives
       inheritProjectContext: e.inheritProjectContext,
       systemPromptMode: e.systemPromptMode,
       inheritSkills: e.inheritSkills,
+      inheritMainRules: e.inheritMainRules,
     };
     any = true;
   }

@@ -307,10 +307,17 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   contextMode?: string;
   /** Load project AGENTS.md / context files into the subagent session. Default true. */
   inheritProjectContext?: boolean;
-  /** "append": base prompt intact, role-as-task (default); "replace": role IS the system prompt. */
+  /** "append": base prompt intact, role-as-task (default); "replace": role IS the base system prompt. */
   systemPromptMode?: SystemPromptMode;
   /** Load skills into the subagent session. Default true. */
   inheritSkills?: boolean;
+  /**
+   * Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`) into this
+   * subagent. Default false: the main session's orchestration-only rules do not
+   * leak into subagents (OpenCode-style). Set true (or use the `legacy` mode) to
+   * restore the pre-feature behavior where subagents inherited them.
+   */
+  inheritMainRules?: boolean;
   /**
    * The agentType role prompt to install AS the system prompt when the resolved
    * `systemPromptMode` is "replace". The workflow layer passes the agent `.md`
@@ -417,6 +424,7 @@ export class WorkflowAgent {
       inheritProjectContext: options.inheritProjectContext,
       systemPromptMode: options.systemPromptMode,
       inheritSkills: options.inheritSkills,
+      inheritMainRules: options.inheritMainRules,
     });
     if (unknownMode) {
       console.warn(`[workflow] unknown contextMode "${unknownMode}"; using "${DEFAULT_CONTEXT_MODE}"`);
@@ -428,7 +436,10 @@ export class WorkflowAgent {
     if (needsResourceLoader(ctx)) {
       // Enforcement mapping lives in resourceLoaderFlags (pure + unit-tested):
       // inheritProjectContext:false → noContextFiles; inheritSkills:false → noSkills;
-      // replace → role prompt AS the system prompt (workflow layer omits it from the task).
+      // inheritMainRules:false → appendSystemPrompt:[] (block `.pi/APPEND_SYSTEM.md`);
+      // replace → role prompt AS the base system prompt (workflow layer omits it from the task).
+      // The SDK's own default loader uses exactly { cwd, agentDir, settingsManager }
+      // (createAgentSession), so adding only these overrides loses no other config.
       const flags = resourceLoaderFlags(ctx, options.systemPromptText);
       const loader = new DefaultResourceLoader({
         cwd: runCwd,
@@ -437,6 +448,7 @@ export class WorkflowAgent {
         noContextFiles: flags.noContextFiles,
         noSkills: flags.noSkills,
         systemPrompt: flags.systemPrompt,
+        appendSystemPrompt: flags.appendSystemPrompt,
       });
       await loader.reload();
       resourceLoader = loader;

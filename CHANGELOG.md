@@ -33,10 +33,11 @@ All changes below are on top of that, 2026-06-21.
 - Address all 10 Codex `/code-review` findings: robust suppression gated on `manager.hasTaskPanel` (no-panel hosts keep the chat stream), guard the per-event recompute for inert displays, `ManagedRun.runStatePath` decoupled from transcript persistence, shared `runStateJsonPath` helper, cheap `hasActiveRuns()` for the idle timer. (`5fda282`)
 
 ### Context modes (EDIT 7 — feature)
-- Add per-subagent context governance: `inheritProjectContext` / `systemPromptMode` (`append`|`replace`) / `inheritSkills`, selected via named modes (`inherit` / `isolated` / `scoped` / project-defined) or per-field overrides. Reachable from agent `.md` frontmatter, the `agent()` call, run-level `--mode`, and `contextModes` in workflow settings. Adds the `/modes` command and `--mode` on `/deep-research`, `/adversarial-review`, `/code-review`. Default `inherit` constructs no resource loader (backward-compat gate), so existing workflows are byte-identical. 13 files, +968/−12, 818/818 unit tests (43 new). (`50fe3e9`)
+- Add per-subagent context governance: `inheritProjectContext` / `systemPromptMode` (`append`|`replace`) / `inheritSkills`, selected via named modes or per-field overrides, the `/modes` command, and `--mode` on the bundled commands. (`50fe3e9`)
+- **Redesign around main-agent rule leakage (OpenCode model).** Add the `inheritMainRules` primitive governing the main-agent append channel (`.pi/APPEND_SYSTEM.md`) — verified that subagents previously inherited it, leaking orchestration-only rules. New default mode **`focused`** keeps shared `AGENTS.md` + skills but blocks the main-rules channel (`appendSystemPrompt:[]`); `legacy` (alias `inherit`) restores full inheritance byte-identically. Modes renamed (`focused`/`isolated`/`scoped`/`legacy`); built-in names reserved from project overrides. 825/825 unit tests.
 
 ### Documentation
-- Document context modes in the README + `docs/context-modes.md`. (EDIT 7)
+- Document context modes in the README + `docs/context-modes.md` (the four prompt channels, the main-rules model, verified behavior). (EDIT 7)
 - Add PROVENANCE + fork banner. (`dbece49`)
 - Note v2.7.0 upstream tracking and the edit-branch forward-merge. (`6d9116d`)
 - Simplify the README to a fork pointer and consolidate edits into `main`. (`799aeb9`)

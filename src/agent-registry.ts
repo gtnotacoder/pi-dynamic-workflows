@@ -40,10 +40,12 @@ export interface AgentDefinition {
   contextMode?: string;
   /** Load project AGENTS.md / context files into the subagent session. Default true. */
   inheritProjectContext?: boolean;
-  /** "append": keep base prompt + role-as-task (default); "replace": role IS the system prompt. */
+  /** "append": keep base prompt + role-as-task (default); "replace": role IS the base system prompt. */
   systemPromptMode?: SystemPromptMode;
   /** Load skills into the subagent session. Default true. */
   inheritSkills?: boolean;
+  /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
+  inheritMainRules?: boolean;
   /** Where the definition was loaded from (project wins over user). */
   source: "project" | "user";
 }
@@ -102,6 +104,7 @@ export function parseAgentDefinition(
     inheritProjectContext: toBool(fm.inheritProjectContext),
     systemPromptMode,
     inheritSkills: toBool(fm.inheritSkills),
+    inheritMainRules: toBool(fm.inheritMainRules),
     source,
   };
 }
@@ -187,6 +190,7 @@ export function agentDefinitionKey(def: AgentDefinition | undefined): string | n
     inheritProjectContext: def.inheritProjectContext ?? null,
     systemPromptMode: def.systemPromptMode ?? null,
     inheritSkills: def.inheritSkills ?? null,
+    inheritMainRules: def.inheritMainRules ?? null,
   });
 }
 
