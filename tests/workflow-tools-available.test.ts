@@ -1,7 +1,7 @@
 /**
  * Tests for tools availability when workflows mode is triggered.
  *
- * The bug: when a user message contains "workflow" (trigger keyword),
+ * The bug: when a user message contains the workflow trigger keyword,
  * installWorkflowEditor's input handler calls:
  *   pi.setActiveTools?.([WORKFLOW_TOOL_NAME]);
  * which restricts ALL tools to ONLY the workflow tool.
@@ -32,7 +32,7 @@ const DEFAULT_PI_TOOLS = [
   "web_fetch",
   "advisor",
   "subagent",
-  "workflow",
+  WORKFLOW_TOOL_NAME,
 ];
 
 // Additional tools from context-mode plugin (common but not guaranteed)
@@ -78,7 +78,7 @@ function testSettingsOptions(keywordTriggerEnabled = true) {
 // ---------------------------------------------------------------------------
 
 describe("installWorkflowEditor - tool availability", () => {
-  it("should include default Pi tools when input handler fires with 'workflow'", async () => {
+  it("should include default Pi tools when input handler fires with 'workflow-run'", async () => {
     const { installWorkflowEditor } = await import("../src/workflow-editor.js");
 
     const mockPi = createMockPi([...DEFAULT_PI_TOOLS]);
@@ -94,20 +94,20 @@ describe("installWorkflowEditor - tool availability", () => {
       testSettingsOptions(),
     );
 
-    // Simulate user submitting a message with "workflow" keyword
+    // Simulate user submitting a message with the exact trigger keyword
     const inputHandlers = mockPi.handlers.input;
     assert.ok(inputHandlers, "input handler should be registered");
     assert.equal(inputHandlers.length, 1);
 
     const result = inputHandlers[0]({
       source: "interactive",
-      text: "przetestuj to workflow zadanie",
+      text: "przetestuj to workflow-run zadanie",
     });
 
     // Verify transform result
     assert.deepEqual(result, {
       action: "transform",
-      text: buildForcedWorkflowPrompt("przetestuj to workflow zadanie"),
+      text: buildForcedWorkflowPrompt("przetestuj to workflow-run zadanie"),
     });
 
     // Verify getActiveTools was called
@@ -130,10 +130,10 @@ describe("installWorkflowEditor - tool availability", () => {
       );
     }
 
-    // Verify tools are not restricted to just workflow
+    // Verify tools are not restricted to just the workflow tool
     assert.ok(
       calledWith.length > 1,
-      `More than one tool should be active, not just workflow (got: [${calledWith.join(", ")}])`,
+      `More than one tool should be active, not just ${WORKFLOW_TOOL_NAME} (got: [${calledWith.join(", ")}])`,
     );
   });
 
@@ -141,7 +141,7 @@ describe("installWorkflowEditor - tool availability", () => {
     const { installWorkflowEditor } = await import("../src/workflow-editor.js");
 
     // Add a bonus tool to simulate a plugin adding a tool
-    const originalTools = ["bash", "read", "edit", "write", "custom-plugin-tool", "workflow"];
+    const originalTools = ["bash", "read", "edit", "write", "custom-plugin-tool", WORKFLOW_TOOL_NAME];
     const mockPi = createMockPi(originalTools);
 
     const ui = {
@@ -155,11 +155,11 @@ describe("installWorkflowEditor - tool availability", () => {
       testSettingsOptions(),
     );
 
-    // Trigger input with "workflows"
+    // Trigger input with exact keyword
     const inputHandlers = mockPi.handlers.input;
     inputHandlers[0]({
       source: "interactive",
-      text: "run workflows",
+      text: "run workflow-run",
     });
 
     // Verify tools were set (with default tools preserved)
@@ -210,6 +210,31 @@ describe("installWorkflowEditor - tool availability", () => {
     assert.equal(mockPi.setActiveTools.mock.callCount(), 0);
   });
 
+  it("should not fire for generic workflow words", async () => {
+    const { installWorkflowEditor } = await import("../src/workflow-editor.js");
+
+    const mockPi = createMockPi();
+    const ui = {
+      setEditorComponent: mock.fn(),
+    };
+
+    installWorkflowEditor(
+      mockPi as unknown as ExtensionAPI,
+      ui as unknown as ExtensionUIContext,
+      undefined,
+      testSettingsOptions(),
+    );
+
+    const inputHandlers = mockPi.handlers.input;
+    const result = inputHandlers[0]({
+      source: "interactive",
+      text: "Please discuss workflows as a normal topic.",
+    });
+
+    assert.deepEqual(result, { action: "continue" });
+    assert.equal(mockPi.setActiveTools.mock.callCount(), 0);
+  });
+
   it("should not fire for non-interactive sources", async () => {
     const { installWorkflowEditor } = await import("../src/workflow-editor.js");
 
@@ -229,7 +254,7 @@ describe("installWorkflowEditor - tool availability", () => {
     const inputHandlers = mockPi.handlers.input;
     const result = inputHandlers[0]({
       source: "api", // non-interactive
-      text: "run a workflow",
+      text: "run a workflow-run",
     });
 
     assert.deepEqual(result, { action: "continue" });
@@ -284,7 +309,7 @@ describe("installWorkflowEditor - tool availability", () => {
     assert.doesNotThrow(() => {
       inputHandlers[0]({
         source: "interactive",
-        text: "test workflow",
+        text: "test workflow-run",
       });
     });
   });
@@ -312,7 +337,7 @@ describe("installWorkflowEditor - tool availability", () => {
     // Should not throw — the catch block handles it
     const result = inputHandlers[0]({
       source: "interactive",
-      text: "test workflow",
+      text: "test workflow-run",
     });
 
     // Should still return the transform action even if setActiveTools failed
@@ -340,13 +365,13 @@ describe("installWorkflowEditor - tool availability", () => {
     const inputHandlers = mockPi.handlers.input;
     inputHandlers[0]({
       source: "interactive",
-      text: "test workflow 1",
+      text: "test workflow-run 1",
     });
 
     // Second trigger (before turn_end)
     inputHandlers[0]({
       source: "interactive",
-      text: "test workflow 2",
+      text: "test workflow-run 2",
     });
 
     // setActiveTools should only have been called once (savedTools is already set)
@@ -362,10 +387,10 @@ describe("installWorkflowEditor - tool availability", () => {
     assert.equal(mockPi.setActiveTools.mock.callCount(), 0, "second turn_end should not call setActiveTools");
   });
 
-  it("should work with different keyword variations: 'workflow', 'workflows', 'WORKFLOW'", async () => {
+  it("should work with different keyword variations: 'workflow-run', 'WORKFLOW-RUN'", async () => {
     const { installWorkflowEditor } = await import("../src/workflow-editor.js");
 
-    for (const keyword of ["workflow", "workflows", "WORKFLOW", "WorkFlows"]) {
+    for (const keyword of ["workflow-run", "WORKFLOW-RUN", "Workflow-Run"]) {
       const mockPi = createMockPi();
       const ui = { setEditorComponent: mock.fn() };
       installWorkflowEditor(
@@ -386,7 +411,10 @@ describe("installWorkflowEditor - tool availability", () => {
       const tools = mockPi.setActiveTools.mock.calls[0]?.arguments[0];
       assert.ok(tools?.includes("bash"), `bash should be available for keyword "${keyword}"`);
       assert.ok(tools?.includes("read"), `read should be available for keyword "${keyword}"`);
-      assert.ok(tools?.includes(WORKFLOW_TOOL_NAME), `workflow should be in active tools for keyword "${keyword}"`);
+      assert.ok(
+        tools?.includes(WORKFLOW_TOOL_NAME),
+        `${WORKFLOW_TOOL_NAME} should be in active tools for keyword "${keyword}"`,
+      );
     }
   });
 

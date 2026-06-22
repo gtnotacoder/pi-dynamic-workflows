@@ -1,11 +1,11 @@
 /**
  * "Workflows mode" input affordance, à la a smart input box:
  *
- *  - While the editor text contains the word `workflow`/`workflows`, those letters
- *    render as a flowing rainbow, signalling that submitting will engage a workflow.
- *  - Pressing Backspace immediately after such a word toggles the highlight OFF
- *    (the word stays, but turns plain white) — a non-destructive "don't run a
- *    workflow after all". Re-typing a fresh trigger word turns it back on.
+ *  - While the editor text contains the exact `workflow-run` trigger phrase, those
+ *    letters render as a flowing rainbow, signalling that submitting will engage a workflow.
+ *  - Pressing Backspace immediately after that phrase toggles the highlight OFF
+ *    (the phrase stays, but turns plain white) — a non-destructive "don't run a
+ *    workflow after all". Re-typing a fresh trigger phrase turns it back on.
  *  - When the highlight is ON at submit time, the user's message is transformed to
  *    instruct Pi to actually run the workflow tool.
  *
@@ -23,6 +23,7 @@ import {
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { WORKFLOW_TOOL_NAME, WORKFLOW_TRIGGER_PHRASE } from "./config.js";
 import { type EffortState, effortDirective, isSubstantive } from "./effort-command.js";
 import {
   loadWorkflowSettings,
@@ -31,15 +32,21 @@ import {
   type WorkflowSettingsStore,
 } from "./workflow-settings.js";
 
-// A trigger is `workflow`/`workflows` (substring, case-insensitive) that is NOT
-// immediately preceded by `/` — so a slash command like `/workflows` or `/workflow`
-// is left alone (not colored, not armed).
+export { WORKFLOW_TOOL_NAME, WORKFLOW_TRIGGER_PHRASE } from "./config.js";
+
+// The editor trigger is an exact, opt-in phrase (case-insensitive), not the generic
+// word "workflow". It is not matched inside slash commands or larger words.
+const TRIGGER_SOURCE = `(?<![/\\w-])${escapeRegExp(WORKFLOW_TRIGGER_PHRASE)}(?![\\w-])`;
 /** Matches a trigger anywhere in the text. */
-const TRIGGER = /(?<!\/)workflows?/i;
+const TRIGGER = new RegExp(TRIGGER_SOURCE, "i");
 /** Global variant for finding every occurrence to colorize. */
-const TRIGGER_G = /(?<!\/)workflows?/gi;
-/** True when the text immediately before the cursor ends with a trigger word. */
-const TRIGGER_AT_END = /(?<!\/)workflows?$/i;
+const TRIGGER_G = new RegExp(TRIGGER_SOURCE, "gi");
+/** True when the text immediately before the cursor ends with a trigger phrase. */
+const TRIGGER_AT_END = new RegExp(`(?<![/\\w-])${escapeRegExp(WORKFLOW_TRIGGER_PHRASE)}$`, "i");
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /** 256-color ring cycling through the spectrum — shifted by a tick to "flow". */
 export const RAINBOW = [
@@ -109,7 +116,7 @@ export function tokenizeAnsi(line: string): AnsiToken[] {
 }
 
 /**
- * Colorize every `workflow`/`workflows` occurrence in a rendered line with a
+ * Colorize every workflow trigger phrase occurrence in a rendered line with a
  * flowing rainbow, leaving all ANSI escapes (cursor, markers) intact. Returns the
  * line unchanged when it contains no trigger.
  */
@@ -154,14 +161,14 @@ function isBackspace(data: string): boolean {
 }
 
 /**
- * Editor that paints the trigger words and owns the on/off toggle. Reads/writes
+ * Editor that paints the trigger phrase and owns the on/off toggle. Reads/writes
  * `state.active` so the extension's `input` handler can decide whether to force a
  * workflow at submit time.
  */
 export class WorkflowEditor extends CustomEditor {
   private tick = 0;
   private timer?: ReturnType<typeof setInterval>;
-  /** Toggled off by Backspace-after-word; re-armed when a fresh trigger appears. */
+  /** Toggled off by Backspace-after-trigger; re-armed when a fresh trigger appears. */
   private disabled = false;
   private wasTriggered = false;
 
@@ -180,7 +187,7 @@ export class WorkflowEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
-    // First Backspace right after a trigger word disarms (non-destructive).
+    // First Backspace right after the trigger phrase disarms (non-destructive).
     if (isBackspace(data) && this.isActive() && this.cursorAfterTrigger()) {
       this.disabled = true;
       this.modeState.suppressedKeywordText = this.getText().trim();
@@ -220,7 +227,7 @@ export class WorkflowEditor extends CustomEditor {
     return lines.map((ln, i) => (i === 0 || i === lines.length - 1 ? ln : colorizeWorkflow(ln, this.tick)));
   }
 
-  /** Absolute text before the cursor, used to detect "right after the word". */
+  /** Absolute text before the cursor, used to detect "right after the trigger". */
   private cursorAfterTrigger(): boolean {
     const lines = this.getLines();
     const { line, col } = this.getCursor();
@@ -258,17 +265,17 @@ export function buildForcedWorkflowPrompt(text: string, extraDirective?: string)
     "",
     "---",
     "[workflows mode is ON for this message]",
-    "You MUST handle this request by calling the tool named exactly `workflow` (Pi's",
+    `You MUST handle this request by calling the tool named exactly \`${WORKFLOW_TOOL_NAME}\` (Pi's`,
     "deterministic JavaScript workflow-orchestration tool from pi-dynamic-workflows).",
     "Write a workflow script that fans the task out across subagents via",
     "agent()/parallel()/pipeline().",
     "",
-    "The ONLY acceptable action is a `workflow` tool call. Do NOT instead:",
-    "- answer directly or in prose,",
+    `Required first action: call the \`${WORKFLOW_TOOL_NAME}\` tool. After the tool returns, summarize the workflow result for the user in a concise final response.`,
+    `Do NOT answer directly before calling \`${WORKFLOW_TOOL_NAME}\`. Do NOT instead:`,
     "- call the `subagent` tool yourself,",
     "- use any skill or command (e.g. pi-subagents, /code-review, deep-research),",
-    '- or interpret the word "workflow/workflows" loosely as some other parallel/audit approach.',
-    "Even for a small task, wrap it in a minimal `workflow` call with at least one agent().",
+    `- or interpret the ${WORKFLOW_TRIGGER_PHRASE} trigger loosely as some other parallel/audit approach.`,
+    `Even for a small task, wrap it in a minimal \`${WORKFLOW_TOOL_NAME}\` call with at least one agent(), then base your final synthesis on the tool result.`,
   ];
   if (extraDirective) lines.push("", extraDirective);
   return lines.join("\n");
@@ -278,16 +285,13 @@ export function buildForcedWorkflowPrompt(text: string, extraDirective?: string)
  * Install the workflows-mode editor and the submit-time forcing hook.
  * Call once with the UI context (e.g. in `session_start`).
  */
-/** The exact name of the workflow tool that workflows mode forces. */
-export const WORKFLOW_TOOL_NAME = "workflow";
-
 export function registerWorkflowTriggerCommand(
   pi: ExtensionAPI,
   state: WorkflowModeState,
   settingsStore: WorkflowSettingsStore = DEFAULT_SETTINGS_STORE,
 ): void {
   pi.registerCommand?.("workflows-trigger", {
-    description: "Keyword workflow trigger: on | off | status",
+    description: `Keyword workflow trigger (${WORKFLOW_TRIGGER_PHRASE}): on | off | status`,
     async handler(args: string, _ctx: ExtensionCommandContext) {
       const arg = args.trim().toLowerCase();
       const say = (content: string) => pi.sendMessage({ customType: "workflows-trigger", content, display: true });
@@ -297,7 +301,7 @@ export function registerWorkflowTriggerCommand(
         const saved = persistKeywordTrigger(settingsStore, true);
         await say(
           saved
-            ? "Workflows keyword trigger on — mentioning workflow/workflows in an interactive message will auto-arm workflows mode. Saved for new sessions."
+            ? `Workflows keyword trigger on — typing ${WORKFLOW_TRIGGER_PHRASE} in an interactive message will auto-arm workflows mode. Saved for new sessions.`
             : "Workflows keyword trigger on for this session, but the preference could not be saved.",
         );
         return;
@@ -309,13 +313,13 @@ export function registerWorkflowTriggerCommand(
         const saved = persistKeywordTrigger(settingsStore, false);
         await say(
           saved
-            ? "Workflows keyword trigger off — messages can mention workflow/workflows without forcing the workflow tool. Saved for new sessions. Use /workflows-trigger on to restore."
+            ? `Workflows keyword trigger off — messages can mention ordinary workflow words without forcing the ${WORKFLOW_TOOL_NAME} tool. Saved for new sessions. Use /workflows-trigger on to restore.`
             : "Workflows keyword trigger off for this session, but the preference could not be saved. Use /workflows-trigger on to restore.",
         );
         return;
       }
       await say(
-        `Workflows keyword trigger is ${state.keywordTriggerEnabled ? "on" : "off"}. Changes are saved for new sessions. Usage: /workflows-trigger on | off | status`,
+        `Workflows keyword trigger (${WORKFLOW_TRIGGER_PHRASE}) is ${state.keywordTriggerEnabled ? "on" : "off"}. Changes are saved for new sessions. Usage: /workflows-trigger on | off | status`,
       );
     },
   });
@@ -413,7 +417,7 @@ export function installWorkflowEditor(
   // BEFORE the input event fires (the actual prompt processing is async).
   pi.on("input", (event: { source?: string; text?: string }) => {
     if (event.source !== "interactive" || !event.text) return { action: "continue" } as const;
-    // Arm either when the user typed the "workflow(s)" trigger, or when standing
+    // Arm either when the user typed the exact trigger phrase, or when standing
     // effort mode is on and the message is a substantive request.
     const normalizedText = event.text.trim();
     const suppressed = state.suppressedKeywordText === normalizedText;

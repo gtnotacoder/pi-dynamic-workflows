@@ -2,6 +2,12 @@
  * Configuration constants for pi-dynamic-workflows.
  */
 
+/** Model-facing tool name. Kept stable for compatibility with existing prompts and docs. */
+export const WORKFLOW_TOOL_NAME = "workflow";
+
+/** Exact editor trigger phrase for workflows mode; plain "workflow" no longer auto-arms. */
+export const WORKFLOW_TRIGGER_PHRASE = "workflow-run";
+
 /** Maximum number of agents allowed per workflow run. */
 export const MAX_AGENTS_PER_RUN = 1000;
 

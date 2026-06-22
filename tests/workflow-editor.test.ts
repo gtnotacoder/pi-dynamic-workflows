@@ -90,40 +90,42 @@ function memorySettingsOptions(keywordTriggerEnabled = true) {
 }
 
 describe("hasTrigger", () => {
-  it('returns true for "workflow"', async () => {
+  it('returns true for exact "workflow-run" trigger', async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("run a workflow test"), true);
-  });
-
-  it('returns true for "workflows"', async () => {
-    const { hasTrigger } = await load();
-    assert.equal(hasTrigger("use workflows mode"), true);
+    assert.equal(hasTrigger("run a workflow-run test"), true);
   });
 
   it("returns true for trigger at start", async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("workflow something"), true);
+    assert.equal(hasTrigger("workflow-run something"), true);
   });
 
   it("returns true for trigger at end", async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("test workflow"), true);
+    assert.equal(hasTrigger("test workflow-run"), true);
   });
 
   it("returns true case-insensitively", async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("WORKFLOW now"), true);
-    assert.equal(hasTrigger("WorkFlows are cool"), true);
+    assert.equal(hasTrigger("WORKFLOW-RUN now"), true);
+    assert.equal(hasTrigger("Workflow-Run is armed"), true);
   });
 
-  it('returns false for "/workflows" (slash command)', async () => {
+  it("returns false for generic workflow words", async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("/workflows list"), false);
+    assert.equal(hasTrigger("run a workflow test"), false);
+    assert.equal(hasTrigger("use workflows mode"), false);
   });
 
-  it('returns false for "/workflow"', async () => {
+  it('returns false for "/workflow-run" (slash command)', async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("/workflow"), false);
+    assert.equal(hasTrigger("/workflow-run list"), false);
+  });
+
+  it("returns false inside larger words", async () => {
+    const { hasTrigger } = await load();
+    assert.equal(hasTrigger("myworkflow-run"), false);
+    assert.equal(hasTrigger("workflow-runner"), false);
   });
 
   it("returns false for unrelated text", async () => {
@@ -143,30 +145,31 @@ describe("hasTrigger", () => {
 
   it("works with non-ASCII characters around the trigger", async () => {
     const { hasTrigger } = await load();
-    assert.equal(hasTrigger("zrób workflow test"), true);
-    assert.equal(hasTrigger("uruchom workflows"), true);
+    assert.equal(hasTrigger("zrób workflow-run test"), true);
+    assert.equal(hasTrigger("uruchom workflow-run"), true);
   });
 });
 
 describe("endsWithTrigger", () => {
-  it('returns true when text ends with "workflow"', async () => {
+  it('returns true when text ends with "workflow-run"', async () => {
     const { endsWithTrigger } = await load();
-    assert.equal(endsWithTrigger("run a workflow"), true);
-  });
-
-  it('returns true when text ends with "workflows"', async () => {
-    const { endsWithTrigger } = await load();
-    assert.equal(endsWithTrigger("see workflows"), true);
+    assert.equal(endsWithTrigger("run a workflow-run"), true);
   });
 
   it("returns false when trigger is not at end", async () => {
     const { endsWithTrigger } = await load();
-    assert.equal(endsWithTrigger("workflow test"), false);
+    assert.equal(endsWithTrigger("workflow-run test"), false);
   });
 
-  it('returns false for "/workflows"', async () => {
+  it('returns false for "/workflow-run"', async () => {
     const { endsWithTrigger } = await load();
-    assert.equal(endsWithTrigger("/workflows"), false);
+    assert.equal(endsWithTrigger("/workflow-run"), false);
+  });
+
+  it("returns false for generic workflow words", async () => {
+    const { endsWithTrigger } = await load();
+    assert.equal(endsWithTrigger("run a workflow"), false);
+    assert.equal(endsWithTrigger("see workflows"), false);
   });
 
   it("returns false for empty string", async () => {
@@ -176,7 +179,7 @@ describe("endsWithTrigger", () => {
 
   it("returns true with trailing non-ASCII prefix", async () => {
     const { endsWithTrigger } = await load();
-    assert.equal(endsWithTrigger("zrób workflow"), true);
+    assert.equal(endsWithTrigger("zrób workflow-run"), true);
   });
 });
 
@@ -227,10 +230,10 @@ describe("colorizeWorkflow", () => {
     assert.equal(colorizeWorkflow("hello world", 0), "hello world");
   });
 
-  it("colorizes workflow with ANSI escapes", async () => {
+  it("colorizes workflow-run with ANSI escapes", async () => {
     const { colorizeWorkflow } = await load();
-    const result = colorizeWorkflow("run a workflow", 0);
-    // Should contain ANSI escapes around "workflow"
+    const result = colorizeWorkflow("run a workflow-run", 0);
+    // Should contain ANSI escapes around "workflow-run"
     assert.ok(result.includes("\x1b[38;5;"), "should contain \x1b[38;5;");
     // Per-character ANSI wrapping (each letter individually colored)
     assert.ok(result.startsWith("run a "), "should start with run a ");
@@ -245,7 +248,7 @@ describe("colorizeWorkflow", () => {
 
   it("preserves existing ANSI in the line", async () => {
     const { colorizeWorkflow } = await load();
-    const result = colorizeWorkflow("\x1b[1mworkflow\x1b[0m", 0);
+    const result = colorizeWorkflow("\x1b[1mworkflow-run\x1b[0m", 0);
     // The bold marker should survive
     assert.ok(result.includes("\x1b[1m"), "should contain \x1b[1m");
     // work around the trigger letters — the rainbow wraps individual chars
@@ -255,21 +258,21 @@ describe("colorizeWorkflow", () => {
     const { colorizeWorkflow } = await load();
     // Use a fixed palette of 2 colors for predictability
     const palette = [196, 46];
-    const result = colorizeWorkflow("workflow workflow", 0, palette);
-    // Per-character ANSI wrapping — each of the 16 chars (2x "workflow" = 16 chars)
+    const result = colorizeWorkflow("workflow-run workflow-run", 0, palette);
+    // Per-character ANSI wrapping — each of the 24 chars (2x "workflow-run" = 24 chars)
     // should have ANSI color codes around them
     // The ESC (U+001B) control char is intentional here — it matches real ANSI
     // color codes emitted by colorizeWorkflow.
     // biome-ignore lint/suspicious/noControlCharactersInRegex: matching literal ANSI escape sequences
     const ansiCodes = result.match(/\x1b\[38;5;\d+m/g);
-    assert.equal(ansiCodes.length, 16, "each char of both words should be colored");
+    assert.equal(ansiCodes.length, 24, "each char of both trigger phrases should be colored");
   });
 
   it("handles tick shift producing different colors", async () => {
     const { colorizeWorkflow } = await load();
     const palette = [196, 46];
-    const t0 = colorizeWorkflow("workflow", 0, palette);
-    const t1 = colorizeWorkflow("workflow", 1, palette);
+    const t0 = colorizeWorkflow("workflow-run", 0, palette);
+    const t1 = colorizeWorkflow("workflow-run", 1, palette);
     // Different tick → different color codes (may differ per char)
     assert.notEqual(t0, t1, "different tick should produce different output");
   });
@@ -283,10 +286,23 @@ describe("buildForcedWorkflowPrompt", () => {
   });
 
   it("includes the directive", async () => {
-    const { buildForcedWorkflowPrompt } = await load();
+    const { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME, WORKFLOW_TRIGGER_PHRASE } = await load();
     const result = buildForcedWorkflowPrompt("test");
-    assert.ok(result.includes("tool named exactly `workflow`"), "should contain tool named exactly `workflow");
+    assert.ok(
+      result.includes(`tool named exactly \`${WORKFLOW_TOOL_NAME}\``),
+      `should contain tool named exactly ${WORKFLOW_TOOL_NAME}`,
+    );
+    assert.ok(result.includes(WORKFLOW_TRIGGER_PHRASE), "should contain the editor trigger phrase");
+    assert.ok(result.includes("After the tool returns"), "should require a final synthesis after the tool result");
+    assert.ok(!result.includes("The ONLY acceptable action"), "should not forbid final prose after the workflow tool");
     assert.ok(result.includes("MUST"), "should contain MUST");
+  });
+
+  it("keeps the tool name and editor trigger phrase distinct", async () => {
+    const { WORKFLOW_TOOL_NAME, WORKFLOW_TRIGGER_PHRASE } = await load();
+    assert.equal(WORKFLOW_TOOL_NAME, "workflow");
+    assert.equal(WORKFLOW_TRIGGER_PHRASE, "workflow-run");
+    assert.notEqual(WORKFLOW_TOOL_NAME, WORKFLOW_TRIGGER_PHRASE);
   });
 
   it("is a multi-line string", async () => {
@@ -377,13 +393,13 @@ describe("WorkflowEditor", () => {
   it("isActive() returns true when trigger text is present", () => {
     const { editor } = createEditor();
     assert.equal(editor.isActive(), false, "should be inactive on empty editor");
-    editor.setText("run a workflow test");
+    editor.setText("run a workflow-run test");
     assert.equal(editor.isActive(), true, "should be active after typing trigger");
   });
 
   it("isActive() returns false when the keyword trigger is disabled", () => {
     const { editor, state } = createEditor({ keywordTriggerEnabled: false });
-    editor.setText("run a workflow test");
+    editor.setText("run a workflow-run test");
     assert.equal(editor.isActive(), false, "keyword trigger off should suppress workflow mode");
 
     state.keywordTriggerEnabled = true;
@@ -392,22 +408,22 @@ describe("WorkflowEditor", () => {
 
   it("isActive() returns false after backspace disarms trigger", () => {
     const { editor } = createEditor();
-    editor.setText("workflow");
+    editor.setText("workflow-run");
     assert.equal(editor.isActive(), true, "active after typing trigger");
 
-    // Backspace (DEL = \x7f) when cursor is right after "workflow" should disarm
+    // Backspace (DEL = \x7f) when cursor is right after "workflow-run" should disarm
     editor.handleInput("\x7f");
     assert.equal(editor.isActive(), false, "should be inactive after backspace disarm");
   });
 
   it("backspace disarm records the exact text to suppress on submit", () => {
     const { editor, state } = createEditor();
-    editor.setText("please discuss workflows");
+    editor.setText("please run workflow-run");
     assert.equal(editor.isActive(), true, "active after typing trigger");
 
     editor.handleInput("\x7f");
     assert.equal(editor.isActive(), false, "should be inactive after backspace disarm");
-    assert.equal(state.suppressedKeywordText, "please discuss workflows");
+    assert.equal(state.suppressedKeywordText, "please run workflow-run");
 
     editor.handleInput("!");
     assert.equal(state.suppressedKeywordText, undefined, "editing after disarm should clear one-shot suppression");
@@ -416,21 +432,21 @@ describe("WorkflowEditor", () => {
 
   it("re-arms changed trigger text after an interactively typed trigger was disarmed", () => {
     const { editor, state } = createEditor();
-    editor.handleInput("please discuss workflows");
+    editor.handleInput("please run workflow-run");
     assert.equal(editor.isActive(), true, "active after typing trigger");
 
     editor.handleInput("\x7f");
     assert.equal(editor.isActive(), false, "backspace should disarm the current text");
-    assert.equal(state.suppressedKeywordText, "please discuss workflows");
+    assert.equal(state.suppressedKeywordText, "please run workflow-run");
 
-    editor.handleInput(" workflow");
+    editor.handleInput(" workflow-run");
     assert.equal(state.suppressedKeywordText, undefined, "changed trigger text should clear one-shot suppression");
     assert.equal(editor.isActive(), true, "changed trigger text should visually re-arm");
   });
 
   it("submit after backspace disarm preserves suppression for the input hook", () => {
     const { editor, state } = createEditor();
-    editor.setText("please discuss workflows");
+    editor.setText("please run workflow-run");
     editor.handleInput("\x7f");
 
     let submittedText: string | undefined;
@@ -439,8 +455,8 @@ describe("WorkflowEditor", () => {
     };
     editor.handleInput("\r");
 
-    assert.equal(submittedText, "please discuss workflows");
-    assert.equal(state.suppressedKeywordText, "please discuss workflows");
+    assert.equal(submittedText, "please run workflow-run");
+    assert.equal(state.suppressedKeywordText, "please run workflow-run");
   });
 
   it("handleInput calls onSubmit when Enter is pressed", () => {
@@ -460,7 +476,7 @@ describe("WorkflowEditor", () => {
     assert.equal(state.active, false, "initially inactive");
 
     // setText alone does NOT call syncState — render() does.
-    editor.setText("test workflow");
+    editor.setText("test workflow-run");
     editor.render(80);
     assert.equal(state.active, true, "active after setText + render");
 
@@ -548,7 +564,7 @@ describe("installWorkflowEditor", () => {
     assert.ok(inputHandler, "input handler should still be registered");
     const result = inputHandler({
       source: "interactive",
-      text: "Please run this workflow.",
+      text: "Please run workflow-run.",
     });
     assert.equal((result as { action?: string }).action, "transform");
     assert.equal(setActiveToolsCalls, 1, "workflow trigger should still add the workflow tool");
@@ -622,7 +638,7 @@ describe("installWorkflowEditor", () => {
     assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
-      text: "Please discuss workflows as a normal topic.",
+      text: "Please run workflow-run as a trigger.",
     });
 
     assert.deepEqual(result, { action: "continue" });
@@ -722,15 +738,21 @@ describe("installWorkflowEditor", () => {
     assert.deepEqual(savedTools, [], "tools should not change for non-trigger input");
 
     // Invoke with trigger text — should save and add WORKFLOW_TOOL_NAME
-    const resultTrigger = inputHandler?.({ source: "interactive", text: "run a workflow test" });
+    const resultTrigger = inputHandler?.({ source: "interactive", text: "run a workflow-run test" });
     assert.ok(typeof resultTrigger === "object" && resultTrigger !== null, "should return a result object");
     assert.equal(resultTrigger.action, "transform", "should return transform action");
     assert.ok(
       typeof resultTrigger.text === "string" && resultTrigger.text.length > 0,
       "should return transformed text",
     );
-    assert.ok(resultTrigger.text?.includes("run a workflow test"), "transformed text should include original prompt");
-    assert.ok(savedTools.includes("workflow"), `saved tools (${savedTools.join(", ")}) should include "workflow"`);
+    assert.ok(
+      resultTrigger.text?.includes("run a workflow-run test"),
+      "transformed text should include original prompt",
+    );
+    assert.ok(
+      savedTools.includes(mod.WORKFLOW_TOOL_NAME),
+      `saved tools (${savedTools.join(", ")}) should include "${mod.WORKFLOW_TOOL_NAME}"`,
+    );
   });
 
   it("does not transform keyword-triggered input when /workflows-trigger is off", async () => {
@@ -763,7 +785,7 @@ describe("installWorkflowEditor", () => {
     assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
-      text: "Please discuss workflows as a normal topic.",
+      text: "Please run workflow-run as a trigger.",
     });
 
     assert.deepEqual(result, { action: "continue" });
@@ -791,13 +813,13 @@ describe("installWorkflowEditor", () => {
     } as unknown as ExtensionUIContext;
 
     const state = mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-    state.suppressedKeywordText = "Please discuss workflows as a normal topic.";
+    state.suppressedKeywordText = "Please run workflow-run as a trigger.";
 
     const inputHandler = captured.find((h) => h.event === "input")?.handler;
     assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
-      text: "Please discuss workflows as a normal topic.",
+      text: "Please run workflow-run as a trigger.",
     });
 
     assert.deepEqual(result, { action: "continue" });
@@ -824,7 +846,7 @@ describe("installWorkflowEditor", () => {
 
     mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
 
-    const text = "Please discuss workflows as a normal topic.";
+    const text = "Please run workflow-run as a trigger.";
     const inputHandler = captured.find((h) => h.event === "input")?.handler;
     assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({ source: "interactive", text });
@@ -904,9 +926,9 @@ describe("installWorkflowEditor", () => {
 
     const initialTools = ["bash", "read", "edit", "write"];
 
-    // First trigger: save tools and add "workflow"
-    inputHandler?.({ source: "interactive", text: "trigger workflow test" });
-    assert.ok(currentTools.includes("workflow"), "workflow tool should be added");
+    // First trigger: save tools and add WORKFLOW_TOOL_NAME
+    inputHandler?.({ source: "interactive", text: "trigger workflow-run test" });
+    assert.ok(currentTools.includes(mod.WORKFLOW_TOOL_NAME), "workflow tool should be added");
     assert.ok(currentTools.length > initialTools.length, "tool set should be expanded");
 
     // turn_end: restore to saved tools
@@ -917,7 +939,7 @@ describe("installWorkflowEditor", () => {
   it("does not add WORKFLOW_TOOL_NAME if already present", async () => {
     const mod = await load();
     const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    let currentTools: string[] = ["bash", "read", "workflow"];
+    let currentTools: string[] = ["bash", "read", mod.WORKFLOW_TOOL_NAME];
 
     const pi = {
       on: (event: string, handler: (...args: unknown[]) => unknown) => {
@@ -938,9 +960,13 @@ describe("installWorkflowEditor", () => {
     const inputHandler = captured.find((c) => c.event === "input")?.handler;
     assert.notEqual(inputHandler, undefined);
 
-    inputHandler?.({ source: "interactive", text: "run workflow" });
-    // "workflow" was already present, so tool count should not increase beyond duplicates
-    assert.equal(currentTools.filter((t) => t === "workflow").length, 1, "workflow should appear exactly once");
+    inputHandler?.({ source: "interactive", text: "run workflow-run" });
+    // WORKFLOW_TOOL_NAME was already present, so tool count should not increase beyond duplicates
+    assert.equal(
+      currentTools.filter((t) => t === mod.WORKFLOW_TOOL_NAME).length,
+      1,
+      `${mod.WORKFLOW_TOOL_NAME} should appear exactly once`,
+    );
   });
 
   it("input handler ignores non-interactive sources", async () => {
@@ -965,8 +991,8 @@ describe("installWorkflowEditor", () => {
       | undefined;
     assert.notEqual(inputHandler, undefined);
 
-    // Non-interactive source with trigger text should still transform
-    const result = inputHandler?.({ source: "paste", text: "run a workflow scenario" });
+    // Non-interactive source with trigger text should not transform
+    const result = inputHandler?.({ source: "paste", text: "run a workflow-run scenario" });
     assert.deepEqual(result, { action: "continue" }, "non-interactive source should return continue");
   });
 });

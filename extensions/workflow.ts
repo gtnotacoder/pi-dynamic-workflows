@@ -47,8 +47,8 @@ export default function extension(pi: ExtensionAPI) {
   // messages, like CC's ultracode. Shared with the editor's input hook below.
   const effort = createEffortState();
   registerEffortCommand(pi, effort);
-  // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
-  // Backspace right after the word disarms it. Registers the `input` hook now;
+  // "Workflows mode": type `workflow-run` to arm a forced workflow (animated),
+  // Backspace right after the phrase disarms it. Registers the `input` hook now;
   // the editor itself is installed once the UI is available (session_start).
   let editorInstalled = false;
 
