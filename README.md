@@ -1,14 +1,15 @@
-# pi-dynamic-workflows (gtnotacoder fork)
+# pi-dynamic-workflows-oc-style
 
-A vendored, patched fork of [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) that brings Claude-Code-style **dynamic multi-agent workflows** to [Pi](https://pi.dev).
+**Dynamic multi-agent workflows for [Pi](https://pi.dev)** — fan a task out across
+hundreds of subagents with model routing, token/cost accounting, resume,
+git-worktree isolation, an interactive `/workflows` TUI, `/deep-research`, and
+**OpenCode-style per-subagent context governance**: rules you put on the main
+agent don't leak into the subagents it spawns (see [Context modes](#context-modes)).
 
-The upstream package is itself a Pi re-implementation of Claude Code's `Workflow` tool. **This fork's patches increase fidelity to the *actual* Claude Code 2.1.185 JavaScript**, which we reverse-engineered from Claude Code's packed `.bun` bundle. The `<task-notification>`/`<usage>`/`<recovery>` XML delivery, the built-in `code-review` topology, per-subagent transcript logging, and the live progress panel are all modeled on the real CC behavior rather than guesswork. See the RE findings linked under [Provenance](#provenance--derivation) below.
+> Independently maintained. Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) and substantially extended; see [PROVENANCE.md](./PROVENANCE.md) for the relationship and how upstream is tracked.
 
-> **Not the upstream package.** We vendor it, apply internal "Claude-Code-fidelity" patches, and maintain it for our own use. Full change log in **[PROVENANCE.md](./PROVENANCE.md)**.
-
-- **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows · **npm:** https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows
-- **Fork point:** v2.6.0 (`622f6df`) — now tracking upstream **v2.7.0** (`b11fdbd`, version-string-only)
-- **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
+- **Originally derived from:** [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0 (MIT), tracking v2.7.0
+- **License:** MIT (see [LICENSE](./LICENSE))
 
 ---
 
@@ -189,10 +190,10 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 |-------|---------|
 | EDIT 1 | 4096-item fan-out cap |
 | EDIT 2 | 512 KB script-size cap + 30 s `runInContext` timeout |
-| EDIT 3 | `<task-notification>` XML delivery (CC-fidelity) |
-| EDIT 4 | Built-in `code-review` workflow matching CC 2.1.185 topology |
+| EDIT 3 | `<task-notification>` / `<usage>` / `<recovery>` XML result delivery |
+| EDIT 4 | Built-in `code-review` workflow (multi-angle: scope → find → verify → sweep → synthesize) |
 | EDIT 5 | Per-subagent transcript logging (`ManagedRun.transcriptDir`) |
-| EDIT 6 | Live progress panel polish + Claude concurrency floor |
+| EDIT 6 | Live progress panel polish + concurrency floor |
 | EDIT 7 | Per-subagent **context modes** — main-agent rules don't leak into subagents (default `focused`) + `/modes` command. See [Context modes](#context-modes) / [docs](./docs/context-modes.md) |
 | + | Error-surfacing in the task panel + 5 bug fixes (code-point-safe truncation, first-line extraction, whitespace-only errors, shared `agentErrorText()` helper) |
 | + | `code-review` agents pinned to `tier: "big"`; model-tier routing config |
@@ -200,16 +201,14 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ---
 
-## Provenance & derivation
+## Status & acknowledgements
 
-This fork's fidelity patches are grounded in direct reverse engineering of Claude Code's `Workflow` tool, extracted from its `.bun` bundle. Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
+**Status:** **825/825** unit tests pass; full `npm test` gate (biome + build + unit) green.
 
-- `cc-pi/findings/cc-workflows.md` — RE of Claude Code's `Workflow` tool
-- `cc-pi/findings/comparison-pi-dynamic-workflows.md` — side-by-side: our from-scratch port vs. this package vs. CC internals
-- `cc-pi/findings/cc-subagent-logging.md` — per-subagent logging mechanism + EDIT 5 fix spec
-- `cc-pi/findings/comparison-test-suite.md` — token-free comparison harness + parity money chart
-
-**Status:** patched-fork parity vs. Claude Code 2.1.185 — **15/17** (matches CC best). **818/818** unit tests pass; full `npm test` gate (biome + build + unit) green.
+Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
+(MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now
+independently maintained and substantially extended. See
+[PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
 ---
 

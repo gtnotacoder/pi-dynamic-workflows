@@ -7,16 +7,13 @@ export const MAX_AGENTS_PER_RUN = 1000;
 
 /**
  * Maximum items accepted by a single parallel()/pipeline() fan-out call.
- * Matches Claude Code's internal cap (verified in claude.exe 2.1.185 .bun
- * section): >4096 items is rejected explicitly rather than silently truncated.
+ * >4096 items is rejected explicitly rather than silently truncated.
  */
 export const MAX_FANOUT_ITEMS = 4096;
 
 /**
- * Maximum size of a workflow script body in bytes. Matches Claude Code's internal
- * cap `A2` (verified in claude.exe 2.1.185 .bun section, offset 0x802506C):
- * `script: H.string().max(A2)` where A2 = 524288 (512 KB). Scripts exceeding this
- * are rejected up front as a non-recoverable validation error.
+ * Maximum size of a workflow script body in bytes (524288 = 512 KB). Scripts
+ * exceeding this are rejected up front as a non-recoverable validation error.
  */
 export const MAX_SCRIPT_BYTES = 524_288;
 

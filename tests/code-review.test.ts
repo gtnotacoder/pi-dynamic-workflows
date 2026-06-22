@@ -49,9 +49,9 @@ test("code-review uses the verdict ladder CONFIRMED/PLAUSIBLE/REFUTED", () => {
   assert.match(body, /"REFUTED"/);
 });
 
-// ─── Verbatim fidelity (item B): the real Claude prompt fragments are embedded ──
+// ─── Prompt content: the angle prompt fragments are embedded ──
 
-test("code-review embeds the verbatim Claude angle taxonomy (5 correctness + 5 cleanup)", () => {
+test("code-review embeds the angle taxonomy (5 correctness + 5 cleanup)", () => {
   const body = generateCodeReviewWorkflow();
   // 5 correctness angles, labelled angle-A..angle-E (Claude's H$p mapping).
   for (const l of ["angle-A", "angle-B", "angle-C", "angle-D", "angle-E"]) {
@@ -63,9 +63,9 @@ test("code-review embeds the verbatim Claude angle taxonomy (5 correctness + 5 c
   }
 });
 
-test("code-review embeds the verbatim angle prompt text (recovered from the .bun section)", () => {
+test("code-review embeds the angle prompt text", () => {
   const body = generateCodeReviewWorkflow();
-  // Distinctive substrings from each verbatim angle prompt.
+  // Distinctive substrings from each angle prompt.
   assert.match(body, /line-by-line diff scan/);
   assert.match(body, /removed-behavior auditor/);
   assert.match(body, /cross-file tracer/);
@@ -78,7 +78,7 @@ test("code-review embeds the verbatim angle prompt text (recovered from the .bun
   assert.match(body, /CLAUDE\.md files that govern the changed code/);
 });
 
-test("code-review embeds the verbatim verdict ladder + recall-bias + sweep focus", () => {
+test("code-review embeds the verdict ladder + recall-bias + sweep focus", () => {
   const body = generateCodeReviewWorkflow();
   // VERDICT_LADDER definitions (Efo).
   assert.match(body, /can name the inputs\/state that trigger it/);

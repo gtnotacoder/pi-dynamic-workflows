@@ -1,73 +1,67 @@
 # PROVENANCE
 
-This repository is a **vendored, patched fork** maintained by **gtnotacoder** for
-internal reverse-engineering work on Claude Code's "Workflows" feature, ported to a
-[Pi](https://pi.dev) extension/package.
+`pi-dynamic-workflows-oc-style` is an independently maintained [Pi](https://pi.dev)
+extension that was **originally derived from** `@quintinshaw/pi-dynamic-workflows`
+(MIT) and has since been substantially extended. This file records the origin, the
+changes from upstream, and how upstream is tracked.
 
-## Upstream origin
+## Origin
 
-- **Upstream:** https://github.com/QuintinShaw/pi-dynamic-workflows
-- **npm package:** [`@quintinshaw/pi-dynamic-workflows`](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows) (MIT) — forked from **v2.6.0**, now tracking upstream **v2.7.0**
-- **Edit-branch fork point:** commit `622f6df` (v2.6.0) — `feat: checkpoint workflows on provider usage limit instead of failing (#28)`
-- **Upstream tip tracked:** commit `b11fdbd` (v2.7.0) — `chore(release): bump version to 2.7.0` (a version-string-only release; no code changes vs 2.6.0)
-- **License:** MIT, retained from upstream (see [LICENSE](./LICENSE))
+- **Originally derived from:** https://github.com/QuintinShaw/pi-dynamic-workflows
+  ([`@quintinshaw/pi-dynamic-workflows`](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows), MIT)
+- **Derivation point:** v2.6.0 (`622f6df`); aligned to upstream v2.7.0 (`b11fdbd`, a version-string-only release with no code changes vs 2.6.0)
+- **Original author:** Michael Livs (`pi-dynamic-workflows`); upstream maintainer: QuintinShaw
+- **License:** MIT, retained (see [LICENSE](./LICENSE))
 
-`main` is the functional branch — upstream v2.7.0 with **all of our EDITs (1–6)
-merged in**, plus this PROVENANCE file and a simplified README. The edits were
-developed on `edit1/fanout-cap-4096` and `edit2/script-size-timeout-cap` (forked
-from v2.6.0 / `622f6df`, merged forward to v2.7.0 on 2026-06-21, conflict-free)
-and then consolidated into `main`; those working branches were removed from the
-public repo. The clean per-edit commits are also preserved as git format-patches
-in the `gtnotacoder/re` workspace at `cc-pi/patches/` (for any future upstream
-PRs). Upstream is re-merged into `main` periodically to stay current.
+`main` carries upstream v2.7.0 plus all of the changes below.
 
-## Why a fork
-
-We are **not contributing upstream**. We vendor this package, apply internal
-"Claude-Code-fidelity" edits, and maintain a local modified copy for our own use.
-
-Related analysis (in the `gtnotacoder/re` workspace, `cc-pi/` target):
-
-- Reverse-engineering of Claude Code's `Workflow` tool: `cc-pi/findings/cc-workflows.md`
-- Side-by-side comparison (our from-scratch port vs. this package vs. CC internals):
-  `cc-pi/findings/comparison-pi-dynamic-workflows.md`
-- Per-subagent logging mechanism + EDIT 5 fix spec: `cc-pi/findings/cc-subagent-logging.md`
-- Token-free comparison harness + parity money chart: `cc-pi/findings/comparison-test-suite.md`
-
-## Our edits (all merged into `main`)
+## Changes from upstream
 
 | Edit   | Summary                                                                 |
 |--------|-------------------------------------------------------------------------|
 | EDIT 1 | 4096-item fan-out cap                                                   |
-| EDIT 2 | 524,288-byte script size cap + 30,000 ms `runInContext` timeout          |
-| EDIT 3 | `<task-notification>` XML delivery                                      |
-| EDIT 4 | built-in `code-review` workflow matching CC 2.1.185 topology            |
+| EDIT 2 | 524,288-byte (512 KB) script-size cap + 30,000 ms `runInContext` timeout |
+| EDIT 3 | `<task-notification>` / `<usage>` / `<recovery>` XML result delivery     |
+| EDIT 4 | Built-in `code-review` workflow (scope → find → verify → sweep → synthesize) |
 | EDIT 5 | per-subagent transcript logging (`ManagedRun.transcriptDir`)            |
-| EDIT 6 | live progress panel polish + Claude concurrency floor                    |
-| EDIT 7 | per-subagent context modes — main-agent rules don't leak into subagents (default `focused`) + `/modes` command (see `docs/context-modes.md`) |
+| EDIT 6 | live progress panel polish + concurrency floor                          |
+| EDIT 7 | per-subagent **context modes** — main-agent rules don't leak into subagents (default `focused`) + `/modes` command (see [docs/context-modes.md](./docs/context-modes.md)) |
 
-EDITs 2–6 were stacked on `edit2`; the full series is now in `main`. EDIT 7
-(context modes) landed directly on `main` in `50fe3e9`.
+## Tracking upstream
 
-## Install (our patched build)
+Upstream is tracked so its fixes can be pulled in without this project being a
+hard fork. To check for and pull upstream changes:
 
-Point Pi's agent settings at this checkout, rebuild, and restart Pi:
+```bash
+# one-time
+git remote add upstream https://github.com/QuintinShaw/pi-dynamic-workflows.git
+
+# periodically
+git fetch upstream
+git log --oneline main..upstream/main      # what's new upstream
+git diff main upstream/main -- src/         # review the delta
+# then cherry-pick / merge the commits you want, resolving against our edits, e.g.
+git cherry-pick <sha>
+npm test                                    # biome + tsc + unit gate must stay green
+```
+
+Re-check upstream periodically (e.g. on each upstream release).
+
+## Install
+
+Point Pi's agent settings at this checkout, build, and restart Pi:
 
 ```jsonc
 // ~/.pi/agent/settings.json
-{
-  "packages": [ "/path/to/this/repo" ]
-}
+{ "packages": [ "/path/to/this/repo" ] }
 ```
 
 ```bash
 cd /path/to/this/repo
-npx tsc            # rebuild dist/
+npm install && npm run build   # tsc -> dist/
 # then restart pi
 ```
 
 ## Status
 
-Patched-fork parity vs. Claude Code 2.1.185: **15/17** (matches CC best).
-See `cc-pi/findings/comparison-test-suite.md` for the per-case money chart and
-the two honest remaining gaps.
+825/825 unit tests pass; the full `npm test` gate (biome + build + unit) is green.

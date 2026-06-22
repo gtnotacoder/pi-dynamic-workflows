@@ -1,9 +1,9 @@
 # Changelog
 
-All notable changes to **`@gtnotacoder/pi-dynamic-workflows`** — a patched fork of
+All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derived from
 [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT).
-Only fork-only changes are listed here; upstream history is preserved in git.
-See [PROVENANCE.md](./PROVENANCE.md) for the full edit table and fork point.
+Only changes from upstream are listed here; upstream history is preserved in git.
+See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
 ## [unreleased] — fork on upstream v2.7.0
 
@@ -15,8 +15,8 @@ All changes below are on top of that, 2026-06-21.
 - Cap workflow script body at 524,288 bytes and `runInContext` timeout at 30,000 ms. (`b41d89a`)
 
 ### Built-in `code-review` (EDIT 4 + routing)
-- Add built-in `/code-review` workflow with Claude's effort-parameterized topology (scope → find → verify → sweep → synthesize). (`5f720d5`)
-- Port the verbatim Claude prompt fragments (correctness/cleanup angles, verdict ladder). (`ff604c9`)
+- Add built-in `/code-review` workflow with an effort-parameterized topology (scope → find → verify → sweep → synthesize). (`5f720d5`)
+- Add the code-review angle prompts (correctness/cleanup angles, verdict ladder). (`ff604c9`)
 - Run all review agents on the `big` tier (GPT/Codex); coding workers stay on `small` (local Qwen). (`9993056`, superseding `d7ee84a`)
 
 ### Task panel & notifications (EDITs 3, 5, 6 + hardening)
@@ -41,7 +41,7 @@ All changes below are on top of that, 2026-06-21.
 - Add PROVENANCE + fork banner. (`dbece49`)
 - Note v2.7.0 upstream tracking and the edit-branch forward-merge. (`6d9116d`)
 - Simplify the README to a fork pointer and consolidate edits into `main`. (`799aeb9`)
-- Document commands, the authoring API, model routing, and the Claude Code `.bun` RE derivation. (`2d34e34`)
+- Document commands, the authoring API, and model routing. (`2d34e34`)
 
 ### Merges (branch consolidation)
 - `94649f0` — merge `origin/main` into `edit2/script-size-timeout-cap`.

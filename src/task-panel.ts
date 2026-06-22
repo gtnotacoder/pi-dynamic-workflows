@@ -93,10 +93,9 @@ function truncResult(s: string): string {
 }
 
 /**
- * Build a Claude-Code-style `<task-notification>` XML block for a finished
- * (or failed/paused) run, delivered back into the conversation so the model sees
- * the exact same structured result Claude delivers. Verified child order in
- * claude.exe 2.1.185 `.bun` section:
+ * Build a `<task-notification>` XML block for a finished (or failed/paused) run,
+ * delivered back into the conversation so the model sees a structured result.
+ * Child order:
  *   `<task-id>` `<tool-use-id>`? `<output-file>`? `<status>` `<summary>`
  *   `<recovery>`? (non-completed only) `<result>`? (completed only)
  *   `<failures>`? (if non-empty) `<usage>`.

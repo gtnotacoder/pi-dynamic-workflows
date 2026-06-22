@@ -1001,9 +1001,8 @@ describe("deliverText <task-notification> XML (EDIT 3)", () => {
   it("emits a <task-notification> block with the verified child order", async () => {
     const { deliverText } = await loadTaskPanel();
     const text = deliverText(fakeManagedRun());
-    // Verified child order in claude.exe 2.1.185: task-id, status, summary,
-    // result (completed), failures?, usage. (tool-use-id/output-file omitted —
-    // qshaw has none.)
+    // Child order: task-id, status, summary, result (completed), failures?,
+    // usage. (tool-use-id/output-file omitted — none here.)
     const tid = text.indexOf("<task-id>r-123</task-id>");
     const status = text.indexOf("<status>completed</status>");
     const summary = text.indexOf("<summary>");

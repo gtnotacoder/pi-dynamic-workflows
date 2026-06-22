@@ -1,11 +1,5 @@
 /**
- * Built-in `code-review` workflow — Claude Code's effort-parameterized multi-angle review.
- *
- * VERBATIM from claude.exe 2.1.185's `.bun` section (the `Gza()` generator at offset
- * ~141.165M, extracted to cc-pi/notes/code-review-verbatim.js). Claude's bundled-workflow
- * string in notes/builtin-code-review.js carried the header + LEVEL_PARAMS + arg parsing
- * but left the prompt fragments as 0xFF placeholders; the verbatim text lives in the
- * inline `/code-review` cells' shared constants, recovered here.
+ * Built-in `code-review` workflow — an effort-parameterized multi-angle review.
  *
  * Topology: Scope → pipeline(per-angle Find → Verify) → Sweep (xhigh/max) → Synthesize.
  *   high  = 3 correctness + 5 cleanup angles, ≤6 per angle, ≤10 findings, no sweep
@@ -40,7 +34,7 @@ const LEVEL_PARAMS: Record<
 const SWEEP_MAX = 8;
 
 /**
- * Verbatim correctness review angles (Claude labels them angle-A..angle-E).
+ * Correctness review angles (angle-A..angle-E).
  * `high` runs the first 3; `xhigh`/`max` run all 5.
  */
 const CORRECTNESS_ANGLES: { label: string; text: string }[] = [
@@ -76,7 +70,7 @@ When the PR adds or modifies a type that wraps another (cache, proxy, decorator,
   },
 ];
 
-/** Verbatim cleanup review angles (always all 5; `kind: "cleanup"` in the workflow). */
+/** Cleanup review angles (always all 5; `kind: "cleanup"` in the workflow). */
 const CLEANUP_ANGLES: { label: string; text: string }[] = [
   {
     label: "reuse",
@@ -112,23 +106,23 @@ Only flag a violation when you can quote the exact rule and the exact line that 
   },
 ];
 
-/** Verbatim verifier verdict ladder (the three verdicts Claude uses, with definitions). */
+/** Verifier verdict ladder (three verdicts with definitions). */
 const VERDICT_LADDER = `- **CONFIRMED** \u2014 can name the inputs/state that trigger it and the wrong output or crash. Quote the line.
 - **PLAUSIBLE** \u2014 mechanism is real, trigger is uncertain (timing, env, config). State what would confirm it.
 - **REFUTED** \u2014 factually wrong (code doesn't say that) or guarded elsewhere. Quote the line that proves it.`;
 
-/** Verbatim recall-bias addendum shipped with the verdict ladder (PLAUSIBLE by default). */
+/** Recall-bias addendum shipped with the verdict ladder (PLAUSIBLE by default). */
 const VERDICT_LADDER_RECALL = `**PLAUSIBLE by default** \u2014 do not refute a candidate for being "speculative" or "depends on runtime state" when the state is realistic: concurrency races, nil/undefined on a rare-but-reachable path (error handler, cold cache, missing optional field), falsy-zero treated as missing, off-by-one on a boundary the code does not exclude, retry storms / partial failures, regex/allowlist that lost an anchor. These are PLAUSIBLE.
 
 **REFUTED** only when constructible from the code: factually wrong (quote the actual line); provably impossible (type/constant/invariant \u2014 show it); already handled in this diff (cite the guard); or pure style with no observable effect.`;
 
-/** Verbatim precedence note appended to cleanup-angle finder prompts. */
+/** Precedence note appended to cleanup-angle finder prompts. */
 const CLEANUP_PRECEDENCE = `Cleanup, altitude, and conventions candidates use the same \`file\`/\`line\`/\`summary\` shape; in \`failure_scenario\`, state the concrete cost (what is duplicated, wasted, harder to maintain, or which CLAUDE.md rule is broken) instead of a crash. Correctness bugs always outrank cleanup, altitude, and conventions findings when the output cap forces a cut.`;
 
-/** Verbatim focus prompt for the sweep (gap-filling) phase. */
+/** Focus prompt for the sweep (gap-filling) phase. */
 const SWEEP_GAP_FOCUS = `moved/extracted code that dropped a guard or anchor; second-tier footguns (dataclass default evaluated once, \`hash()\` non-determinism, lock-scope shrink, predicate methods with side effects); setup/teardown asymmetry in tests; config defaults flipped.`;
 
-/** Verbatim meta fields (description / whenToUse / phases). */
+/** Meta fields (description / whenToUse / phases). */
 const META_DESCRIPTION =
   "Workflow-backed code review \u2014 one finder agent per review angle, an independent verifier for every candidate, then a ranked, capped findings report.";
 const META_WHEN_TO_USE =
@@ -145,7 +139,7 @@ const META_PHASES = [
 ];
 
 /**
- * Generate a `code-review` workflow script — verbatim Claude topology + prompts.
+ * Generate a `code-review` workflow script — the multi-angle review topology + prompts.
  *
  * The script reads its level + target from the `args` string at runtime:
  *   `<level> <target>` where level ∈ {high, xhigh, max} (default `high`).
