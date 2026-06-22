@@ -31,6 +31,13 @@ export const MAX_SCRIPT_BYTES = 524_288;
  */
 export const SCRIPT_TIMEOUT_MS = 30_000;
 
+/**
+ * Default wall-clock timeout for an entire async workflow run. This bounds trusted
+ * scripts that suspend forever (for example `await new Promise(() => {})`). It is
+ * not a CPU-loop sandbox; untrusted workflow isolation requires an OS boundary.
+ */
+export const DEFAULT_WORKFLOW_TIMEOUT_MS = 30 * 60_000;
+
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;
 

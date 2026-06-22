@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WORKFLOW_RUNS_DIR } from "../src/config.js";
-import { createRunPersistence, generateRunId, type PersistedRunState } from "../src/run-persistence.js";
+import {
+  createRunPersistence,
+  generateRunId,
+  type PersistedRunState,
+  runStateJsonPath,
+} from "../src/run-persistence.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { workflowProjectPaths } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -276,6 +281,66 @@ test(
     const rp = createRunPersistence(cwd);
     const deleted = rp.delete("no-such-run");
     assert.equal(deleted, false);
+  }),
+);
+
+test(
+  "createRunPersistence rejects invalid runId path traversal before filesystem joins",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const runsDir = workflowProjectPaths(cwd).runsDir;
+    const sentinel = join(workflowProjectPaths(cwd).rootDir, "escape.json");
+    mkdirSync(workflowProjectPaths(cwd).rootDir, { recursive: true });
+    writeFileSync(sentinel, "keep");
+
+    assert.throws(() => runStateJsonPath(runsDir, "../escape"), /Invalid workflow runId/);
+    assert.throws(() =>
+      rp.save({
+        runId: "../escape",
+        workflowName: "bad",
+        script: "export const meta = { name: 'b', description: 'b' }",
+        status: "completed",
+        phases: [],
+        agents: [],
+        logs: [],
+        startedAt: "2024-01-01T00:00:00.000Z",
+        updatedAt: "2024-01-01T00:00:00.000Z",
+      }),
+    );
+    assert.equal(rp.load("../escape"), null);
+    assert.equal(rp.delete("../escape"), false);
+    assert.equal(rp.acquireRunLease("../escape"), null);
+    assert.equal(readFileSync(sentinel, "utf-8"), "keep");
+  }),
+);
+
+test(
+  "createRunPersistence skips invalid or mismatched persisted run IDs",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const runsDir = workflowProjectPaths(cwd).runsDir;
+    mkdirSync(runsDir, { recursive: true });
+    const base = {
+      workflowName: "wf",
+      script: "export const meta = { name: 'w', description: 'w' }",
+      status: "completed",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    };
+    writeFileSync(join(runsDir, "bad.json"), JSON.stringify({ ...base, runId: "../bad" }));
+    writeFileSync(join(runsDir, "filename.json"), JSON.stringify({ ...base, runId: "other" }));
+    writeFileSync(join(runsDir, "good.json"), JSON.stringify({ ...base, runId: "good" }));
+
+    assert.equal(rp.load("bad"), null);
+    assert.equal(rp.load("filename"), null);
+    assert.equal(rp.load("good")?.runId, "good");
+    assert.deepEqual(
+      rp.list().map((r) => r.runId),
+      ["good"],
+    );
   }),
 );
 

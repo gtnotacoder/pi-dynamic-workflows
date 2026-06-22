@@ -220,6 +220,20 @@ test("runWorkflow accepts a script exactly 524288 bytes (boundary)", async () =>
   assert.equal(result.result, 1);
 });
 
+test("runWorkflow rejects an unresolved async workflow after the wall-clock timeout", async () => {
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'async_hang', description: 'async hang' }
+await new Promise(() => {})`,
+      { persistLogs: false, workflowTimeoutMs: 5 },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.WORKFLOW_TIMEOUT &&
+      /timed out after 5ms/.test(error.message),
+  );
+});
+
 test("runWorkflow rejects a synchronous infinite loop after ~30000 ms (script setup timeout)", async () => {
   const start = Date.now();
   await assert.rejects(
@@ -302,6 +316,47 @@ return a`,
     logs.some((message) => /exhausted/i.test(message)),
     "logs should mention exhaustion",
   );
+});
+
+test("timed-out agents abort and settle before limiter slot release", async () => {
+  let active = 0;
+  let maxActive = 0;
+  let starts = 0;
+  let aborts = 0;
+  const result = await runWorkflow(
+    `export const meta = { name: 'timeout_settle', description: 'timeout settle' }
+const xs = await parallel(['a', 'b'].map((x) => () => agent(x, { label: x, timeoutMs: 5 })))
+return xs`,
+    {
+      concurrency: 1,
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { signal?: AbortSignal }) {
+          starts++;
+          active++;
+          maxActive = Math.max(maxActive, active);
+          await new Promise<void>((resolve) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                aborts++;
+                setTimeout(resolve, 5);
+              },
+              { once: true },
+            );
+          });
+          active--;
+          return "late success";
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(result.result, [null, null]);
+  assert.equal(starts, 2);
+  assert.equal(aborts, 2);
+  assert.equal(maxActive, 1, "second agent must not start until timed-out first attempt settled");
+  assert.equal(active, 0);
 });
 
 test("runWorkflow does not retry nonrecoverable errors", async () => {
@@ -525,6 +580,71 @@ test("resume replays cached results without re-running agents", async () => {
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
+});
+
+test("resume hash includes resolved context primitives", async () => {
+  const script = `export const meta = { name: 'ctx_resume', description: 'context resume' }
+const a = await agent('same prompt', { label: 'a' })
+return a`;
+  const first = countingAgent();
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script, {
+    agent: first.runner,
+    contextMode: "legacy",
+    persistLogs: false,
+    onAgentJournal: (e) => journal.push(e),
+  });
+  assert.equal(first.state.calls, 1);
+
+  const same = countingAgent();
+  await runWorkflow(script, {
+    agent: same.runner,
+    contextMode: "legacy",
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+  });
+  assert.equal(same.state.calls, 0, "same resolved context should replay");
+
+  const focused = countingAgent();
+  await runWorkflow(script, {
+    agent: focused.runner,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+  });
+  assert.equal(focused.state.calls, 1, "legacy output must not replay under focused/default context");
+});
+
+test("resume hash changes when a project mode name resolves to different primitives", async () => {
+  const script = `export const meta = { name: 'custom_ctx_resume', description: 'context resume' }
+const a = await agent('same prompt', { label: 'a' })
+return a`;
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    contextMode: "custom",
+    contextModeRegistry: {
+      custom: { inheritProjectContext: true, systemPromptMode: "append", inheritSkills: true, inheritMainRules: true },
+    },
+    persistLogs: false,
+    onAgentJournal: (e) => journal.push(e),
+  });
+
+  const changed = countingAgent();
+  await runWorkflow(script, {
+    agent: changed.runner,
+    contextMode: "custom",
+    contextModeRegistry: {
+      custom: {
+        inheritProjectContext: false,
+        systemPromptMode: "replace",
+        inheritSkills: false,
+        inheritMainRules: false,
+      },
+    },
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+  });
+  assert.equal(changed.state.calls, 1, "same mode name with different primitives must miss cache");
 });
 
 test("resume re-runs only the changed call (hash mismatch)", async () => {

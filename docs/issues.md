@@ -6,7 +6,7 @@ Local issue tracking for `pi-dynamic-workflows`. GitHub issues are the source of
 
 | ID | Title | Severity | Status | Source |
 |---|---|---|---|---|
-| [#2](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/2) | §6.6 Critical/High security blockers | Critical/High | Open | Migrated from [kneutral-org/re#13](https://github.com/kneutral-org/re/issues/13) |
+| [#2](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/2) | §6.6 Critical/High security blockers | Critical/High | In PR | Migrated from [kneutral-org/re#13](https://github.com/kneutral-org/re/issues/13) |
 
 ## Closed
 

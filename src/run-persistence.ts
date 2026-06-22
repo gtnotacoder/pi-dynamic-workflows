@@ -3,7 +3,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { WorkflowErrorCode } from "./errors.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
@@ -95,6 +95,24 @@ interface LockFile {
 }
 
 /**
+ * Persisted run IDs become filenames and lock names, so keep them deliberately
+ * boring: generated ids already use lowercase base36 + hyphen. Rejecting dots,
+ * slashes, backslashes, controls, and absolute-looking values closes traversal
+ * through every run-state/lease/resume/delete path.
+ */
+export const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+export function isValidRunId(runId: unknown): runId is string {
+  return typeof runId === "string" && RUN_ID_PATTERN.test(runId);
+}
+
+export function assertValidRunId(runId: unknown): asserts runId is string {
+  if (!isValidRunId(runId)) {
+    throw new Error(`Invalid workflow runId: ${JSON.stringify(runId)}`);
+  }
+}
+
+/**
  * Filesystem operations used by run persistence.
  * Exposed for testing – pass overrides to inject mock implementations.
  */
@@ -113,6 +131,7 @@ export type FsLayer = {
  *  so the <recovery> log link can never drift from where the run state is actually
  *  written. */
 export function runStateJsonPath(runsDir: string, runId: string): string {
+  assertValidRunId(runId);
   return join(runsDir, `${runId}.json`);
 }
 
@@ -138,7 +157,10 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
   const runPath = runStateJsonPath; // shared formula (also used by WorkflowManager.runStatePathFor)
   const primaryRunPath = (runId: string) => runPath(runsDir, runId);
   const legacyRunPath = (runId: string) => runPath(legacyRunsDir, runId);
-  const lockPath = (dir: string, runId: string) => join(dir, `${runId}.lock`);
+  const lockPath = (dir: string, runId: string) => {
+    assertValidRunId(runId);
+    return join(dir, `${runId}.lock`);
+  };
   const primaryLockPath = (runId: string) => lockPath(runsDir, runId);
   const legacyLockPath = (runId: string) => lockPath(legacyRunsDir, runId);
   const candidateRunPaths = (runId: string) => [primaryRunPath(runId), legacyRunPath(runId)];
@@ -162,9 +184,11 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     }
   };
 
-  const readLock = (runId: string): LockFile | null => readLockAt(primaryLockPath(runId));
+  const readLock = (runId: string): LockFile | null =>
+    isValidRunId(runId) ? readLockAt(primaryLockPath(runId)) : null;
 
   const removeStaleLegacyLock = (runId: string): boolean => {
+    if (!isValidRunId(runId)) return false;
     const lock = legacyLockPath(runId);
     const existing = readLockAt(lock);
     if (existing?.runId === runId && pidIsAlive(existing.pid)) return false;
@@ -176,8 +200,22 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     return true;
   };
 
+  const readStateFile = (path: string, expectedRunId?: string): PersistedRunState | null => {
+    try {
+      const state = JSON.parse(_readFileSync(path, "utf-8")) as PersistedRunState;
+      const fileRunId = basename(path).replace(/\.json(?:\.bak)?$/, "");
+      if (!isValidRunId(state.runId)) return null;
+      if (expectedRunId !== undefined && state.runId !== expectedRunId) return null;
+      if (isValidRunId(fileRunId) && state.runId !== fileRunId) return null;
+      return state;
+    } catch {
+      return null;
+    }
+  };
+
   return {
     save(state: PersistedRunState) {
+      assertValidRunId(state.runId);
       ensureDir();
       state.updatedAt = new Date().toISOString();
       const path = primaryRunPath(state.runId);
@@ -195,15 +233,13 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     },
 
     load(runId: string): PersistedRunState | null {
+      if (!isValidRunId(runId)) return null;
       // Try the primary, then the .bak — so a corrupt primary doesn't lose the run.
       for (const path of candidateRunPaths(runId)) {
         for (const candidate of [path, `${path}.bak`]) {
-          try {
-            if (!_existsSync(candidate)) continue;
-            return JSON.parse(_readFileSync(candidate, "utf-8")) as PersistedRunState;
-          } catch {
-            // corrupt candidate -> fall through to the next candidate
-          }
+          if (!_existsSync(candidate)) continue;
+          const state = readStateFile(candidate, runId);
+          if (state) return state;
         }
       }
       return null;
@@ -216,12 +252,8 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
           if (!_existsSync(dir)) continue;
           const files = _readdirSync(dir).filter((f) => f.endsWith(".json"));
           for (const file of files) {
-            try {
-              const state = JSON.parse(_readFileSync(join(dir, file), "utf-8")) as PersistedRunState;
-              if (!byRunId.has(state.runId)) byRunId.set(state.runId, state);
-            } catch {
-              // Skip corrupted files
-            }
+            const state = readStateFile(join(dir, file));
+            if (state && !byRunId.has(state.runId)) byRunId.set(state.runId, state);
           }
         } catch {
           // Skip unreadable directories; another storage location may still work.
@@ -231,6 +263,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     },
 
     delete(runId: string): boolean {
+      if (!isValidRunId(runId)) return false;
       let deleted = false;
       try {
         for (const path of candidateRunPaths(runId)) {
@@ -259,6 +292,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     },
 
     acquireRunLease(runId: string): RunLease | null {
+      if (!isValidRunId(runId)) return null;
       ensureDir();
       const path = primaryRunPath(runId);
       const lock = primaryLockPath(runId);
@@ -293,6 +327,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
     },
 
     releaseRunLease(lease: RunLease): void {
+      if (!isValidRunId(lease.runId)) return;
       try {
         const existing = readLock(lease.runId);
         if (existing?.token === lease.token) _unlinkSync(primaryLockPath(lease.runId));

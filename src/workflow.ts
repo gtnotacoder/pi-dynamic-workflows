@@ -15,6 +15,7 @@ import {
 } from "./agent-registry.js";
 import {
   DEFAULT_AGENT_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_TIMEOUT_MS,
   MAX_AGENT_RETRIES,
   MAX_AGENTS_PER_RUN,
   MAX_CONCURRENCY,
@@ -25,12 +26,14 @@ import {
 import {
   BUILTIN_CONTEXT_MODES,
   type ContextModeRegistry,
+  type ContextPrimitives,
   resolveContextModeLayers,
   type SystemPromptMode,
 } from "./context-mode.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import { assertValidRunId } from "./run-persistence.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -88,6 +91,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   maxAgents?: number;
   /** Timeout per agent in milliseconds. null/omitted means no hard timeout. */
   agentTimeoutMs?: number | null;
+  /** Wall-clock timeout for the whole async workflow script. null means no hard timeout. */
+  workflowTimeoutMs?: number | null;
   /** Whether to persist logs to disk. Default: true */
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
@@ -316,8 +321,22 @@ export async function runWorkflow<T = unknown>(
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
   const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
+  const workflowTimeoutMs =
+    options.workflowTimeoutMs !== undefined ? options.workflowTimeoutMs : DEFAULT_WORKFLOW_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
+  assertValidRunId(runId);
   const baseCwd = options.cwd ?? process.cwd();
+
+  const workflowController = new AbortController();
+  let removeExternalAbortListener: (() => void) | undefined;
+  if (options.signal?.aborted) {
+    workflowController.abort(options.signal.reason);
+  } else if (options.signal) {
+    const onAbort = () => workflowController.abort(options.signal?.reason);
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    removeExternalAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
+  }
+  const runSignal = workflowController.signal;
   // Snapshot the agentType registry ONCE per run so two agent() calls can't
   // observe a mid-run edit (determinism); a later resume re-reads it.
   const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
@@ -384,7 +403,7 @@ export async function runWorkflow<T = unknown>(
   });
 
   const throwIfAborted = () => {
-    if (options.signal?.aborted) {
+    if (runSignal.aborted) {
       throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
     }
   };
@@ -491,7 +510,7 @@ export async function runWorkflow<T = unknown>(
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
-    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
+    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef), ctx);
 
     // Reserve the agent slot synchronously — atomic with the limit/budget gate
     // above (no await in between) — so a parallel() fan-out can't all observe the
@@ -557,45 +576,49 @@ export async function runWorkflow<T = unknown>(
           try {
             throwIfAborted();
 
-            // Run agent with timeout
-            const result = await withTimeout(
-              agentRunner.run(prompt, {
-                label,
-                schema: agentOptions.schema,
-                signal: options.signal,
-                instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
-                model: modelSpec,
-                tier: agentOptions.tier,
-                toolNames: agentDef?.tools,
-                disallowedToolNames: agentDef?.disallowedTools,
-                // The workflow layer is the single resolution authority: it passes
-                // the fully-resolved primitives, so the raw mode name is intentionally
-                // NOT forwarded (a project-mode name would be unknown to agent.ts's
-                // built-in registry and warn spuriously).
-                inheritProjectContext: ctx.inheritProjectContext,
-                systemPromptMode: ctx.systemPromptMode,
-                inheritSkills: ctx.inheritSkills,
-                inheritMainRules: ctx.inheritMainRules,
-                // Role prompt → system prompt only under "replace"; otherwise undefined.
-                systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
-                cwd: runCwd,
-                transcriptDir: options.transcriptDir,
-                onModelResolved: (id: string) => {
-                  displayModel = id;
-                },
-                onModelFallback: (spec: string) => {
-                  // Make the silent degrade visible in /workflows, not just console.
-                  log(`${label}: model "${spec}" unavailable — using the session default`);
-                },
-                onUsage: (u: AgentUsage) => {
-                  usage = u;
-                },
-                onHistory: (history: AgentHistoryEntry[]) => {
-                  options.onAgentHistory?.({ label, phase: assignedPhase, history });
-                },
-              } as any),
+            // Run agent with an abortable timeout. On timeout we abort the
+            // attempt and wait for the underlying runner to settle before retrying,
+            // releasing the limiter slot, or deleting an isolated worktree.
+            const result = await runWithAbortableTimeout(
+              (attemptSignal) =>
+                agentRunner.run(prompt, {
+                  label,
+                  schema: agentOptions.schema,
+                  signal: attemptSignal,
+                  instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
+                  model: modelSpec,
+                  tier: agentOptions.tier,
+                  toolNames: agentDef?.tools,
+                  disallowedToolNames: agentDef?.disallowedTools,
+                  // The workflow layer is the single resolution authority: it passes
+                  // the fully-resolved primitives, so the raw mode name is intentionally
+                  // NOT forwarded (a project-mode name would be unknown to agent.ts's
+                  // built-in registry and warn spuriously).
+                  inheritProjectContext: ctx.inheritProjectContext,
+                  systemPromptMode: ctx.systemPromptMode,
+                  inheritSkills: ctx.inheritSkills,
+                  inheritMainRules: ctx.inheritMainRules,
+                  // Role prompt → system prompt only under "replace"; otherwise undefined.
+                  systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
+                  cwd: runCwd,
+                  transcriptDir: options.transcriptDir,
+                  onModelResolved: (id: string) => {
+                    displayModel = id;
+                  },
+                  onModelFallback: (spec: string) => {
+                    // Make the silent degrade visible in /workflows, not just console.
+                    log(`${label}: model "${spec}" unavailable — using the session default`);
+                  },
+                  onUsage: (u: AgentUsage) => {
+                    usage = u;
+                  },
+                  onHistory: (history: AgentHistoryEntry[]) => {
+                    options.onAgentHistory?.({ label, phase: assignedPhase, history });
+                  },
+                } as any),
               timeout,
               label,
+              runSignal,
             );
 
             throwIfAborted();
@@ -618,7 +641,7 @@ export async function runWorkflow<T = unknown>(
             });
             return result;
           } catch (error) {
-            if (options.signal?.aborted) throw error;
+            if (runSignal.aborted) throw error;
 
             const workflowError = wrapError(error, { agentLabel: label });
             logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
@@ -678,7 +701,7 @@ export async function runWorkflow<T = unknown>(
         try {
           return await thunk();
         } catch (error) {
-          if (options.signal?.aborted) throw error;
+          if (runSignal.aborted) throw error;
           const workflowError = wrapError(error);
           // Non-recoverable failures (token budget / agent limit exhausted) must
           // halt the whole run, exactly like a directly-awaited agent() — not be
@@ -716,7 +739,7 @@ export async function runWorkflow<T = unknown>(
             value = await stage(value, item, index);
             throwIfAborted();
           } catch (error) {
-            if (options.signal?.aborted) throw error;
+            if (runSignal.aborted) throw error;
             const workflowError = wrapError(error);
             // Non-recoverable failures halt the whole run (see parallel()).
             if (!workflowError.recoverable) throw workflowError;
@@ -746,6 +769,7 @@ export async function runWorkflow<T = unknown>(
         ...options,
         args: childArgs,
         sharedRuntime: shared,
+        signal: runSignal,
         // A nested run is its own script; never reuse the parent's resume journal.
         resumeJournal: undefined,
         resumeFromRunId: undefined,
@@ -985,12 +1009,21 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
-  // Guard synchronous script setup with the 30000 ms runInContext timeout. The
-  // async agent body runs after the Promise is returned, so the timeout only
-  // bounds synchronous parse/setup.
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
-    timeout: SCRIPT_TIMEOUT_MS,
-  });
+  let result: unknown;
+  try {
+    // Guard synchronous script setup with the 30000 ms runInContext timeout. The
+    // async agent body runs after the Promise is returned, so that timeout only
+    // bounds synchronous parse/setup; wrap the returned Promise too so trusted
+    // scripts that suspend forever are rejected by a real wall-clock timer.
+    const execution = Promise.resolve(
+      new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
+        timeout: SCRIPT_TIMEOUT_MS,
+      }),
+    );
+    result = await withWorkflowTimeout(execution, workflowTimeoutMs, meta.name, workflowController);
+  } finally {
+    removeExternalAbortListener?.();
+  }
 
   // Persist logs
   const logFile = logger.persist();
@@ -1175,6 +1208,7 @@ function hashAgentCall(
   phase: string | undefined,
   options: AgentOptions,
   agentDefKey: string | null,
+  resolvedContext: ContextPrimitives,
 ): string {
   const identity = JSON.stringify({
     prompt,
@@ -1182,13 +1216,22 @@ function hashAgentCall(
     tier: options.tier ?? null,
     phase: phase ?? null,
     agentType: options.agentType ?? null,
-    // Context-inheritance posture: a different mode/primitive set produces a
-    // materially different session, so it must invalidate the cached result.
-    contextMode: options.contextMode ?? null,
-    inheritProjectContext: options.inheritProjectContext ?? null,
-    systemPromptMode: options.systemPromptMode ?? null,
-    inheritSkills: options.inheritSkills ?? null,
-    inheritMainRules: options.inheritMainRules ?? null,
+    // Resolved context primitives are the material session posture. Include them
+    // (not just raw options.contextMode) so a run-level legacy/focused switch or a
+    // project-mode registry change cannot replay stale agent output on resume.
+    context: {
+      inheritProjectContext: resolvedContext.inheritProjectContext,
+      systemPromptMode: resolvedContext.systemPromptMode,
+      inheritSkills: resolvedContext.inheritSkills,
+      inheritMainRules: resolvedContext.inheritMainRules,
+    },
+    rawContext: {
+      contextMode: options.contextMode ?? null,
+      inheritProjectContext: options.inheritProjectContext ?? null,
+      systemPromptMode: options.systemPromptMode ?? null,
+      inheritSkills: options.inheritSkills ?? null,
+      inheritMainRules: options.inheritMainRules ?? null,
+    },
     // Resolved definition (tools/model/prompt/context) so editing an agent .md
     // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,
@@ -1235,29 +1278,130 @@ function normalizeAgentRetries(value: unknown): number {
   return Math.min(MAX_AGENT_RETRIES, Math.floor(value));
 }
 
+function linkAbortSignal(parent: AbortSignal | undefined, child: AbortController): () => void {
+  if (!parent) return () => {};
+  if (parent.aborted) {
+    child.abort(parent.reason);
+    return () => {};
+  }
+  const onAbort = () => child.abort(parent.reason);
+  parent.addEventListener("abort", onAbort, { once: true });
+  return () => parent.removeEventListener("abort", onAbort);
+}
+
 /**
- * Run a promise with a timeout.
+ * Run one agent attempt with an abortable timeout. A timeout aborts the attempt
+ * and then awaits the underlying runner before returning control to the limiter,
+ * so retries/worktree cleanup cannot race a still-running timed-out agent.
  */
-async function withTimeout<T>(promise: Promise<T>, ms: number | null, label: string): Promise<T> {
-  if (ms === null) return promise;
+async function runWithAbortableTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  ms: number | null,
+  label: string,
+  parentSignal: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const unlinkParent = linkAbortSignal(parentSignal, controller);
+  const attemptSignal = controller.signal;
+  let promise: Promise<T>;
+  try {
+    promise = Promise.resolve(run(attemptSignal));
+  } catch (error) {
+    unlinkParent();
+    throw error;
+  }
+  if (ms === null) {
+    try {
+      return await promise;
+    } finally {
+      unlinkParent();
+    }
+  }
 
   let timeoutId: NodeJS.Timeout | undefined;
-
+  const timeoutError = new WorkflowError(
+    `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,
+    WorkflowErrorCode.AGENT_TIMEOUT,
+    { recoverable: true },
+  );
+  let timedOut = false;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(
-        new WorkflowError(
-          `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,
-          WorkflowErrorCode.AGENT_TIMEOUT,
-          { recoverable: true },
-        ),
-      );
+      timedOut = true;
+      reject(timeoutError);
+      controller.abort(timeoutError);
     }, ms);
   });
 
   try {
     return await Promise.race([promise, timeoutPromise]);
+  } catch (error) {
+    if (!timedOut) throw error;
+    // The timeout is the public result. Still wait for the runner to observe the
+    // abort and settle before a retry or finally-block can proceed.
+    try {
+      await promise;
+    } catch {
+      // Ignore the runner's abort error; report the timeout consistently.
+    }
+    throw timeoutError;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+    unlinkParent();
+  }
+}
+
+/**
+ * Bounds async workflow scripts that suspend forever. This is a trusted-code
+ * safety belt, not a same-process CPU-loop sandbox; on timeout we abort the
+ * workflow signal so any in-flight agents can clean up.
+ */
+async function withWorkflowTimeout<T>(
+  promise: Promise<T>,
+  ms: number | null,
+  workflowName: string,
+  controller: AbortController,
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout | undefined;
+  let removeAbortListener: (() => void) | undefined;
+  const races: Promise<T | never>[] = [promise];
+  const abortError = () =>
+    controller.signal.reason instanceof WorkflowError
+      ? controller.signal.reason
+      : new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+
+  races.push(
+    new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const onAbort = () => reject(abortError());
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+    }),
+  );
+
+  if (ms !== null) {
+    const timeoutError = new WorkflowError(
+      `Workflow "${workflowName}" timed out after ${ms}ms`,
+      WorkflowErrorCode.WORKFLOW_TIMEOUT,
+      { recoverable: true },
+    );
+    races.push(
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort(timeoutError);
+          reject(timeoutError);
+        }, ms);
+      }),
+    );
+  }
+
+  try {
+    return (await Promise.race(races)) as T;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    removeAbortListener?.();
   }
 }
