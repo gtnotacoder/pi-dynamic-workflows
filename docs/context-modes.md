@@ -9,8 +9,8 @@ The default mode is `inherit`, which expands to the engine's exact prior
 behavior, so **existing workflows are unchanged** (see [Backward-compatibility
 gate](#backward-compatibility-gate)).
 
-> Tracking issue: feature notes & findings live in the repo's "Context modes"
-> issue. Implementation landed in `50fe3e9`.
+> Tracking issue: [#1](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/1)
+> — feature notes, verification findings & follow-ups. Implementation landed in `50fe3e9`.
 
 ---
 
