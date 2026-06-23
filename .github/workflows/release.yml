@@ -37,6 +37,9 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
       - run: npm ci
 
       - name: Verify tag matches package.json version
@@ -51,10 +54,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish to npm
+      # Auth is via OIDC trusted publishing — no NODE_AUTH_TOKEN needed.
+      # Trusted publisher: npmjs.com -> pi-dynamic-workflows-oc-style -> Settings
+      #   (org/user: gtnotacoder, repo: pi-dynamic-workflows, workflow: release.yml)
+      - name: Publish to npm (Trusted Publishing via OIDC)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     needs: publish-npm
