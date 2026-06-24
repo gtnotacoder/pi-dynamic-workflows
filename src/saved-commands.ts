@@ -4,9 +4,22 @@
  */
 
 import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+
+/**
+ * Build the command description for a saved workflow. The workflow's own
+ * `description` is preserved when present; a concise `[--mode <name>]` hint is
+ * appended so users discover the run-level context-mode flag — unless the
+ * description already mentions `--mode` (or `contextMode`).
+ */
+function describeSavedWorkflowCommand(wf: SavedWorkflow): string {
+  const base = wf.description?.trim() || `Saved workflow: ${wf.name}`;
+  if (/--mode\b|contextMode/i.test(base)) return base;
+  return `${base} [--mode <name>]`;
+}
 
 function isRegistered(pi: ExtensionAPI, name: string): boolean {
   try {
@@ -73,12 +86,22 @@ export function registerSavedWorkflow(
 ): void {
   if (isRegistered(pi, wf.name)) return;
   pi.registerCommand(wf.name, {
-    description: wf.description || `Saved workflow: ${wf.name}`,
+    description: describeSavedWorkflowCommand(wf),
     async handler(args: string, ctx: ExtensionCommandContext) {
       if (exists && !exists()) {
         ctx.ui.notify(`/${wf.name} was deleted — reload the session to remove this command.`, "warning");
         return;
       }
+      // Pull a run-level `--mode <name>` out of the args (e.g. `--mode isolated`)
+      // so e.g. `/my-flow --mode isolated` sets the LOWEST-precedence posture for
+      // every subagent in this run without editing any agentType `.md`. The
+      // remaining args (with the flag removed) are parsed as usual.
+      const { mode, rest } = extractModeFlag(args);
+      // Parse the remaining args (with `--mode` stripped) once and reuse for
+      // both the manager and inline execution paths. `mode=value` is still a
+      // normal saved-workflow argument; only `--mode` / `--mode=<name>` is
+      // reserved for run-level context.
+      const parsedArgs = parseCommandArgs(rest, wf.parameters);
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
 
@@ -88,7 +111,9 @@ export function registerSavedWorkflow(
           // installResultDelivery posts the final result when the background run
           // completes. Awaiting here would make the slash command feel frozen and
           // show only a static "running" status.
-          const { runId, promise } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters));
+          const { runId, promise } = manager.startInBackground(wf.script, parsedArgs, {
+            contextMode: mode,
+          });
           const key = `wf:${wf.name}`;
           ctx.ui.setStatus(key, `${wf.name}: running (${runId})`);
           void promise.finally(() => ctx.ui.setStatus(key, undefined)).catch(() => {});
@@ -104,8 +129,10 @@ export function registerSavedWorkflow(
         // Fallback: inline runWorkflow (foreground, no TUI tracking).
         const result = await runWorkflow(wf.script, {
           cwd,
-          args: parseCommandArgs(args, wf.parameters),
+          args: parsedArgs,
           tools: createCodingTools(cwd),
+          contextMode: mode,
+          contextModeRegistry: buildRegistryForCwd(cwd),
           onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
         });
 

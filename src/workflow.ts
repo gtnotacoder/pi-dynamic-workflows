@@ -462,7 +462,7 @@ export async function runWorkflow<T = unknown>(
     // the lower-precedence layer, the agent() call options the higher. The result
     // is passed to run() as explicit primitives (which win over any bare mode), so
     // run()'s own resolveContextMode reproduces exactly this triple.
-    const { primitives: ctx } = resolveContextModeLayers(
+    const { primitives: ctx, unknownMode } = resolveContextModeLayers(
       [
         // Lowest precedence: run-level default (e.g. a `--mode` flag).
         {
@@ -491,6 +491,9 @@ export async function runWorkflow<T = unknown>(
       ],
       options.contextModeRegistry ?? BUILTIN_CONTEXT_MODES,
     );
+    if (unknownMode) {
+      log(`[warn] unknown contextMode "${unknownMode}"`);
+    }
     // Under "replace" the role prompt becomes the system prompt, so it must NOT
     // also be injected into the task. buildAgentInstructions is told to skip it.
     const roleAsSystemPrompt = ctx.systemPromptMode === "replace";
