@@ -134,6 +134,12 @@ export interface WorkflowToolOptions {
   storage?: WorkflowStorage;
   /** Default per-agent timeout for runs created by this tool. null means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
+  /**
+   * Default hard wall-clock timeout for runs created by this tool, in ms. null
+   * disables the run-wide timeout explicitly; undefined lets the runtime
+   * constant apply. Overrides the settings-derived default when provided.
+   */
+  defaultWorkflowTimeoutMs?: number | null;
   /** Default max concurrent agents when no tool-level concurrency is passed. */
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
@@ -151,6 +157,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       concurrency: defaults.concurrency,
       loadSavedWorkflow: (name: string) => storage.load(name)?.script,
       defaultAgentTimeoutMs: defaults.agentTimeoutMs,
+      defaultWorkflowTimeoutMs: defaults.workflowTimeoutMs,
       defaultAgentRetries: defaults.agentRetries,
     });
 
@@ -358,13 +365,22 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
 function resolveWorkflowToolDefaults(
   options: WorkflowToolOptions,
   cwd: string,
-): { agentTimeoutMs: number | null; concurrency?: number; agentRetries: number } {
+): {
+  agentTimeoutMs: number | null;
+  workflowTimeoutMs: number | null | undefined;
+  concurrency?: number;
+  agentRetries: number;
+} {
   const settings = loadWorkflowSettings({ cwd });
   return {
     agentTimeoutMs:
       options.defaultAgentTimeoutMs !== undefined
         ? options.defaultAgentTimeoutMs
         : (settings.defaultAgentTimeoutMs ?? null),
+    workflowTimeoutMs:
+      options.defaultWorkflowTimeoutMs !== undefined
+        ? options.defaultWorkflowTimeoutMs
+        : settings.defaultWorkflowTimeoutMs,
     concurrency: options.defaultConcurrency ?? options.concurrency ?? settings.defaultConcurrency,
     agentRetries: options.defaultAgentRetries ?? settings.defaultAgentRetries ?? 0,
   };

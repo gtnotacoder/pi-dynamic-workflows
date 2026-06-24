@@ -138,6 +138,143 @@ test(
 );
 
 test(
+  "manager defaultWorkflowTimeoutMs is captured and persisted on a sync run",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, 42_000, "managed run captures the settings default");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, 42_000, "effective timeout is persisted for resume");
+  }),
+);
+
+test(
+  "manager defaultWorkflowTimeoutMs is captured and persisted on a background run",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    await promise;
+
+    const run = manager.getRun(runId);
+    assert.equal(run?.workflowTimeoutMs, 42_000, "background run captures the settings default");
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "effective timeout is persisted for resume");
+  }),
+);
+
+test(
+  "run option workflowTimeoutMs overrides manager defaultWorkflowTimeoutMs and is persisted",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    await manager.runSync(oneAgentScript, undefined, { workflowTimeoutMs: 90_000 });
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, 90_000, "per-run override wins at start");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, 90_000, "per-run override is the persisted value");
+  }),
+);
+
+test(
+  "null manager defaultWorkflowTimeoutMs is preserved and persisted (disables wall timeout)",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: null });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, null, "null disables the wall timeout");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, null, "null is persisted so resume keeps it disabled");
+  }),
+);
+
+test(
+  "unset defaultWorkflowTimeoutMs stays undefined (runtime constant applies) and is not persisted",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, undefined, "undefined preserves the runtime default");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, undefined, "undefined is not persisted on old/new runs");
+  }),
+);
+
+test(
+  "resume preserves the persisted workflowTimeoutMs from the original run",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 42_000 });
+    manager.on("error", () => {});
+
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The in-flight run captured the settings default.
+    assert.equal(manager.getRun(runId)?.workflowTimeoutMs, 42_000);
+
+    // Pause while the deferred agent is in-flight, then resume.
+    assert.equal(manager.pause(runId), true);
+    const resumed = await manager.resume(runId);
+    assert.equal(resumed, true, "resume should succeed");
+
+    // The resumed managed run keeps the original explicit/settings timeout.
+    assert.equal(manager.getRun(runId)?.workflowTimeoutMs, 42_000, "resume keeps the original timeout");
+
+    da.resolve("resumed-done");
+    await origPromise.catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "completed");
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "completed run still shows the original timeout");
+  }),
+);
+
+test(
+  "resume of an old persisted run without workflowTimeoutMs keeps using the runtime default",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    // Start a run, then pause it so a persisted state exists, then rewrite the
+    // persisted JSON to drop workflowTimeoutMs — simulating an old run.
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    delete raw.workflowTimeoutMs;
+    writeFileSync(statePath, JSON.stringify(raw, null, 2));
+
+    // A fresh manager (no settings default) resumes the old run; undefined falls
+    // back to DEFAULT_WORKFLOW_TIMEOUT_MS inside runWorkflow, so it completes.
+    const manager2 = new WorkflowManager({ cwd, agent: da.runner });
+    manager2.on("error", () => {});
+    assert.equal(await manager2.resume(runId), true);
+    assert.equal(manager2.getRun(runId)?.workflowTimeoutMs, undefined, "old run has no captured timeout");
+
+    da.resolve("old-done");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager2.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "completed", "old run completes under the runtime default");
+  }),
+);
+
+test(
   "manager forwards exec concurrency and agentRetries to runtime",
   withTempCwd(async (cwd) => {
     let active = 0;

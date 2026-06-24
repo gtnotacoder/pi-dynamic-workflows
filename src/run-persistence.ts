@@ -49,6 +49,10 @@ export interface PersistedRunState {
   updatedAt: string;
   completedAt?: string;
   durationMs?: number;
+  /** Effective run-wide wall-clock timeout (ms) captured at start, so resume
+   *  keeps the original explicit/settings value. null disables the timeout;
+   *  absent (old runs) means the runtime default still applies. */
+  workflowTimeoutMs?: number | null;
   tokenUsage?: {
     input: number;
     output: number;

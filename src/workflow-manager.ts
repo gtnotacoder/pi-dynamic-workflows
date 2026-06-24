@@ -60,6 +60,10 @@ export interface ManagedRun {
    * is disabled via `persistSubagentTranscripts: false`.
    */
   transcriptDir?: string;
+  /** Per-run override of the wall-clock timeout, captured when the run started
+   *  so persistence/resume keep the original explicit/settings default. null
+   *  disables the run-wide timeout; undefined means the runtime constant applies. */
+  workflowTimeoutMs?: number | null;
   /** Path to the persisted run-state JSON (runsDir/<runId>.json), so a failed
    *  run can link to it from the chat <recovery> block. Set regardless of whether
    *  subagent transcript persistence is enabled (the run state is always saved). */
@@ -112,6 +116,14 @@ export interface WorkflowManagerOptions {
   sessionId?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
+  /**
+   * Default hard wall-clock timeout for a whole run, in milliseconds, applied
+   * when a run does not pass its own `workflowTimeoutMs`. null disables the
+   * run-wide timeout explicitly; undefined (the default) lets the runtime
+   * constant (`DEFAULT_WORKFLOW_TIMEOUT_MS`) still apply. Normalized exactly
+   * like `defaultAgentTimeoutMs`.
+   */
+  defaultWorkflowTimeoutMs?: number | null;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
   /** Named context-mode registry (built-ins + project-defined) for tool-driven runs. */
@@ -134,6 +146,8 @@ export class WorkflowManager extends EventEmitter {
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
+  /** Resolved settings/option default for the run-wide timeout. undefined keeps the runtime default. */
+  private defaultWorkflowTimeoutMs: number | null | undefined;
   private defaultAgentRetries: number;
   /** Named context-mode registry threaded into every run so project modes resolve. */
   private contextModeRegistry?: ContextModeRegistry;
@@ -149,6 +163,8 @@ export class WorkflowManager extends EventEmitter {
     this.mainModel = options.mainModel;
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
+    // Preserve undefined (runtime constant applies) vs null (explicit disable).
+    this.defaultWorkflowTimeoutMs = options.defaultWorkflowTimeoutMs;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.contextModeRegistry = options.contextModeRegistry;
     this.persistence = createRunPersistence(this.cwd);
@@ -189,6 +205,13 @@ export class WorkflowManager extends EventEmitter {
       // Best-effort: SessionManager.create will also mkdirSync on first agent.
     }
     return dir;
+  }
+
+  /** Resolve the per-run wall-clock timeout to capture at start time, so it is
+   *  persisted and survives resume. A per-call exec override wins; otherwise the
+   *  manager/settings default applies. undefined is preserved (runtime constant). */
+  private resolveStartWorkflowTimeoutMs(exec: ExecOptions): number | null | undefined {
+    return exec.workflowTimeoutMs !== undefined ? exec.workflowTimeoutMs : this.defaultWorkflowTimeoutMs;
   }
 
   /** Bind the manager to the current pi session, so new runs are tagged with it and
@@ -262,6 +285,7 @@ export class WorkflowManager extends EventEmitter {
       journal: [],
       background: true,
       lease,
+      workflowTimeoutMs: this.resolveStartWorkflowTimeoutMs(exec),
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
@@ -308,6 +332,7 @@ export class WorkflowManager extends EventEmitter {
    */
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const managed = this.createManaged(script, args);
+    managed.workflowTimeoutMs = this.resolveStartWorkflowTimeoutMs(exec);
     const lease = this.persistence.acquireRunLease(managed.runId);
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -368,6 +393,18 @@ export class WorkflowManager extends EventEmitter {
       contextMode,
     } = exec;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
+    // Effective run-wide timeout precedence:
+    //   exec.workflowTimeoutMs  (highest — per-call override)
+    //   managed.workflowTimeoutMs (captured at start/resume from persisted or settings)
+    //   this.defaultWorkflowTimeoutMs (manager/settings default)
+    //   undefined  -> runWorkflow falls back to DEFAULT_WORKFLOW_TIMEOUT_MS.
+    // null at any level explicitly disables the wall timeout.
+    const resolvedWorkflowTimeoutMs =
+      workflowTimeoutMs !== undefined
+        ? workflowTimeoutMs
+        : managed.workflowTimeoutMs !== undefined
+          ? managed.workflowTimeoutMs
+          : this.defaultWorkflowTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
     const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
     const progress = () => onProgress?.(managed.snapshot);
@@ -389,7 +426,7 @@ export class WorkflowManager extends EventEmitter {
         contextModeRegistry: this.contextModeRegistry,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
-        workflowTimeoutMs,
+        workflowTimeoutMs: resolvedWorkflowTimeoutMs,
         tokenBudget,
         confirm,
         contextMode,
@@ -566,6 +603,9 @@ export class WorkflowManager extends EventEmitter {
         updatedAt: new Date().toISOString(),
         completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
         durationMs: managed.result?.durationMs,
+        // Persist the effective run-wide timeout only when set, so resume keeps
+        // the original explicit/settings value. Absent on old runs -> runtime constant.
+        workflowTimeoutMs: managed.workflowTimeoutMs,
       });
     } catch (err) {
       // Persistence is best-effort: the run is still healthy in memory.
@@ -628,6 +668,10 @@ export class WorkflowManager extends EventEmitter {
       journal: persisted.journal ?? [],
       background: true,
       lease,
+      // Preserve the original explicit/settings timeout so a resumed run keeps
+      // the same wall-clock cap it started with. Absent on old runs -> undefined
+      // -> executeRun falls back to the manager/settings default then the runtime constant.
+      workflowTimeoutMs: persisted.workflowTimeoutMs,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
