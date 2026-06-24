@@ -59,6 +59,7 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
+export { generateFuguWorkflow } from "./fugu.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";

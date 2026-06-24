@@ -99,6 +99,12 @@ const workflowToolSchema = Type.Object({
         "Timeout per agent in milliseconds. Omit for no hard timeout by default. Set only when the user asks to bound time.",
     }),
   ),
+  workflowTimeoutMs: Type.Optional(
+    Type.Number({
+      description:
+        "Total wall-clock timeout for the entire workflow run in milliseconds. Default: 120 minutes (7,200,000 ms).",
+    }),
+  ),
   tokenBudget: Type.Optional(
     Type.Number({
       description:
@@ -115,6 +121,7 @@ export type WorkflowToolInput = {
   concurrency?: number;
   agentRetries?: number;
   agentTimeoutMs?: number;
+  workflowTimeoutMs?: number;
   tokenBudget?: number;
 };
 
@@ -209,6 +216,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           concurrency: params.concurrency,
           agentRetries: params.agentRetries,
           agentTimeoutMs: params.agentTimeoutMs,
+          workflowTimeoutMs: params.workflowTimeoutMs,
           tokenBudget: params.tokenBudget,
         });
         const transcriptDir = manager.getRun(runId)?.transcriptDir;
@@ -246,6 +254,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           concurrency: params.concurrency,
           agentRetries: params.agentRetries,
           agentTimeoutMs: params.agentTimeoutMs,
+          workflowTimeoutMs: params.workflowTimeoutMs,
           tokenBudget: params.tokenBudget,
           confirm,
           externalSignal: signal,

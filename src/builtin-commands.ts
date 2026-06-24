@@ -1,5 +1,5 @@
 /**
- * Bundled workflow commands: `/deep-research`, `/adversarial-review`, and `/code-review`.
+ * Bundled workflow commands: `/deep-research`, `/adversarial-review`, `/code-review`, and `/fugu`.
  * They run a generated workflow script and print the final report.
  */
 
@@ -12,6 +12,7 @@ import {
 import { generateAdversarialReviewWorkflow, parseAdversarialReviewArgs } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
+import { generateFuguWorkflow } from "./fugu.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
@@ -147,6 +148,48 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         } catch (error) {
           ctx.ui.setStatus("adversarial-review", undefined);
           ctx.ui.notify(`adversarial-review failed: ${error instanceof Error ? error.message : error}`, "error");
+        }
+      },
+    });
+  }
+
+  if (!alreadyRegistered(pi, "fugu")) {
+    pi.registerCommand("fugu", {
+      description: "Autonomous Fugu issue-to-PR workflow: plan, edit, verify, and open a draft PR",
+      async handler(args: string, ctx: ExtensionCommandContext) {
+        const { mode, rest } = extractModeFlag(args);
+        const task = rest.trim();
+        if (!task) return ctx.ui.notify("Usage: /fugu [--mode <name>] <task or issue>", "warning");
+        const workflowArgs = { task };
+        ctx.ui.notify("Fugu running — thinking, working, verifying, then shipping a draft PR…", "info");
+        try {
+          if (opts.manager) {
+            const { runId, promise } = opts.manager.startInBackground(generateFuguWorkflow(), workflowArgs, {
+              contextMode: mode,
+            });
+            ctx.ui.setStatus("fugu", `fugu running (${runId})`);
+            void promise.finally(() => ctx.ui.setStatus("fugu", undefined)).catch(() => {});
+            await pi.sendMessage({
+              customType: "fugu:started",
+              content: backgroundStartedText("fugu", runId, opts.manager.getRun(runId)?.transcriptDir),
+              display: true,
+            });
+            return;
+          }
+
+          const result = await runWorkflow(generateFuguWorkflow(), {
+            cwd,
+            args: workflowArgs,
+            tools: createCodingTools(cwd),
+            contextMode: mode,
+            contextModeRegistry: buildRegistryForCwd(cwd),
+            onPhase: (title) => ctx.ui.setStatus("fugu", `fugu: ${title}`),
+          });
+          ctx.ui.setStatus("fugu", undefined);
+          await pi.sendMessage({ customType: "fugu", content: reportText(result), display: true });
+        } catch (error) {
+          ctx.ui.setStatus("fugu", undefined);
+          ctx.ui.notify(`fugu failed: ${error instanceof Error ? error.message : error}`, "error");
         }
       },
     });
