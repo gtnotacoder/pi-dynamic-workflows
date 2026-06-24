@@ -160,6 +160,73 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
 
+### Fugu issue-to-PR workflow
+
+`/fugu [--mode <name>] <task or issue>` is the built-in Fugu/Trinity coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. It is intended for scoped issue-to-draft-PR tasks.
+
+```text
+/fugu implement issue #42
+/fugu --mode scoped fix the failing parser regression and open a draft PR
+```
+
+High-level flow:
+
+```text
+Task / issue text
+  ↓
+Thinker (big tier): inspect + plan a DAG
+  ↓
+Deterministic scheduler: run dependency-ready steps with parallel()
+  ↓
+Worker (medium tier): edit one focused step
+  ↓
+LocalChecks (small tier): run compile/type/lint/test checks as appropriate
+  ↓
+Verifier (big tier): strict pass/fail review; feedback loops through gate(..., { attempts: 3 })
+  ↓
+PR_Delivery (small tier): branch, commit, push, open a draft PR
+```
+
+Components:
+
+| Component | Role |
+|-----------|------|
+| **Thinker** | Reads the task and codebase, then emits structured JSON: `summary` plus `steps[]` with `id`, `file`, `instructions`, `expectedOutput`, and optional `dependencies`. Same-file edits should be sequential; independent files can stay dependency-free. |
+| **DAG scheduler** | Runs inside the workflow VM, not inside a model. It repeatedly finds steps whose dependencies are complete, starts them together with `parallel()`, and rejects cyclic/deadlocked plans. |
+| **Worker** | Receives exactly one step and edits the repo directly with coding tools. It does not own the whole task; it owns a narrow file/action slice. |
+| **LocalChecks** | Uses the small tier for cheap mechanical checks. It can run project commands for type-checking, linting, tests, or compile errors and returns logs to the verifier. |
+| **Verifier** | Performs strict LLM review with schema output `{ passed, feedback }`. On failure, `gate()` feeds the feedback back to the Worker for up to three attempts. |
+| **State writer** | Writes transient diagnostic progress to `.fugu/status.json` so long runs have inspectable local state. This is scratch state, not intended for commits. |
+| **PR_Delivery** | After all steps pass, creates a safe branch, commits, pushes, and opens a draft GitHub PR. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. |
+
+DAG example produced by the Thinker:
+
+```json
+[
+  { "id": "step-1", "file": "src/parser.ts", "dependencies": [] },
+  { "id": "step-2", "file": "tests/parser.test.ts", "dependencies": ["step-1"] },
+  { "id": "step-3", "file": "README.md", "dependencies": [] }
+]
+```
+
+In that example, `step-1` and `step-3` can run together, while `step-2` waits for the parser change.
+
+Model routing is intentionally portable for NPM: built-in Fugu uses tiers rather than hard-coded provider IDs.
+
+- Thinker / Verifier: `tier: "big"`
+- Worker: `tier: "medium"`
+- LocalChecks / state / PR delivery: `tier: "small"`
+
+Use `/workflows-models` to map those tiers to your own subscriptions or local models. For example, one machine can route big to GPT-5-class reasoning, medium to GLM/DeepSeek coding, and small to a fast local Qwen verifier without changing the shipped workflow.
+
+Operational notes:
+
+- Start from a clean git working tree when possible; Fugu will create its own branch during PR delivery.
+- `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
+- Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
+- Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.
+- Fugu opens a draft PR; it does not auto-merge.
+
 ### Adversarial review evidence mode
 
 Baseline `/adversarial-review <task>` preserves the original fast workflow: investigate → skeptical refutation → consensus. Add `--evidence` to insert an Evidence phase before refutation:

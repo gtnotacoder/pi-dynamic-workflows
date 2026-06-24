@@ -63,7 +63,7 @@ log('[Fugu] Initiating Fugu Trinity Orchestrator for task: "' + TASK + '"')
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
-log('[Fugu:Thinker] Spawning Thinker agent (GPT-5) to map out the execution plan...')
+log('[Fugu:Thinker] Spawning Thinker agent (big tier) to map out the execution plan...')
 
 const plan = await agent(
   'Analyze the codebase and map out a step-by-step modification plan to complete this task:\\n' +
