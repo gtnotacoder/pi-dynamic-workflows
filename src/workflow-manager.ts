@@ -64,6 +64,14 @@ export interface ManagedRun {
    *  so persistence/resume keep the original explicit/settings default. null
    *  disables the run-wide timeout; undefined means the runtime constant applies. */
   workflowTimeoutMs?: number | null;
+  /** Whether `workflowTimeoutMs` was explicitly captured for this run. Always
+   *  true for fresh runs (startInBackground/runSync resolve it from exec/manager
+   *  default at start, even when that resolves to undefined). For resumed runs it
+   *  is true only when the persisted state had the field — false for old runs
+   *  persisted before this feature, so executeRun passes `undefined` to
+   *  runWorkflow and the runtime `DEFAULT_WORKFLOW_TIMEOUT_MS` applies instead of
+   *  the current manager/settings default. */
+  workflowTimeoutMsCaptured?: boolean;
   /** Path to the persisted run-state JSON (runsDir/<runId>.json), so a failed
    *  run can link to it from the chat <recovery> block. Set regardless of whether
    *  subagent transcript persistence is enabled (the run state is always saved). */
@@ -286,6 +294,7 @@ export class WorkflowManager extends EventEmitter {
       background: true,
       lease,
       workflowTimeoutMs: this.resolveStartWorkflowTimeoutMs(exec),
+      workflowTimeoutMsCaptured: true,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
@@ -293,7 +302,9 @@ export class WorkflowManager extends EventEmitter {
     this.runs.set(runId, managed);
 
     try {
-      // Persist initial state
+      // Persist initial state — include the effective run-wide timeout so a
+      // crash/restart before the first journal/final persist keeps the explicit/
+      // settings value. JSON.stringify omits undefined fields.
       this.persistence.save({
         runId,
         workflowName: parsed.meta.name,
@@ -306,6 +317,7 @@ export class WorkflowManager extends EventEmitter {
         logs: [],
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
+        workflowTimeoutMs: managed.workflowTimeoutMs,
       });
     } catch (err) {
       this.releaseRunLease(managed);
@@ -333,6 +345,7 @@ export class WorkflowManager extends EventEmitter {
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const managed = this.createManaged(script, args);
     managed.workflowTimeoutMs = this.resolveStartWorkflowTimeoutMs(exec);
+    managed.workflowTimeoutMsCaptured = true;
     const lease = this.persistence.acquireRunLease(managed.runId);
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -394,15 +407,20 @@ export class WorkflowManager extends EventEmitter {
     } = exec;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     // Effective run-wide timeout precedence:
-    //   exec.workflowTimeoutMs  (highest — per-call override)
+    //   exec.workflowTimeoutMs   (highest — per-call override)
     //   managed.workflowTimeoutMs (captured at start/resume from persisted or settings)
-    //   this.defaultWorkflowTimeoutMs (manager/settings default)
-    //   undefined  -> runWorkflow falls back to DEFAULT_WORKFLOW_TIMEOUT_MS.
+    //   this.defaultWorkflowTimeoutMs (manager/settings default; fresh runs only)
+    //   undefined   -> runWorkflow falls back to DEFAULT_WORKFLOW_TIMEOUT_MS.
     // null at any level explicitly disables the wall timeout.
+    // A resumed old run persisted before `workflowTimeoutMs` existed has
+    // `workflowTimeoutMsCaptured === false`: skip the manager default so the
+    // runtime constant applies (the run never opted into the current default).
+    const managedTimeoutApplies =
+      managed.workflowTimeoutMsCaptured === false ? false : managed.workflowTimeoutMs !== undefined;
     const resolvedWorkflowTimeoutMs =
       workflowTimeoutMs !== undefined
         ? workflowTimeoutMs
-        : managed.workflowTimeoutMs !== undefined
+        : managedTimeoutApplies
           ? managed.workflowTimeoutMs
           : this.defaultWorkflowTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
@@ -669,9 +687,13 @@ export class WorkflowManager extends EventEmitter {
       background: true,
       lease,
       // Preserve the original explicit/settings timeout so a resumed run keeps
-      // the same wall-clock cap it started with. Absent on old runs -> undefined
-      // -> executeRun falls back to the manager/settings default then the runtime constant.
+      // the same wall-clock cap it started with. For old runs persisted before
+      // this field existed, `workflowTimeoutMsCaptured` is false so executeRun
+      // passes `undefined` to runWorkflow and the runtime constant
+      // (DEFAULT_WORKFLOW_TIMEOUT_MS) applies — not the current manager/settings
+      // default the run never opted into.
       workflowTimeoutMs: persisted.workflowTimeoutMs,
+      workflowTimeoutMsCaptured: persisted.workflowTimeoutMs !== undefined,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };

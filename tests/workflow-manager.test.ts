@@ -167,6 +167,28 @@ test(
 );
 
 test(
+  "background initial persistence includes the effective workflowTimeoutMs",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 42_000 });
+    manager.on("error", () => {});
+
+    // Start in the background but keep the agent deferred so the run stays
+    // in-flight and only the INITIAL persist has happened (no journal/final yet).
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "running");
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "initial persist captures the effective timeout");
+
+    // Cleanup: resolve so the background run completes and the process exits cleanly.
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+  }),
+);
+
+test(
   "run option workflowTimeoutMs overrides manager defaultWorkflowTimeoutMs and is persisted",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
@@ -271,6 +293,45 @@ test(
 
     const persisted = manager2.listRuns().find((r) => r.runId === runId);
     assert.equal(persisted?.status, "completed", "old run completes under the runtime default");
+  }),
+);
+
+test(
+  "resume of an old persisted run without workflowTimeoutMs ignores a manager settings default",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    // Start a run, then pause it so a persisted state exists, then rewrite the
+    // persisted JSON to drop workflowTimeoutMs — simulating an old run.
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    delete raw.workflowTimeoutMs;
+    writeFileSync(statePath, JSON.stringify(raw, null, 2));
+
+    // A fresh manager WITH a settings default resumes the old run. The old run
+    // never opted into this default, so executeRun must pass `undefined` to
+    // runWorkflow and the runtime DEFAULT_WORKFLOW_TIMEOUT_MS applies — NOT the
+    // 5ms settings default (which would time the whole run out immediately).
+    const manager2 = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 5 });
+    manager2.on("error", () => {});
+    assert.equal(await manager2.resume(runId), true);
+    const resumedRun = manager2.getRun(runId);
+    assert.equal(resumedRun?.workflowTimeoutMs, undefined, "old run has no captured timeout");
+    assert.equal(resumedRun?.workflowTimeoutMsCaptured, false, "old run marks the field as not captured");
+
+    da.resolve("old-done");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager2.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "completed", "old run completes under the runtime default, not the 5ms settings default");
   }),
 );
 
