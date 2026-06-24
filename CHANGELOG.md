@@ -5,6 +5,13 @@ All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derive
 Only changes from upstream are listed here; upstream history is preserved in git.
 See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
 
+## [Unreleased]
+
+### Added
+
+- `WorkflowSettings.defaultWorkflowTimeoutMs` (number | null) for a configurable run-wide wall-clock timeout default, normalized like `defaultAgentTimeoutMs` (`null` disables, positive finite numbers are retained, invalid/zero/negative values are dropped, absent keeps the runtime constant).
+- Thread the settings default through `WorkflowManager` (`WorkflowManagerOptions.defaultWorkflowTimeoutMs`), the `workflow` tool, saved slash-command execution, and `/workflows resume`. Effective timeout precedence per run: `exec.workflowTimeoutMs` → the run's captured/persisted value → the manager/settings default → `undefined` (runtime `DEFAULT_WORKFLOW_TIMEOUT_MS`). The effective value is persisted so resumed runs keep their original explicit/settings timeout; old persisted runs without the field keep using the runtime constant. (Closes #10, part 1)
+
 ## [0.1.3] — 2026-06-22
 
 ### Added

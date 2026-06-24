@@ -6,7 +6,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 type TaskPanelModule = {
   installResultDelivery: (pi: ExtensionAPI, manager: unknown) => void;
-  installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
+  installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown, options?: unknown) => void;
 };
 
 // Loaded once before all tests
@@ -20,7 +20,7 @@ before(async () => {
 
 describe("installResultDelivery", () => {
   function createMockManager(run?: unknown) {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+    const manager = new EventEmitter() as EventEmitter & {
       getRun: (...args: unknown[]) => unknown;
       __deliveryInstalled?: boolean;
       listRuns?: () => unknown[];
@@ -84,7 +84,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.equal(calls[0].customType, "workflow-result");
     assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
@@ -101,6 +101,29 @@ describe("installResultDelivery", () => {
     assert.ok(calls[0].content.includes("<status>completed</status>"), "should report completed status");
   });
 
+  it("links the run-state output file and keeps completed <result> compact", () => {
+    const pi = createMockPi();
+    const run = makeRun({
+      runStatePath: "/tmp/pi-runs/test-run-1.json",
+      result: {
+        agentCount: 1,
+        durationMs: 10,
+        tokenUsage: { total: 10, input: 5, output: 5 },
+        result: { summary: "Compact verdict", huge: "x".repeat(20_000) },
+      },
+    });
+    const manager = createMockManager(run);
+
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+
+    const content = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls[0].content;
+    assert.ok(content.includes("<output-file>/tmp/pi-runs/test-run-1.json"), "should point at the run-state JSON");
+    assert.ok(content.includes("file:///tmp/pi-runs/test-run-1.json"), "should include a file:// URI");
+    assert.ok(content.includes("<result>Compact verdict</result>"), "result should be the compact summary");
+    assert.ok(!content.includes("x".repeat(1000)), "full large JSON payload should not be delivered to chat");
+  });
+
   // ── deliverText: fallback chain ──
 
   it("falls back to report when verdict is absent", () => {
@@ -111,7 +134,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.ok(calls[0].content.includes("Report body"), "should contain Report body");
   });
 
@@ -123,7 +146,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.ok(calls[0].content.includes("Short summary"), "should contain Short summary");
   });
 
@@ -135,7 +158,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.ok(calls[0].content.includes("Plain string result"), "should contain Plain string result");
   });
 
@@ -147,7 +170,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.ok(calls[0].content.includes("foo"), "should contain foo");
     assert.ok(calls[0].content.includes("…(truncated)"), "should contain …(truncated)");
   });
@@ -161,7 +184,7 @@ describe("installResultDelivery", () => {
     manager.emit("complete", { runId: "test-run-1" });
 
     // Should not crash; should still deliver a message
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("null"), "should contain null for undefined result");
   });
@@ -177,7 +200,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
 
     manager.emit("complete", { runId: "test-run-1" });
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 1); // exactly once, not twice
   });
 
@@ -210,7 +233,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 0);
   });
 
@@ -223,7 +246,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("error", { runId: "test-run-1", error: { message: "Something went wrong" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("failed"), "should contain failed");
     assert.ok(calls[0].content.includes("Something went wrong"), "should contain Something went wrong");
@@ -237,7 +260,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("error", { runId: "test-run-1", error: { message: "fail" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 0);
   });
 
@@ -255,7 +278,7 @@ describe("installResultDelivery", () => {
       resetHint: "Resets in ~3h",
     });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("paused"), "should say paused");
     assert.ok(calls[0].content.includes("/workflows resume test-run-1"), "should name the resume command");
@@ -270,7 +293,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("paused", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 0);
   });
 
@@ -281,7 +304,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("paused", { runId: "test-run-1", reason: "usage_limit", error: { message: "usage limit" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = (pi as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls.length, 0);
   });
 
@@ -299,8 +322,8 @@ describe("installResultDelivery", () => {
 
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls1 = (pi1 as unknown as { _calls: { content: string }[] })._calls;
-    const calls2 = (pi2 as unknown as { _calls: { content: string }[] })._calls;
+    const calls1 = (pi1 as unknown as { _calls: { content: string; customType?: string }[] })._calls;
+    const calls2 = (pi2 as unknown as { _calls: { content: string; customType?: string }[] })._calls;
     assert.equal(calls1.length, 0, "pi1 should not be used after refresh");
     assert.equal(calls2.length, 1, "pi2 should receive the delivery");
   });
@@ -310,7 +333,7 @@ describe("installResultDelivery", () => {
 
 describe("installTaskPanel", () => {
   it("registers a widget named workflow-tasks with belowEditor placement", () => {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+    const manager = new EventEmitter() as EventEmitter & {
       getRun: (...args: unknown[]) => unknown;
       listRuns: () => unknown[];
     };
@@ -332,7 +355,7 @@ describe("installTaskPanel", () => {
   });
 
   it("passes the render width through to the task panel", () => {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+    const manager = new EventEmitter() as EventEmitter & {
       getRun: (...args: unknown[]) => unknown;
       listRuns: () => unknown[];
     };
@@ -590,7 +613,7 @@ describe("installTaskPanel mode selection", () => {
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
   function activeManager() {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+    const manager = new EventEmitter() as EventEmitter & {
       getRun: (id: string) => unknown;
       listRuns: () => unknown[];
     };

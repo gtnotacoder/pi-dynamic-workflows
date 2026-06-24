@@ -20,6 +20,10 @@ export interface WorkflowAgentSnapshot {
   tokens?: number;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
+  /** ISO timestamp when this agent originally started. Preserved across resume replay. */
+  startedAt?: string;
+  /** ISO timestamp when this agent originally ended. Preserved across resume replay. */
+  endedAt?: string;
 }
 
 export interface WorkflowSnapshot {

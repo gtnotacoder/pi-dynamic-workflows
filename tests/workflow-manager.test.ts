@@ -10,9 +10,9 @@ import { workflowProjectPaths } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Agent runner that reports fixed usage so token accounting is exercised. */
-function fakeAgent(usage: Partial<AgentUsage> = {}, result: unknown = "ok") {
+function fakeAgent(usage: Partial<AgentUsage> = {}, result: any = "ok") {
   return {
-    async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
+    async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }): Promise<any> {
       options.onUsage?.({
         input: 0,
         output: 0,
@@ -31,7 +31,7 @@ function fakeAgent(usage: Partial<AgentUsage> = {}, result: unknown = "ok") {
 function deferredAgent() {
   let deferredResolve: ((value: unknown) => void) | null = null;
   let deferredReject: ((err: Error) => void) | null = null;
-  const promise = new Promise((resolve, reject) => {
+  const promise = new Promise<any>((resolve, reject) => {
     deferredResolve = resolve;
     deferredReject = reject;
   });
@@ -39,16 +39,16 @@ function deferredAgent() {
     resolve: (value: unknown = "done") => deferredResolve?.(value),
     reject: (err: Error) => deferredReject?.(err),
     runner: {
-      async run(_prompt: string, _options?: { onUsage?: (u: AgentUsage) => void }) {
+      async run(_prompt: string, _options?: { onUsage?: (u: AgentUsage) => void }): Promise<any> {
         return promise;
       },
     },
   };
 }
 
-function delayedAgent(delayMs: number, result: unknown = "slow") {
+function delayedAgent(delayMs: number, result: any = "slow") {
   return {
-    async run(_prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
+    async run(_prompt: string, options?: { onUsage?: (u: AgentUsage) => void }): Promise<any> {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       options?.onUsage?.({
         input: 0,
@@ -138,6 +138,267 @@ test(
 );
 
 test(
+  "manager defaultWorkflowTimeoutMs is captured and persisted on a sync run",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, 42_000, "managed run captures the settings default");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, 42_000, "effective timeout is persisted for resume");
+  }),
+);
+
+test(
+  "manager defaultWorkflowTimeoutMs is captured and persisted on a background run",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    await promise;
+
+    const run = manager.getRun(runId);
+    assert.equal(run?.workflowTimeoutMs, 42_000, "background run captures the settings default");
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "effective timeout is persisted for resume");
+  }),
+);
+
+test(
+  "background initial persistence includes the effective workflowTimeoutMs",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 42_000 });
+    manager.on("error", () => {});
+
+    // Start in the background but keep the agent deferred so the run stays
+    // in-flight and only the INITIAL persist has happened (no journal/final yet).
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "running");
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "initial persist captures the effective timeout");
+
+    // Cleanup: resolve so the background run completes and the process exits cleanly.
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+  }),
+);
+
+test(
+  "run option workflowTimeoutMs overrides manager defaultWorkflowTimeoutMs and is persisted",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: 42_000 });
+
+    await manager.runSync(oneAgentScript, undefined, { workflowTimeoutMs: 90_000 });
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, 90_000, "per-run override wins at start");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, 90_000, "per-run override is the persisted value");
+  }),
+);
+
+test(
+  "null manager defaultWorkflowTimeoutMs is preserved and persisted (disables wall timeout)",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), defaultWorkflowTimeoutMs: null });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, null, "null disables the wall timeout");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, null, "null is persisted so resume keeps it disabled");
+  }),
+);
+
+test(
+  "unset defaultWorkflowTimeoutMs stays undefined (runtime constant applies) and is not persisted",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.getRun(manager.listRuns()[0].runId);
+    assert.equal(run?.workflowTimeoutMs, undefined, "undefined preserves the runtime default");
+    const persisted = manager.listRuns()[0];
+    assert.equal(persisted.workflowTimeoutMs, undefined, "undefined is not persisted on old/new runs");
+  }),
+);
+
+test(
+  "resume preserves the persisted workflowTimeoutMs from the original run",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 42_000 });
+    manager.on("error", () => {});
+
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The in-flight run captured the settings default.
+    assert.equal(manager.getRun(runId)?.workflowTimeoutMs, 42_000);
+
+    // Pause while the deferred agent is in-flight, then resume.
+    assert.equal(manager.pause(runId), true);
+    const resumed = await manager.resume(runId);
+    assert.equal(resumed, true, "resume should succeed");
+
+    // The resumed managed run keeps the original explicit/settings timeout.
+    assert.equal(manager.getRun(runId)?.workflowTimeoutMs, 42_000, "resume keeps the original timeout");
+
+    da.resolve("resumed-done");
+    await origPromise.catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "completed");
+    assert.equal(persisted?.workflowTimeoutMs, 42_000, "completed run still shows the original timeout");
+  }),
+);
+
+test(
+  "resume of an old persisted run without workflowTimeoutMs keeps using the runtime default",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    // Start a run, then pause it so a persisted state exists, then rewrite the
+    // persisted JSON to drop workflowTimeoutMs — simulating an old run.
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    delete raw.workflowTimeoutMs;
+    writeFileSync(statePath, JSON.stringify(raw, null, 2));
+
+    // A fresh manager (no settings default) resumes the old run; undefined falls
+    // back to DEFAULT_WORKFLOW_TIMEOUT_MS inside runWorkflow, so it completes.
+    const manager2 = new WorkflowManager({ cwd, agent: da.runner });
+    manager2.on("error", () => {});
+    assert.equal(await manager2.resume(runId), true);
+    assert.equal(manager2.getRun(runId)?.workflowTimeoutMs, undefined, "old run has no captured timeout");
+
+    da.resolve("old-done");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager2.listRuns().find((r) => r.runId === runId);
+    assert.equal(persisted?.status, "completed", "old run completes under the runtime default");
+  }),
+);
+
+test(
+  "resume of an old persisted run without workflowTimeoutMs ignores a manager settings default",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    // Start a run, then pause it so a persisted state exists, then rewrite the
+    // persisted JSON to drop workflowTimeoutMs — simulating an old run.
+    const { runId, promise: origPromise } = manager.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(manager.pause(runId), true);
+    await origPromise.catch(() => {});
+
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    delete raw.workflowTimeoutMs;
+    writeFileSync(statePath, JSON.stringify(raw, null, 2));
+
+    // A fresh manager WITH a settings default resumes the old run. The old run
+    // never opted into this default, so executeRun must pass `undefined` to
+    // runWorkflow and the runtime DEFAULT_WORKFLOW_TIMEOUT_MS applies — NOT the
+    // 5ms settings default (which would time the whole run out immediately).
+    const manager2 = new WorkflowManager({ cwd, agent: da.runner, defaultWorkflowTimeoutMs: 5 });
+    manager2.on("error", () => {});
+    assert.equal(await manager2.resume(runId), true);
+    const resumedRun = manager2.getRun(runId);
+    assert.equal(resumedRun?.workflowTimeoutMs, undefined, "old run has no captured timeout");
+    assert.equal(resumedRun?.workflowTimeoutMsCaptured, false, "old run marks the field as not captured");
+
+    da.resolve("old-done");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = manager2.listRuns().find((r) => r.runId === runId);
+    assert.equal(
+      persisted?.status,
+      "completed",
+      "old run completes under the runtime default, not the 5ms settings default",
+    );
+  }),
+);
+
+test(
+  "resume replay preserves cached agent tokens, model, and timestamps",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onUsage?: (u: AgentUsage) => void; onModelResolved?: (id: string) => void },
+        ): Promise<any> {
+          options.onModelResolved?.("test/model-a");
+          options.onUsage?.({ input: 11, output: 22, total: 33, cost: 0.04, cacheRead: 5, cacheWrite: 6 });
+          return "first-result";
+        },
+      },
+    });
+
+    await manager.runSync(oneAgentScript);
+    const runId = manager.listRuns()[0].runId;
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+
+    const completedState = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, any>;
+    const journalEntry = completedState.journal?.[0];
+    assert.equal(journalEntry?.tokens, 33, "live journal stores original token count");
+    assert.equal(journalEntry?.model, "test/model-a", "live journal stores resolved model");
+    assert.ok(journalEntry?.startedAt, "live journal stores original start timestamp");
+    assert.ok(journalEntry?.endedAt, "live journal stores original end timestamp");
+
+    completedState.status = "paused";
+    delete completedState.completedAt;
+    delete completedState.durationMs;
+    delete completedState.result;
+    writeFileSync(statePath, JSON.stringify(completedState, null, 2));
+
+    const manager2 = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          throw new Error("cached agent should not be re-run during resume replay");
+        },
+      },
+    });
+    manager2.on("error", () => {});
+
+    assert.equal(await manager2.resume(runId), true);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const replayed = manager2.listRuns().find((r) => r.runId === runId);
+    const replayedAgent = replayed?.agents[0];
+    assert.equal(replayed?.status, "completed");
+    assert.equal(replayedAgent?.tokens, 33, "cached replay keeps original token count");
+    assert.equal(replayedAgent?.model, "test/model-a", "cached replay keeps original model");
+    assert.equal(replayedAgent?.startedAt, journalEntry.startedAt, "cached replay keeps original start timestamp");
+    assert.equal(replayedAgent?.endedAt, journalEntry.endedAt, "cached replay keeps original end timestamp");
+    assert.equal(replayed?.tokenUsage?.total, 33, "run aggregate includes cached token usage on resume");
+  }),
+);
+
+test(
   "manager forwards exec concurrency and agentRetries to runtime",
   withTempCwd(async (cwd) => {
     let active = 0;
@@ -148,7 +409,7 @@ test(
       concurrency: 8,
       defaultAgentRetries: 0,
       agent: {
-        async run(prompt: string) {
+        async run(prompt: string): Promise<any> {
           active++;
           maxActive = Math.max(maxActive, active);
           await new Promise((resolve) => setTimeout(resolve, 5));
@@ -179,7 +440,7 @@ test(
       cwd,
       defaultAgentRetries: 1,
       agent: {
-        async run() {
+        async run(): Promise<any> {
           calls++;
           return calls === 1 ? "" : "ok";
         },
@@ -229,7 +490,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run() {
+        async run(): Promise<any> {
           throw new Error("agent exploded");
         },
       },
@@ -252,7 +513,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run(_prompt: string, options: { onHistory?: (history: unknown[]) => void }) {
+        async run(_prompt: string, options: { onHistory?: (history: unknown[]) => void }): Promise<any> {
           options.onHistory?.([{ role: "assistant", kind: "text", text: "inspecting files" }]);
           return "ok";
         },
@@ -591,9 +852,9 @@ test(
         resolves[idx]?.(v);
       },
       runner: {
-        async run(_prompt: string, _options?: { onUsage?: (u: AgentUsage) => void }) {
+        async run(_prompt: string, _options?: { onUsage?: (u: AgentUsage) => void }): Promise<any> {
           const idx = callIdx++;
-          return new Promise((resolve) => {
+          return new Promise<any>((resolve) => {
             resolves[idx] = resolve;
           });
         },
@@ -678,7 +939,7 @@ test(
     manager.stop(runId);
 
     assert.ok(stoppedEvent, "stopped event should fire");
-    assert.equal(stoppedEvent?.runId, runId);
+    assert.equal((stoppedEvent as { runId: string } | null)?.runId, runId);
 
     da.resolve("done");
     await promise.catch(() => {});
@@ -722,7 +983,7 @@ test(
     manager.pause(runId);
 
     assert.ok(pausedEvent, "paused event should fire");
-    assert.equal(pausedEvent?.runId, runId);
+    assert.equal((pausedEvent as { runId: string } | null)?.runId, runId);
 
     da.resolve("done");
     await promise.catch(() => {});
@@ -801,7 +1062,11 @@ test(
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run should complete successfully");
-    assert.equal(finalRun?.result?.result?.a, "resumed-done", "resumed run should have the agent result");
+    assert.equal(
+      (finalRun?.result?.result as { a?: unknown } | undefined)?.a,
+      "resumed-done",
+      "resumed run should have the agent result",
+    );
 
     // The run should also appear in listRuns as completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
@@ -850,7 +1115,7 @@ return { a, b }`;
 
       const finalRun = manager.getRun(runId);
       assert.equal(finalRun?.status, "completed", "resumed multi-agent run should complete");
-      assert.equal(finalRun?.result?.result?.a, "first-result");
+      assert.equal((finalRun?.result?.result as { a?: unknown } | undefined)?.a, "first-result");
     }
 
     await origPromise.catch(() => {});
@@ -864,7 +1129,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run(prompt: string) {
+        async run(prompt: string): Promise<any> {
           if (prompt.includes("second") && limitActive) {
             throw new WorkflowError(
               "Codex usage limit reached (plus plan). Resets in ~3h.",
@@ -907,8 +1172,9 @@ return { a, b }`;
     await new Promise((r) => setTimeout(r, 50));
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run completes once the limit clears");
-    assert.equal(finalRun?.result?.result?.a, "first-result");
-    assert.equal(finalRun?.result?.result?.b, "second-result");
+    const finalResult = finalRun?.result?.result as { a?: unknown; b?: unknown } | undefined;
+    assert.equal(finalResult?.a, "first-result");
+    assert.equal(finalResult?.b, "second-result");
   }),
 );
 
@@ -918,7 +1184,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run() {
+        async run(): Promise<any> {
           throw new WorkflowError("schema bad", WorkflowErrorCode.SCHEMA_NONCOMPLIANCE, { recoverable: false });
         },
       },
@@ -983,7 +1249,7 @@ test(
     const run = manager.getRun(runId);
     assert.ok(run, "run should be in memory after resume");
     assert.equal(run?.status, "completed", "cold-start resumed run should complete");
-    assert.equal(run?.result?.result?.a, "ok", "agent result should be present");
+    assert.equal((run?.result?.result as { a?: unknown } | undefined)?.a, "ok", "agent result should be present");
 
     // Verify persistence was updated to completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
@@ -1067,7 +1333,7 @@ test(
     const contender = new WorkflowManager({
       cwd,
       agent: {
-        async run() {
+        async run(): Promise<any> {
           assert.fail("second manager must not run an agent without the lease");
         },
       },
@@ -1381,7 +1647,7 @@ test(
     await manager.resume(runId);
 
     assert.ok(resumedEvent, "resumed event should fire");
-    assert.equal(resumedEvent?.runId, runId);
+    assert.equal((resumedEvent as { runId: string } | null)?.runId, runId);
 
     da.resolve("done");
     await promise.catch(() => {});
@@ -1414,8 +1680,11 @@ test(
     }
 
     assert.ok(capturedError, "error event should fire on abort");
-    assert.ok(capturedError?.error instanceof WorkflowError, "error should be instance of WorkflowError");
-    assert.equal(capturedError?.error.code, WorkflowErrorCode.WORKFLOW_ABORTED);
+    assert.ok(
+      (capturedError as { error: WorkflowError } | null)?.error instanceof WorkflowError,
+      "error should be instance of WorkflowError",
+    );
+    assert.equal((capturedError as { error: WorkflowError } | null)?.error.code, WorkflowErrorCode.WORKFLOW_ABORTED);
   }),
 );
 
@@ -1591,8 +1860,8 @@ test(
     await new Promise((r) => setTimeout(r, 20));
 
     // Call pause and stop without awaiting — synchronous in the event loop
-    const _pauseResult = manager.pause(runId);
-    const _stopResult = manager.stop(runId);
+    manager.pause(runId);
+    manager.stop(runId);
 
     // Final state must always be "aborted" because:
     //   pause transitions "running" → "paused"
@@ -1836,7 +2105,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run(prompt: string) {
+        async run(prompt: string): Promise<any> {
           return prompt;
         },
       },

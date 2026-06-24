@@ -31,6 +31,7 @@ export default function extension(pi: ExtensionAPI) {
     cwd,
     loadSavedWorkflow: (name) => storage.load(name)?.script,
     defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
+    defaultWorkflowTimeoutMs: settings.defaultWorkflowTimeoutMs,
     concurrency: settings.defaultConcurrency,
     defaultAgentRetries: settings.defaultAgentRetries,
     contextModeRegistry,
