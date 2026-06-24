@@ -1,6 +1,6 @@
 {
   "name": "pi-dynamic-workflows-oc-style",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Dynamic multi-agent workflows for Pi — fan a task out across 100s of subagents with model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, /deep-research, and OpenCode-style per-subagent context governance (main-agent rules don't leak into subagents).",
   "type": "module",
   "main": "./dist/index.js",
