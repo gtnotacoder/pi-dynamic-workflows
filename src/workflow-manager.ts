@@ -479,6 +479,7 @@ export class WorkflowManager extends EventEmitter {
             prompt: event.prompt,
             status: "running",
             model: event.model,
+            startedAt: event.startedAt ?? new Date().toISOString(),
           });
           this.emit("agentStart", { runId: managed.runId, ...event });
           progress();
@@ -495,6 +496,8 @@ export class WorkflowManager extends EventEmitter {
             agent.recoverable = event.recoverable;
             agent.tokens = event.tokens;
             if (event.model) agent.model = event.model;
+            if (event.startedAt) agent.startedAt = event.startedAt;
+            agent.endedAt = event.endedAt ?? new Date().toISOString();
           }
           this.emit("agentEnd", { runId: managed.runId, ...event });
           progress();
@@ -602,8 +605,8 @@ export class WorkflowManager extends EventEmitter {
         currentPhase: managed.snapshot.currentPhase,
         agents: managed.snapshot.agents.map((a) => ({
           ...a,
-          startedAt: managed.startedAt.toISOString(),
-          endedAt: new Date().toISOString(),
+          startedAt: a.startedAt,
+          endedAt: a.endedAt,
         })),
         logs: managed.snapshot.logs,
         result: managed.result?.result,

@@ -56,6 +56,16 @@ export interface JournalEntry {
   /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
   hash: string;
   result: unknown;
+  /** Tokens used by the original live agent call, preserved for resume replay. */
+  tokens?: number;
+  /** Provider usage reported by the original live agent call, when available. */
+  usage?: AgentUsage;
+  /** Resolved model used by the original live agent call, when known. */
+  model?: string;
+  /** ISO timestamp for the original live agent start. */
+  startedAt?: string;
+  /** ISO timestamp for the original live agent end. */
+  endedAt?: string;
 }
 
 /**
@@ -139,7 +149,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string }) => void;
   onAgentEnd?: (event: {
     label: string;
     phase?: string;
@@ -150,6 +160,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     error?: string;
     errorCode?: WorkflowErrorCode;
     recoverable?: boolean;
+    startedAt?: string;
+    endedAt?: string;
   }) => void;
   onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
   onTokenUsage?: (usage: {
@@ -532,8 +544,33 @@ export async function runWorkflow<T = unknown>(
     const hashMatches = cached != null && cached.hash === callHash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
-      options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0, model: displayModel });
+      const cachedModel = cached.model ?? displayModel;
+      if (cached.usage) {
+        shared.tokenUsage.input += cached.usage.input;
+        shared.tokenUsage.output += cached.usage.output;
+        shared.tokenUsage.total += cached.usage.total;
+        shared.tokenUsage.cost += cached.usage.cost;
+        shared.tokenUsage.cacheRead += cached.usage.cacheRead;
+        shared.tokenUsage.cacheWrite += cached.usage.cacheWrite;
+      } else if (typeof cached.tokens === "number") {
+        shared.tokenUsage.total += cached.tokens;
+      }
+      options.onAgentStart?.({
+        label,
+        phase: assignedPhase,
+        prompt,
+        model: cachedModel,
+        startedAt: cached.startedAt,
+      });
+      options.onAgentEnd?.({
+        label,
+        phase: assignedPhase,
+        result: cached.result,
+        tokens: cached.tokens,
+        model: cachedModel,
+        startedAt: cached.startedAt,
+        endedAt: cached.endedAt,
+      });
       return cached.result;
     }
     // A genuine miss (no journal entry, or the hash changed) marks where the
@@ -544,8 +581,9 @@ export async function runWorkflow<T = unknown>(
       const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
       const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
       const maxAttempts = retryAttempts + 1;
+      const startedAt = new Date().toISOString();
 
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel, startedAt });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
       let worktree: Worktree | undefined;
@@ -633,7 +671,17 @@ export async function runWorkflow<T = unknown>(
             }
 
             const tokens = recordTokens(result);
-            options.onAgentJournal?.({ index: callIndex, hash: callHash, result });
+            const endedAt = new Date().toISOString();
+            options.onAgentJournal?.({
+              index: callIndex,
+              hash: callHash,
+              result,
+              tokens,
+              usage,
+              model: displayModel,
+              startedAt,
+              endedAt,
+            });
             options.onAgentEnd?.({
               label,
               phase: assignedPhase,
@@ -641,6 +689,8 @@ export async function runWorkflow<T = unknown>(
               tokens,
               worktree: runCwd,
               model: displayModel,
+              startedAt,
+              endedAt,
             });
             return result;
           } catch (error) {
@@ -667,6 +717,8 @@ export async function runWorkflow<T = unknown>(
               error: workflowError.message,
               errorCode: workflowError.code,
               recoverable: workflowError.recoverable,
+              startedAt,
+              endedAt: new Date().toISOString(),
             });
 
             if (workflowError.recoverable) {

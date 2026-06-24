@@ -80,19 +80,6 @@ function xmlEscape(s: string): string {
 }
 
 /**
- * Cap a serialized result string at 8000 chars (matches Claude Code's
- * `<result>` truncation; the full result lives in `<output-file>` when
- * present). We don't write a separate output file, so the note just reports the
- * truncation size.
- */
-const RESULT_MAX_CHARS = 8000;
-function truncResult(s: string): string {
-  return s.length > RESULT_MAX_CHARS
-    ? `${s.slice(0, RESULT_MAX_CHARS)}\n... (truncated ${s.length - RESULT_MAX_CHARS} chars)`
-    : s;
-}
-
-/**
  * Build a `<task-notification>` XML block for a finished (or failed/paused) run,
  * delivered back into the conversation so the model sees a structured result.
  * Child order:
@@ -136,12 +123,13 @@ function formatTaskNotification(
     summary = err?.message ? `${name} ${status}: ${err.message}` : `${name} ${status}`;
   }
 
-  const lines: string[] = [
-    "<task-notification>",
-    `<task-id>${run.runId}</task-id>`,
-    `<status>${status}</status>`,
-    `<summary>${xmlEscape(summary)}</summary>`,
-  ];
+  const lines: string[] = ["<task-notification>", `<task-id>${run.runId}</task-id>`];
+
+  if (status === "completed" && result !== undefined && run.runStatePath) {
+    lines.push(`<output-file>${xmlEscape(fileLink(run.runStatePath))}</output-file>`);
+  }
+
+  lines.push(`<status>${status}</status>`, `<summary>${xmlEscape(summary)}</summary>`);
 
   if (status !== "completed") {
     const resume = `/workflows resume ${run.runId}`;
@@ -155,7 +143,7 @@ function formatTaskNotification(
     if (run.runStatePath) recovery += `\nRun state: ${fileLink(run.runStatePath)}`;
     lines.push(`<recovery>${xmlEscape(recovery)}</recovery>`);
   } else if (result !== undefined) {
-    lines.push(`<result>${xmlEscape(truncResult(JSON.stringify(result)))}</result>`);
+    lines.push(`<result>${xmlEscape(summarizeResult(result))}</result>`);
   }
 
   if (failures.length) {

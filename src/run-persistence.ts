@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSyn
 import { basename, join } from "node:path";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import type { JournalEntry } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "aborted";
@@ -23,6 +24,8 @@ export interface PersistedAgentState {
   history?: AgentHistoryEntry[];
   startedAt?: string;
   endedAt?: string;
+  /** Tokens used by this agent, when known. */
+  tokens?: number;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
 }
@@ -61,8 +64,8 @@ export interface PersistedRunState {
     cacheRead?: number;
     cacheWrite?: number;
   };
-  /** Cached agent results for resume, keyed by deterministic call index. */
-  journal?: Array<{ index: number; hash: string; result: unknown }>;
+  /** Cached agent results and replay metadata, keyed by deterministic call index. */
+  journal?: JournalEntry[];
 }
 
 export interface RunPersistence {
