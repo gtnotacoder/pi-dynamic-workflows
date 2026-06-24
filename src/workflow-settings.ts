@@ -14,6 +14,14 @@ import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 export interface WorkflowSettings {
   keywordTriggerEnabled?: boolean;
   defaultAgentTimeoutMs?: number | null;
+  /**
+   * Default hard timeout for a run, in milliseconds. When unset (undefined)
+   * the runtime constant still applies. Set to null to disable the run-wide
+   * timeout explicitly. Positive finite numbers are retained; invalid /
+   * zero / negative / non-numeric values are dropped. Normalized exactly like
+   * `defaultAgentTimeoutMs`.
+   */
+  defaultWorkflowTimeoutMs?: number | null;
   /** Default max concurrent agents per run. Clamped to the runtime maximum. */
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
@@ -131,6 +139,15 @@ function normalizeSettings(value: unknown): WorkflowSettings {
     raw.defaultAgentTimeoutMs > 0
   ) {
     settings.defaultAgentTimeoutMs = raw.defaultAgentTimeoutMs;
+  }
+  if (raw.defaultWorkflowTimeoutMs === null) {
+    settings.defaultWorkflowTimeoutMs = null;
+  } else if (
+    typeof raw.defaultWorkflowTimeoutMs === "number" &&
+    Number.isFinite(raw.defaultWorkflowTimeoutMs) &&
+    raw.defaultWorkflowTimeoutMs > 0
+  ) {
+    settings.defaultWorkflowTimeoutMs = raw.defaultWorkflowTimeoutMs;
   }
   const defaultConcurrency = normalizeInteger(raw.defaultConcurrency, 1, MAX_CONCURRENCY);
   if (defaultConcurrency !== undefined) settings.defaultConcurrency = defaultConcurrency;

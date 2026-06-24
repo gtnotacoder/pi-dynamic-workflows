@@ -52,6 +52,25 @@ describe("workflow settings", () => {
     });
   });
 
+  it("saves and loads default workflow timeout preference", () => {
+    withSettingsPath((settingsPath) => {
+      saveWorkflowSettings({ defaultWorkflowTimeoutMs: 1_800_000 }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultWorkflowTimeoutMs: 1_800_000 });
+
+      saveWorkflowSettings({ defaultWorkflowTimeoutMs: null }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultWorkflowTimeoutMs: null });
+    });
+  });
+
+  it("leaves defaultWorkflowTimeoutMs undefined when absent so the runtime constant applies", () => {
+    withSettingsPath((settingsPath) => {
+      saveWorkflowSettings({ keywordTriggerEnabled: true }, settingsPath);
+      const loaded = loadWorkflowSettings(settingsPath);
+      assert.equal("defaultWorkflowTimeoutMs" in loaded, false);
+      assert.equal(loaded.defaultWorkflowTimeoutMs, undefined);
+    });
+  });
+
   it("normalizes default concurrency and agent retries", () => {
     withSettingsPath((settingsPath) => {
       mkdirSync(dirname(settingsPath), { recursive: true });
@@ -193,6 +212,15 @@ describe("workflow settings", () => {
       assert.deepEqual(loadWorkflowSettings(settingsPath), {});
 
       writeFileSync(settingsPath, JSON.stringify({ defaultAgentTimeoutMs: -1 }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+
+      writeFileSync(settingsPath, JSON.stringify({ defaultWorkflowTimeoutMs: 0 }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+
+      writeFileSync(settingsPath, JSON.stringify({ defaultWorkflowTimeoutMs: -1 }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+
+      writeFileSync(settingsPath, JSON.stringify({ defaultWorkflowTimeoutMs: "300000" }), "utf-8");
       assert.deepEqual(loadWorkflowSettings(settingsPath), {});
     });
   });
