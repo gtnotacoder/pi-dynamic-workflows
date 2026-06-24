@@ -102,6 +102,147 @@ describe("registerSavedWorkflow", () => {
     assert.equal(commands[0].name, "test-workflow");
   });
 
+  it("advertises [--mode <name>] in the description while preserving the workflow's own description", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "with-desc",
+      script: "export const meta = { name: 't', description: 't' };",
+      description: "Run a deep research sweep",
+    });
+
+    registerSavedWorkflow(pi, "/cwd", wf);
+    assert.equal(commands[0].description, "Run a deep research sweep [--mode <name>]");
+  });
+
+  it("does not duplicate the --mode hint when the description already mentions --mode", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "mentions-mode",
+      script: "export const meta = { name: 't', description: 't' };",
+      description: "Research [--mode <name>] <question>",
+    });
+
+    registerSavedWorkflow(pi, "/cwd", wf);
+    assert.equal(commands[0].description, "Research [--mode <name>] <question>");
+  });
+
+  it("strips --mode from args and threads it into the manager run as contextMode", async () => {
+    const { registerSavedWorkflow } = await load();
+    let captured: { args?: unknown; contextMode?: string } = {};
+    const manager = {
+      startInBackground: (_script: string, args: unknown, exec?: { contextMode?: string }) => {
+        captured = { args, contextMode: exec?.contextMode };
+        return { runId: "run-1", promise: Promise.resolve({ result: { report: "ok" } }) };
+      },
+      getRun: () => ({ transcriptDir: "/tmp/t" }),
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({ name: "mode-flow", script: "export..." });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("--mode isolated review the auth module", ctx);
+
+    assert.equal(captured.contextMode, "isolated", "mode should be threaded into the manager run");
+    assert.equal((captured.args as { _?: string })._, "review the auth module", "flag should be stripped from args");
+    assert.equal((captured.args as { _raw?: string })._raw, "review the auth module");
+  });
+
+  it("accepts the --mode=<name> (equals) form and still threads contextMode + strips the flag", async () => {
+    const { registerSavedWorkflow } = await load();
+    let captured: { args?: unknown; contextMode?: string } = {};
+    const manager = {
+      startInBackground: (_script: string, args: unknown, exec?: { contextMode?: string }) => {
+        captured = { args, contextMode: exec?.contextMode };
+        return { runId: "run-2", promise: Promise.resolve({ result: { report: "ok" } }) };
+      },
+      getRun: () => ({ transcriptDir: "/tmp/t" }),
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({ name: "mode-eq", script: "export..." });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("--mode=scoped review the auth module", ctx);
+
+    assert.equal(captured.contextMode, "scoped", "--mode=<name> should set contextMode");
+    assert.equal(
+      (captured.args as { _?: string })._,
+      "review the auth module",
+      "--mode=<name> flag should be stripped from args",
+    );
+    assert.equal((captured.args as { _raw?: string })._raw, "review the auth module");
+  });
+
+  it("passes mode=value (no -- prefix) through as a normal workflow parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    let captured: { args?: unknown; contextMode?: string } = {};
+    const manager = {
+      startInBackground: (_script: string, args: unknown, exec?: { contextMode?: string }) => {
+        captured = { args, contextMode: exec?.contextMode };
+        return { runId: "run-3", promise: Promise.resolve({ result: { report: "ok" } }) };
+      },
+      getRun: () => ({ transcriptDir: "/tmp/t" }),
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({ name: "mode-param", script: "export..." });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("mode=fast review the auth module", ctx);
+
+    assert.equal(
+      captured.contextMode,
+      undefined,
+      "mode=... without -- must NOT be treated as the run-level context-mode flag",
+    );
+    assert.equal(
+      (captured.args as { mode?: string }).mode,
+      "fast",
+      "mode=value should remain a normal parsed workflow parameter",
+    );
+    assert.equal((captured.args as { _?: string })._, "review the auth module");
+  });
+
+  it("inline fallback strips --mode from args._/args._raw and does not pass it as a parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+
+    // A no-agent script that echoes its parsed args back as the report. This
+    // proves the inline runWorkflow path receives args with `--mode` already
+    // stripped by extractModeFlag (via parseCommandArgs on the `rest` string).
+    const wf = savedWorkflow({
+      name: "inline-strip",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: JSON.stringify(args) };",
+    });
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
+    try {
+      registerSavedWorkflow(pi, "/cwd", wf); // no manager → inline runWorkflow path
+
+      const { ctx } = makeNotifyCtx();
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("--mode isolated review the auth module", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+
+    assert.equal(sent.length, 1, "inline fallback should deliver exactly one result message");
+    const payload = JSON.parse(sent[0].content ?? "{}") as { _?: string; _raw?: string; mode?: string };
+    assert.equal(
+      payload._,
+      "review the auth module",
+      "--mode should be stripped from args._ before the script sees it",
+    );
+    assert.equal(payload._raw, "review the auth module", "--mode should be stripped from args._raw");
+    assert.equal(payload.mode, undefined, "the stripped --mode value must not leak through as a `mode` parameter");
+  });
+
   it("is idempotent — second registration is skipped", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands } = makeCommandRegistryPi(["test-workflow"]);
