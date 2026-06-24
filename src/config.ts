@@ -36,7 +36,7 @@ export const SCRIPT_TIMEOUT_MS = 30_000;
  * scripts that suspend forever (for example `await new Promise(() => {})`). It is
  * not a CPU-loop sandbox; untrusted workflow isolation requires an OS boundary.
  */
-export const DEFAULT_WORKFLOW_TIMEOUT_MS = 30 * 60_000;
+export const DEFAULT_WORKFLOW_TIMEOUT_MS = 120 * 60_000;
 
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;

@@ -2,8 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "../src/adversarial-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "../src/deep-research.js";
+import { generateFuguWorkflow } from "../src/fugu.js";
 import { createWebTools } from "../src/web-tools.js";
 import { parseWorkflowScript } from "../src/workflow.js";
+
+// ─── Fugu ──────────────────────────────────────────────────────────────────────
+
+test("generateFuguWorkflow produces a valid, parseable script", () => {
+  const { meta, body } = parseWorkflowScript(generateFuguWorkflow());
+  assert.equal(meta.name, "fugu");
+  assert.deepEqual(
+    meta.phases?.map((p) => p.title),
+    ["Thinker", "Worker", "LocalChecks", "Verifier", "PR_Delivery"],
+  );
+  assert.match(body, /Directed Acyclic Graph/);
+  assert.match(body, /parallel\(/);
+  assert.match(body, /fugu-pr-delivery/);
+});
 
 // ─── Deep Research ──────────────────────────────────────────────────────────────
 
