@@ -21,6 +21,8 @@ test("generateFuguWorkflow produces a valid, parseable script", () => {
   assert.match(body, /failedParallelSteps/);
   assert.match(body, /readySteps\[index\]/);
   assert.match(body, /feedback: result\.feedback/);
+  assert.match(body, /const workerTier = attempt === 0 \? 'small' : attempt === 1 \? 'medium' : 'big'/);
+  assert.match(body, /tier: workerTier/);
 });
 
 test("generateClosedLoopIssueDeliveryWorkflow default path is parseable and keeps issue-delivery labels", () => {

@@ -153,10 +153,11 @@ while (Object.keys(completed).length < plan.steps.length) {
             prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
           }
 
-          log('${logPrefix}:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
+          const workerTier = attempt === 0 ? 'small' : attempt === 1 ? 'medium' : 'big'
+          log('${logPrefix}:Worker] Starting implementation of ' + step.file + ' (' + workerTier + ' tier) (Attempt #' + (attempt + 1) + ')...')
           return await agent(prompt, {
             label: '${labelPrefix}worker:' + step.id,
-            tier: 'medium'
+            tier: workerTier
           })
         },
 
