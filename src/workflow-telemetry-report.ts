@@ -108,12 +108,12 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
       runStatePath: runStatePathFromRun(run),
     });
 
-    const agentJournalByOrdinal = [...(run.journal ?? [])]
-      .filter(isAgentJournalEntry)
-      .sort((a, b) => a.index - b.index);
+    const agentJournals = [...(run.journal ?? [])].filter(isAgentJournalEntry).sort((a, b) => a.index - b.index);
+    const hasJournalLabels = agentJournals.some((journal) => journal.label);
+    const unusedAgentJournals = [...agentJournals];
     for (let index = 0; index < run.agents.length; index++) {
       const agent = run.agents[index];
-      const journal = agentJournalByOrdinal[index];
+      const journal = hasJournalLabels ? takeJournalByLabel(unusedAgentJournals, agent.label) : agentJournals[index];
       const usage = journal?.usage;
       const model = agent.model ?? journal?.model ?? "unknown";
       const label = agent.label || "unknown";
@@ -263,10 +263,17 @@ function emptyRollup(): UsageRollup {
 
 function isAgentJournalEntry(entry: JournalEntry): boolean {
   // checkpoint() uses the same call sequence/journal array as agent(), but it
-  // has no model/token/usage metadata and no matching persisted agent row.
-  // Filter it out before ordinal matching so agent A -> checkpoint -> agent B
-  // attributes B's usage to B, not to the checkpoint entry.
-  return Boolean(entry.model || entry.usage || entry.tokens !== undefined);
+  // has no label/model/token/usage metadata and no matching persisted agent row.
+  // Filter it out before matching so agent A -> checkpoint -> agent B attributes
+  // B's usage to B, not to the checkpoint entry.
+  return Boolean(entry.label || entry.model || entry.usage || entry.tokens !== undefined);
+}
+
+function takeJournalByLabel(journals: JournalEntry[], label: string): JournalEntry | undefined {
+  const index = journals.findIndex((journal) => journal.label === label);
+  if (index < 0) return undefined;
+  const [journal] = journals.splice(index, 1);
+  return journal;
 }
 
 function usageFromAgentFallback(agent: PersistedAgentState): AgentUsage | undefined {

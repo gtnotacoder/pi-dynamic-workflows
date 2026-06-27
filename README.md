@@ -77,15 +77,14 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `loopUntilDry({round, key, consecutiveEmpty=2, maxRounds=50})` | Keep calling `round(i)` until rounds stop yielding fresh items. | `all[]` (deduped) |
 | `completenessCheck(taskArgs, results)` | "What's still missing?" critic. | `{ complete, missing[] }` |
 | `retry(thunk, {attempts=3, until})` | Bounded retry until `until(result)` is true. | last result |
-| `gate(thunk, validator, {attempts=3})` | Retry where the validator's `feedback` steers the next attempt. | `{ ok, value, attempts }` |
+| `gate(thunk, validator, {attempts=3})` | Retry where the validator's `feedback` steers the next attempt. | `{ ok, value, attempts, feedback? }` |
 
 ### `agent()` options
 
 | Opt | Effect |
 |-----|--------|
 | `tier` | Route to a tier model (`'small'` / `'medium'` / `'big'`) — see [Model routing](#model-tier-routing). |
-| `model` | Pin a specific `provider/modelId` (overrides `tier`); optional `:high`/`:xhigh` suffix sets per-agent thinking. |
-| `thinkingLevel` | Per-agent thinking/reasoning level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); overrides a model suffix. |
+| `model` | Pin a specific `provider/modelId` (overrides `tier`). |
 | `label` | Short unique label (2–5 words) for live status + logs. |
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |

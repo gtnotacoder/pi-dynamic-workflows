@@ -62,6 +62,10 @@ export interface JournalEntry {
   /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
   hash: string;
   result: unknown;
+  /** Agent label for live agent calls. Absent for non-agent journal entries such as checkpoint(). */
+  label?: string;
+  /** Agent phase for live agent calls. Absent for non-agent journal entries such as checkpoint(). */
+  phase?: string;
   /** Tokens used by the original live agent call, preserved for resume replay. */
   tokens?: number;
   /** Provider usage reported by the original live agent call, when available. */
@@ -710,6 +714,8 @@ export async function runWorkflow<T = unknown>(
               index: callIndex,
               hash: callHash,
               result,
+              label,
+              phase: assignedPhase,
               tokens,
               usage,
               model: displayModel,
