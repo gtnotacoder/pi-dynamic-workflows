@@ -163,6 +163,12 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
 
+### Workflow telemetry Langfuse SDK pin
+
+Workflow Langfuse tracing intentionally pins `@amaster.ai/pi-telemetry@0.1.3` and `langfuse@3.38.20` in this PR. The current `@amaster.ai/pi-telemetry` release depends on the legacy `langfuse` v3 package, and `src/langfuse-tracing.ts` uses the v3 API (`new Langfuse(...).trace().span()/generation()`).
+
+The current Langfuse JS/TS SDK is split across `@langfuse/tracing`, `@langfuse/otel`, and OpenTelemetry. Migrating away from the v3 pin should happen in a dedicated compatibility PR when a v5-compatible telemetry stack is available.
+
 ### Fugu issue-to-PR workflow
 
 `/fugu [--mode <name>] <task or issue>` is the built-in Fugu/Trinity coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. It is intended for scoped issue-to-draft-PR tasks.

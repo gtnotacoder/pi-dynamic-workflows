@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { loadConfigFromFile, resolveConfig, type TelemetryConfig } from "@amaster.ai/pi-telemetry/config";
+// NOTE: This tracer targets the pinned legacy Langfuse v3 client — see README for the dependency-pin
+// rationale. It will be migrated to the @langfuse/* observation API once the v3 pin is lifted.
 import { Langfuse } from "langfuse";
 import type { AgentUsage } from "./agent.js";
 import {
