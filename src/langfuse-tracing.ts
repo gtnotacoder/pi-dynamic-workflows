@@ -207,8 +207,13 @@ export function installWorkflowLangfuseTracing(
 
 function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): WorkflowLangfuseTracer {
   const env = options.env ?? process.env;
-  const config = resolveWorkflowLangfuseConfig(options.config ?? loadConfigFromFile({ cwd: options.cwd }), env);
-  if (!config.enabled) return WorkflowLangfuseTracer.disabled(options.onError);
+  const rawConfig = options.config ?? loadConfigFromFile({ cwd: options.cwd });
+  const config = resolveWorkflowLangfuseConfig(rawConfig, env);
+  if (!config.enabled) {
+    const reason = workflowLangfuseDisabledReason(rawConfig, env);
+    if (reason) options.onError?.(`Langfuse workflow tracing disabled: ${reason}`);
+    return WorkflowLangfuseTracer.disabled(options.onError);
+  }
 
   const client =
     options.client ??
@@ -229,20 +234,26 @@ function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): 
 
 function resolveWorkflowLangfuseConfig(
   rawConfig: TelemetryConfig | undefined,
-  _env: Record<string, string | undefined>,
+  env: Record<string, string | undefined>,
 ): ResolvedWorkflowLangfuseConfig {
   const config = resolveConfig(rawConfig);
   const langfuse = config.langfuse;
-  const publicKey = langfuse?.publicKey?.trim() ?? "";
-  const secretKey = langfuse?.secretKey?.trim() ?? "";
-  const enabled = Boolean(langfuse?.enabled && publicKey && secretKey);
+  const publicKey = firstNonEmpty(langfuse?.publicKey, env.LANGFUSE_PUBLIC_KEY) ?? "";
+  const secretKey = firstNonEmpty(langfuse?.secretKey, env.LANGFUSE_SECRET_KEY) ?? "";
+  const enabledSetting = langfuse?.enabled ?? envBoolean(env.LANGFUSE_ENABLED) ?? Boolean(publicKey && secretKey);
+  const enabled = Boolean(enabledSetting && publicKey && secretKey);
   return {
     enabled,
     publicKey,
     secretKey,
-    baseUrl: langfuse?.baseUrl?.trim() || DEFAULT_LANGFUSE_BASE_URL,
-    flushAt: positiveInteger(langfuse?.flushAt, DEFAULT_FLUSH_AT),
-    flushIntervalMs: positiveInteger(langfuse?.flushIntervalMs, DEFAULT_FLUSH_INTERVAL_MS),
+    baseUrl:
+      firstNonEmpty(langfuse?.baseUrl, env.LANGFUSE_BASE_URL, env.LANGFUSE_BASEURL, env.LANGFUSE_HOST) ??
+      DEFAULT_LANGFUSE_BASE_URL,
+    flushAt: positiveInteger(langfuse?.flushAt ?? envNumber(env.LANGFUSE_FLUSH_AT), DEFAULT_FLUSH_AT),
+    flushIntervalMs: positiveInteger(
+      langfuse?.flushIntervalMs ?? envNumber(env.LANGFUSE_FLUSH_INTERVAL_MS),
+      DEFAULT_FLUSH_INTERVAL_MS,
+    ),
     serviceName: config.serviceName ?? WORKFLOW_TRACING_INTEGRATION,
     serviceVersion: config.serviceVersion,
     includePayloads: config.includePayloads ?? false,
@@ -629,6 +640,60 @@ function usageDetailsFromAgent(
 function costDetailsFromAgent(usage: AgentUsage | undefined): Record<string, number> | undefined {
   if (!usage || usage.cost <= 0) return undefined;
   return { total: usage.cost };
+}
+
+function workflowLangfuseDisabledReason(
+  rawConfig: TelemetryConfig | undefined,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const explicitConfigDisable = rawConfig?.langfuse?.enabled === false;
+  const explicitEnvDisable = envBoolean(env.LANGFUSE_ENABLED) === false;
+  const shouldDiagnose =
+    explicitConfigDisable || explicitEnvDisable || rawConfig?.langfuse?.enabled === true || hasLangfuseEnv(env);
+  if (!shouldDiagnose) return undefined;
+  if (explicitConfigDisable || explicitEnvDisable) return "disabled explicitly by Langfuse configuration";
+
+  const missing: string[] = [];
+  if (!firstNonEmpty(rawConfig?.langfuse?.publicKey, env.LANGFUSE_PUBLIC_KEY)) missing.push("public key");
+  if (!firstNonEmpty(rawConfig?.langfuse?.secretKey, env.LANGFUSE_SECRET_KEY)) missing.push("secret key");
+  if (missing.length) return `missing ${missing.join(" and ")}`;
+  return "resolved disabled after applying config and environment";
+}
+
+function hasLangfuseEnv(env: Record<string, string | undefined>): boolean {
+  return Boolean(
+    firstNonEmpty(
+      env.LANGFUSE_PUBLIC_KEY,
+      env.LANGFUSE_SECRET_KEY,
+      env.LANGFUSE_BASE_URL,
+      env.LANGFUSE_BASEURL,
+      env.LANGFUSE_HOST,
+      env.LANGFUSE_ENABLED,
+    ),
+  );
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+function envBoolean(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function envNumber(value: string | undefined): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {

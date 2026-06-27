@@ -83,7 +83,13 @@ export function onCompactionTelemetry(listener: Listener): () => void {
 export function emitCompactionTelemetry(raw: unknown, source = "runtime-api"): CompactionTelemetryEvent | null {
   const event = normalizeCompactionEvent(raw, source);
   if (!event) return null;
-  for (const listener of listeners) listener(event);
+  for (const listener of listeners) {
+    try {
+      listener(event);
+    } catch {
+      // Listener failures must not prevent downstream telemetry subscribers from observing this event.
+    }
+  }
   return event;
 }
 

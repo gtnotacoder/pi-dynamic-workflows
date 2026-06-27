@@ -83,3 +83,21 @@ test("emitCompactionTelemetry notifies subscribers with normalized events", () =
     unsubscribe();
   }
 });
+
+test("emitCompactionTelemetry survives a failing subscriber and continues notifying downstream listeners", () => {
+  const recorded: string[] = [];
+  const unsub1 = onCompactionTelemetry(() => {
+    throw new Error("subscriber-1 failed");
+  });
+  const unsub2 = onCompactionTelemetry((event) => {
+    recorded.push(event.type);
+  });
+  try {
+    const event = emitCompactionTelemetry({ type: "monitor_eval" });
+    assert.equal(event?.type, "monitor_eval");
+    assert.deepStrictEqual(recorded, ["monitor_eval"]);
+  } finally {
+    unsub1();
+    unsub2();
+  }
+});

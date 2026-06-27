@@ -21,6 +21,14 @@ async function load() {
   return import("../src/saved-commands.js");
 }
 
+function parseInlineArgsReport(content: string | undefined): { _?: string; _raw?: string; mode?: string } {
+  try {
+    return JSON.parse(content ?? "{}") as { _?: string; _raw?: string; mode?: string };
+  } catch (error) {
+    assert.fail(`expected inline workflow report to be valid JSON: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 describe("parseCommandArgs", () => {
   it("parses key=value pairs", async () => {
     const { parseCommandArgs } = await load();
@@ -233,7 +241,7 @@ describe("registerSavedWorkflow", () => {
     }
 
     assert.equal(sent.length, 1, "inline fallback should deliver exactly one result message");
-    const payload = JSON.parse(sent[0].content ?? "{}") as { _?: string; _raw?: string; mode?: string };
+    const payload = parseInlineArgsReport(sent[0].content);
     assert.equal(
       payload._,
       "review the auth module",
@@ -316,6 +324,11 @@ describe("registerSavedWorkflow", () => {
     await commands[0].handler("prNumber=1", ctx);
     let toolNames = (capturedExec?.tools ?? []).map((t) => t.name);
     assert.ok(toolNames.includes("web_search"));
+    assert.ok(toolNames.includes("web_fetch"));
+
+    await commands[0].handler("prNumber=1 externalEvidence=linked", ctx);
+    toolNames = (capturedExec?.tools ?? []).map((t) => t.name);
+    assert.ok(!toolNames.includes("web_search"), "linked evidence mode should not advertise zero-budget web_search");
     assert.ok(toolNames.includes("web_fetch"));
 
     await commands[0].handler("prNumber=1 externalEvidence=off", ctx);

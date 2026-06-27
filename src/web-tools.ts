@@ -146,8 +146,12 @@ export function createBudgetedWebTools(options: {
   maxFetches?: number;
   maxFetchChars?: number;
 }): ToolDefinition[] {
-  return [
-    createWebSearchTool({ maxCalls: options.maxSearches }),
-    createWebFetchTool(options.maxFetchChars ?? 6000, { maxCalls: options.maxFetches }),
-  ];
+  const tools: ToolDefinition[] = [];
+  if (options.maxSearches === undefined || options.maxSearches > 0) {
+    tools.push(createWebSearchTool({ maxCalls: options.maxSearches }));
+  }
+  if (options.maxFetches === undefined || options.maxFetches > 0) {
+    tools.push(createWebFetchTool(options.maxFetchChars ?? 6000, { maxCalls: options.maxFetches }));
+  }
+  return tools;
 }

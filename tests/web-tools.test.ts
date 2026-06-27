@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createBudgetedWebTools,
   createWebFetchTool,
   createWebSearchTool,
   createWebTools,
@@ -86,6 +87,17 @@ test("createWebTools each tool has execute", () => {
   for (const tool of tools) {
     assert.ok(tool.execute, `${tool.name} should have execute`);
   }
+});
+
+test("createBudgetedWebTools omits tools with zero call budget", () => {
+  const fetchOnly = createBudgetedWebTools({ maxSearches: 0, maxFetches: 2 });
+  assert.deepEqual(
+    fetchOnly.map((tool) => tool.name),
+    ["web_fetch"],
+  );
+
+  const none = createBudgetedWebTools({ maxSearches: 0, maxFetches: 0 });
+  assert.deepEqual(none, []);
 });
 
 // ─── HTML parsing (import internal functions via tsx) ──────────────────────────
