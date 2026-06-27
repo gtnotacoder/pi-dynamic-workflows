@@ -166,14 +166,14 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           if (!task) return ctx.ui.notify(`Usage: /${name} [--mode <name>] <task or issue>`, "warning");
           if (isAlias) {
             ctx.ui.notify(
-              "The /fugu command is deprecated and will be removed in a future version. Please use /closed_loop_issue_delivery instead.",
+              `The /${name} command is deprecated and will be removed in a future version. Please use /closed_loop_issue_delivery instead.`,
               "warning",
             );
           }
           const workflowArgs = { task };
           ctx.ui.notify(
             isAlias
-              ? "Fugu running — thinking, working, verifying, then shipping a draft PR…"
+              ? `${name === "fugu" ? "Fugu" : "Fugu closed-loop"} running — thinking, working, verifying, then shipping a draft PR…`
               : "Closed-loop issue delivery running — thinking, working, verifying, then shipping a draft PR…",
             "info",
           );
@@ -215,6 +215,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
 
   registerIssueDelivery("closed_loop_issue_delivery");
   registerIssueDelivery("fugu", true);
+  registerIssueDelivery("fugu_closed_loop", true);
 
   if (!alreadyRegistered(pi, "code-review")) {
     pi.registerCommand("code-review", {

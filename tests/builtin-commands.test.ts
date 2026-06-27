@@ -6,9 +6,16 @@ import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 test("registerBuiltinWorkflows registers deep-research, adversarial-review, code-review, and fugu commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
-  assert.equal(commands.length, 5);
+  assert.equal(commands.length, 6);
   const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, ["adversarial-review", "closed_loop_issue_delivery", "code-review", "deep-research", "fugu"]);
+  assert.deepEqual(names, [
+    "adversarial-review",
+    "closed_loop_issue_delivery",
+    "code-review",
+    "deep-research",
+    "fugu",
+    "fugu_closed_loop",
+  ]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
@@ -18,6 +25,7 @@ test("registerBuiltinWorkflows is idempotent — skips already registered comman
     "code-review",
     "closed_loop_issue_delivery",
     "fugu",
+    "fugu_closed_loop",
   ]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.equal(commands.length, 0, "should not re-register when already present");
@@ -28,7 +36,7 @@ test("registerBuiltinWorkflows registers only missing commands", () => {
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.deepEqual(
     commands.map((c) => c.name).sort(),
-    ["adversarial-review", "closed_loop_issue_delivery", "code-review", "fugu"],
+    ["adversarial-review", "closed_loop_issue_delivery", "code-review", "fugu", "fugu_closed_loop"],
     "should only register the missing commands",
   );
 });
@@ -188,4 +196,12 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   assert.ok(fuguCmd, "fugu should be registered");
   assert.ok(fuguCmd.description?.includes("[Deprecated alias]"), "should contain deprecated alias description");
   assert.equal(typeof fuguCmd.handler, "function");
+
+  const fuguClosedLoopCmd = commands.find((c) => c.name === "fugu_closed_loop");
+  assert.ok(fuguClosedLoopCmd, "fugu_closed_loop should be registered");
+  assert.ok(
+    fuguClosedLoopCmd.description?.includes("[Deprecated alias]"),
+    "should contain deprecated alias description",
+  );
+  assert.equal(typeof fuguClosedLoopCmd.handler, "function");
 });

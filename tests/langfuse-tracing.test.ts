@@ -184,6 +184,97 @@ test("installWorkflowLangfuseTracing includes transcriptDir and runStatePath whe
   }
 });
 
+test("installWorkflowLangfuseTracing redacts transcriptDir and runStatePath by default when includePayloads is unset", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-default-redact-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          return "agent-output";
+        },
+      } as never,
+    });
+    const errors: string[] = [];
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: {
+        LANGFUSE_PUBLIC_KEY: "pk-test",
+        LANGFUSE_SECRET_KEY: "sk-test",
+      },
+      client: client as never,
+      onError: (message) => errors.push(message),
+      compactionEventsPath: false,
+    });
+
+    assert.equal(handle.enabled, true);
+    await manager.runSync(
+      `export const meta = { name: 'lf_default_redact', description: 'Langfuse redact test' }
+       return 'done'`,
+      { pr: 28 },
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    assert.equal(client.traces.length, 1);
+    const metadata = (client.traces[0].body as any).metadata;
+    assert.equal(metadata?.transcriptDir, undefined, "transcriptDir should be redacted/undefined by default");
+    assert.equal(metadata?.runStatePath, undefined, "runStatePath should be redacted/undefined by default");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing includes transcriptDir and runStatePath when LANGFUSE_INCLUDE_PAYLOADS env is true", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-env-payloads-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          return "agent-output";
+        },
+      } as never,
+    });
+    const errors: string[] = [];
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: {
+        LANGFUSE_PUBLIC_KEY: "pk-test",
+        LANGFUSE_SECRET_KEY: "sk-test",
+        LANGFUSE_INCLUDE_PAYLOADS: "true",
+      },
+      client: client as never,
+      onError: (message) => errors.push(message),
+      compactionEventsPath: false,
+    });
+
+    assert.equal(handle.enabled, true);
+    await manager.runSync(
+      `export const meta = { name: 'lf_env_payloads', description: 'Langfuse env payloads test' }
+       return 'done'`,
+      { pr: 28 },
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    assert.equal(client.traces.length, 1);
+    const metadata = (client.traces[0].body as any).metadata;
+    assert.ok(metadata?.transcriptDir, "transcriptDir should be defined when LANGFUSE_INCLUDE_PAYLOADS env is true");
+    assert.ok(metadata?.runStatePath, "runStatePath should be defined when LANGFUSE_INCLUDE_PAYLOADS env is true");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("close waits for an active background workflow before detaching tracing listeners", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-close-"));
   try {

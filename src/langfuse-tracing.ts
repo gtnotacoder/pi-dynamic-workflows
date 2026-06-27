@@ -280,7 +280,7 @@ function resolveWorkflowLangfuseConfig(
     ),
     serviceName: config.serviceName ?? WORKFLOW_TRACING_INTEGRATION,
     serviceVersion: config.serviceVersion,
-    includePayloads: config.includePayloads ?? false,
+    includePayloads: rawConfig?.includePayloads ?? envBoolean(env.LANGFUSE_INCLUDE_PAYLOADS) ?? false,
   };
 }
 
@@ -694,6 +694,7 @@ function hasLangfuseEnv(env: Record<string, string | undefined>): boolean {
       env.LANGFUSE_BASEURL,
       env.LANGFUSE_HOST,
       env.LANGFUSE_ENABLED,
+      env.LANGFUSE_INCLUDE_PAYLOADS,
     ),
   );
 }
