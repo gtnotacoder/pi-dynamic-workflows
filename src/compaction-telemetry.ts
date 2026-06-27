@@ -96,7 +96,8 @@ export function emitCompactionTelemetry(raw: unknown, source = "runtime-api"): C
 export function normalizeCompactionEvent(raw: unknown, source = "unknown"): CompactionTelemetryEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
-  const type = stringField(value.type) ?? stringField(value.event) ?? "compaction_event";
+  const rawType = stringField(value.type) ?? stringField(value.event);
+  const type = rawType ?? "compaction_event";
   const timestamp = stringField(value.ts) ?? stringField(value.timestamp) ?? stringField(value.time);
   const event: CompactionTelemetryEvent = {
     type,
@@ -134,7 +135,7 @@ export function normalizeCompactionEvent(raw: unknown, source = "unknown"): Comp
     compactor: stringField(value.compactor),
     error: stringField(value.error),
     source,
-    rawType: type,
+    rawType,
   };
   return compactObject(event as unknown as Record<string, unknown>) as unknown as CompactionTelemetryEvent;
 }

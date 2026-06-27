@@ -36,6 +36,16 @@ test("normalizeCompactionEvent maps autocompactor JSONL fields into a stable sch
   assert.equal((event as unknown as { inventory?: unknown }).inventory, undefined);
 });
 
+test("normalizeCompactionEvent keeps rawType tied to an explicit source discriminator", () => {
+  const fromEvent = normalizeCompactionEvent({ event: "legacy_precompact" });
+  assert.equal(fromEvent?.type, "legacy_precompact");
+  assert.equal(fromEvent?.rawType, "legacy_precompact");
+
+  const fallback = normalizeCompactionEvent({ session_id: "s1" });
+  assert.equal(fallback?.type, "compaction_event");
+  assert.equal(fallback?.rawType, undefined);
+});
+
 test("readCompactionEvents filters JSONL by time window and session", () => {
   const dir = mkdtempSync(join(tmpdir(), "compaction-events-"));
   const file = join(dir, "events.jsonl");
