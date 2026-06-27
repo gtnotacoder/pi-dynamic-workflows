@@ -20,6 +20,37 @@ test("generateFuguWorkflow produces a valid, parseable script", () => {
   assert.match(body, /fugu-pr-delivery/);
 });
 
+test("generateFuguWorkflow rejects broad git staging and enforces scoped delivery safety", () => {
+  const { body } = parseWorkflowScript(generateFuguWorkflow());
+
+  // Regression: the generated workflow must NOT prompt agents to stage
+  // everything with broad commands like `git add -A` or `git add .`.
+  assert.doesNotMatch(body, /git\s+add\s+-A/, "body must not contain 'git add -A'");
+  assert.doesNotMatch(body, /git\s+add\s+\./, "body must not contain 'git add .'");
+
+  // Scoped-delivery safety: the PR delivery prompt must instruct agents
+  // to commit only the files explicitly listed in the Modified Files list.
+  assert.match(
+    body,
+    /only\s+stage\s+and\s+commit\s+the\s+files\s+explicitly\s+listed/i,
+    "body must instruct agents to stage and commit only explicitly listed files",
+  );
+
+  // Finalization: use the deterministic finalization helper and semantic
+  // status lifecycle instead of a freeform finalization agent.
+  assert.match(body, /setSemanticStatus/, "body must use setSemanticStatus");
+  assert.match(body, /workflow-running/, "body must include workflow-running status");
+  assert.match(body, /workflow-complete-pane-open/, "body must include workflow-complete-pane-open status");
+  assert.match(body, /finalizing/, "body must include finalizing status");
+  assert.match(body, /checkFinalization\(cwd,/, "body must call checkFinalization(cwd,");
+  assert.doesNotMatch(body, /fugu-finalization/, "body must not reference fugu-finalization");
+  assert.doesNotMatch(
+    body,
+    /You are the Fugu Finalization Agent/,
+    "body must not contain Fugu Finalization Agent text",
+  );
+});
+
 // ─── Deep Research ──────────────────────────────────────────────────────────────
 
 test("generateDeepResearchWorkflow produces a valid, parseable script", () => {

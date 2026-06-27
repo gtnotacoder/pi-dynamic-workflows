@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AgentHistoryEntry } from "./agent-history.js";
+import type { ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
 import type { JournalEntry } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
@@ -39,6 +40,10 @@ export interface PersistedRunState {
    * the navigator shows only the current session's runs (undefined = legacy/global). */
   sessionId?: string;
   status: RunStatus;
+  /** Optional conductor-level semantic status, layered on top of the engine
+   *  `status` above. Older persisted runs may omit this; loaders must not reject
+   *  runs that lack it. When present it is round-tripped verbatim on save/load. */
+  semanticStatus?: ConductorRunStatus;
   /** Why a paused run is paused (e.g. "usage_limit" when a provider quota was hit). */
   pauseReason?: string;
   /** Provider reset hint for a usage-limit pause, e.g. "Resets in ~3h" (verbatim). */

@@ -1,5 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentHistoryEntry } from "./agent-history.js";
+import { CONDUCTOR_STATUS_ICONS, CONDUCTOR_STATUS_LABELS, type ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
 import type { WorkflowMeta } from "./workflow.js";
 
@@ -311,4 +312,18 @@ export function preview(value: unknown, max = 80): string {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   if (!text) return "";
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Format a conductor-level semantic status for display.
+ * Used by the task panel and /workflows status output to show the semantic
+ * overlay (e.g. "workflow-complete-pane-open") alongside the engine status.
+ */
+export function formatConductorStatus(status: ConductorRunStatus): string {
+  const icon = CONDUCTOR_STATUS_ICONS[status.status];
+  const label = CONDUCTOR_STATUS_LABELS[status.status];
+  const parts = [`${icon} ${label}`];
+  if (status.reason) parts.push(`  reason: ${status.reason}`);
+  if (status.nextAction) parts.push(`  next: ${status.nextAction}`);
+  return parts.join("\n");
 }

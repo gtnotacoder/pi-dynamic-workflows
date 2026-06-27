@@ -59,7 +59,10 @@ const VERIFIER_SCHEMA = {
 
 // 2. ORCHESTRATION ENGINE
 const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
+const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
+
 log('[Fugu] Initiating Fugu Trinity Orchestrator for task: "' + TASK + '"')
+setSemanticStatus({ status: 'workflow-running', reason: 'Fugu workflow is planning and applying changes.', nextAction: 'Wait for worker/verifier agents to finish.' })
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
@@ -212,6 +215,7 @@ while (Object.keys(completed).length < plan.steps.length) {
 }
 
 log('[Fugu] 🎉 All steps executed and verified successfully!')
+setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'All worker/verifier steps passed. Opening PR delivery pane.', nextAction: 'Creating branch, commit, and draft PR.' })
 
 // --- Phase 4: PR Delivery ---
 phase('PR_Delivery')
@@ -219,11 +223,12 @@ log('[Fugu:PR_Delivery] Initiating automatic Git branch push and Pull Request cr
 
 const prResult = await agent(
   'You are the Fugu Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
-  'Your task is to create a new Git branch, commit the changed files, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
+  'Your task is to create a new Git branch, commit ONLY the files listed in the Modified Files list below, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
   'Details of completed work:\\n' +
   'Task: "' + TASK + '"\\n' +
   'Summary of changes: ' + executionState.summary + '\\n' +
   'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
+  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .fugu/ or .fastcontext/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
   'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. fugu/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
   {
     label: 'fugu-pr-delivery',
@@ -233,10 +238,29 @@ const prResult = await agent(
 
 log('[Fugu] Pull Request creation complete! Result:\\n' + prResult)
 
+// --- Finalization gate: verify clean-committed-pushed invariants ---
+// Do not declare success if changes are dirty, uncommitted, or unpushed.
+log('[Fugu:finalization] Running finalization gate...')
+
+setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })
+
+const finalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+
+const finalizationStatus = finalization.toRunStatus || {
+  status: finalization.status || 'unknown',
+  reason: finalization.reason || 'Finalization gate completed.',
+  nextAction: finalization.nextAction || 'Review details below.',
+  details: finalization.details || ''
+}
+
+setSemanticStatus(finalizationStatus)
+log('[Fugu:finalization] Status: ' + finalizationStatus.status + ' — ' + finalizationStatus.reason)
+
 return {
-  success: true,
+  success: finalizationStatus.status === 'completed' || finalizationStatus.status === 'finalizing',
   summary: executionState.summary,
   stepsCompleted: executionState.completedSteps,
-  pr: prResult
+  pr: prResult,
+  finalization: finalization
 }`;
 }
