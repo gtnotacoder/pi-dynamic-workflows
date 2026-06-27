@@ -21,24 +21,97 @@ import {
   WorkflowManager,
 } from "../src/index.js";
 
+// ── Issue #19: Stale telemetry env hardening ──────────────────────────────
+export const PI_TELEMETRY_ENV_KEYS = [
+  "PI_TELEMETRY_OWNER_PID",
+  "PI_TELEMETRY_SESSION_ID",
+  "PI_TELEMETRY_TRACE_ID",
+] as const;
+
+/** Parse a PID string, returning a positive finite integer or `null`. */
+export function parsePid(value: string | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  // Must be a finite integer, strictly positive, and parse without trailing junk
+  if (!Number.isFinite(n) || n <= 0 || n !== Math.trunc(n)) return null;
+  // Reject strings that Number() coerces unexpectedly (e.g. "0x1", "1e2", whitespace)
+  if (String(n) !== value.trim()) return null;
+  return n;
+}
+
+/** Check whether a process with the given PID is live (EPERM counts as live). */
+export function isProcessLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "EPERM") return true;
+    return false;
+  }
+}
+
+/** Runtime context for telemetry env checks. */
+export type TelemetryRuntime = {
+  pid: number;
+  ppid: number;
+  /** Inject in tests to avoid relying on real PIDs. */
+  isProcessLive?: (pid: number) => boolean;
+};
+
+/**
+ * Return true only when the telemetry env describes a coherent, live,
+ * direct-child/subagent launch of the *current* process.
+ *
+ * Conditions (all must hold):
+ *  1. PI_TELEMETRY_OWNER_PID is a valid positive finite integer
+ *  2. It is NOT the current process's own PID
+ *  3. The owner PID process is still live
+ *  4. Both PI_TELEMETRY_SESSION_ID and PI_TELEMETRY_TRACE_ID are non-empty
+ *  5. The owner PID equals the current/runtime parent PID (ppid)
+ */
+export function shouldPreservePiTelemetryEnv(
+  env: Record<string, string | undefined> = process.env as any,
+  runtime?: TelemetryRuntime,
+): boolean {
+  const ownerPid = parsePid(env.PI_TELEMETRY_OWNER_PID);
+  if (ownerPid == null) return false;
+
+  const pid = runtime?.pid ?? process.pid;
+  const ppid = runtime?.ppid ?? (typeof process.ppid === "number" ? process.ppid : 0);
+  const checkLive = runtime?.isProcessLive ?? isProcessLive;
+
+  // Must not be our own PID
+  if (ownerPid === pid) return false;
+  // Owner must still be alive (EPERM counts as alive)
+  if (!checkLive(ownerPid)) return false;
+  // Both session and trace IDs must be non-empty
+  if (!env.PI_TELEMETRY_SESSION_ID || !env.PI_TELEMETRY_TRACE_ID) return false;
+  // Owner PID must be our parent process — only direct-child launches inherit
+  if (ownerPid !== ppid) return false;
+
+  return true;
+}
+
+/**
+ * Delete all three telemetry env keys whenever any key is present but the
+ * env should NOT be preserved (stale / partial / unrelated owner).
+ */
+export function scrubStalePiTelemetryEnv(
+  env: Record<string, string | undefined> = process.env as any,
+  runtime?: TelemetryRuntime,
+): void {
+  const anyPresent = PI_TELEMETRY_ENV_KEYS.some((k) => env[k] != null && env[k] !== "");
+  if (!anyPresent) return;
+  if (shouldPreservePiTelemetryEnv(env, runtime)) return;
+  for (const key of PI_TELEMETRY_ENV_KEYS) {
+    delete env[key];
+  }
+}
+// ── End Issue #19 ─────────────────────────────────────────────────────────
+
 export default function extension(pi: ExtensionAPI) {
   // Stale telemetry env hardening (Issue #19)
-  if (process.env.PI_TELEMETRY_OWNER_PID) {
-    let isLive = false;
-    try {
-      process.kill(parseInt(process.env.PI_TELEMETRY_OWNER_PID, 10), 0);
-      isLive = true;
-    } catch (error) {
-      if (error instanceof Error && (error as any).code === "EPERM") {
-        isLive = true;
-      }
-    }
-    if (!isLive) {
-      delete process.env.PI_TELEMETRY_OWNER_PID;
-      delete process.env.PI_TELEMETRY_SESSION_ID;
-      delete process.env.PI_TELEMETRY_TRACE_ID;
-    }
-  }
+  scrubStalePiTelemetryEnv();
 
   // Register runtime telemetry before workflow handlers so Pi lifecycle events can be exported.
   telemetryExtension(pi);
