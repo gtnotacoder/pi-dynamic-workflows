@@ -187,3 +187,46 @@ test("parseBingResults strips inner HTML from titles", () => {
   assert.equal(results.length, 1);
   assert.equal(results[0].title, "Bold Title", "HTML tags should be stripped from title");
 });
+
+test("budgeted web tools enforce maxCalls limit and set budgetExhausted", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+
+  globalThis.fetch = (async (_input: any, _init: any) => {
+    fetchCount++;
+    return {
+      status: 200,
+      text: async () => `
+        <h2><a href="https://example.com/test-url">Test Result</a></h2>
+      `,
+    } as any;
+  }) as any;
+
+  try {
+    const searchTool = createWebSearchTool({ maxCalls: 1 });
+    const fetchTool = createWebFetchTool(6000, { maxCalls: 1 });
+
+    // First search call should succeed with budgetExhausted: false
+    const res1 = (await (searchTool.execute as any)("id-1", { query: "test-query" })) as any;
+    assert.equal(res1.details.budgetExhausted, false, "first search call budgetExhausted should be false");
+
+    // Second search call should skip fetch and return budgetExhausted: true
+    const res2 = (await (searchTool.execute as any)("id-2", { query: "test-query" })) as any;
+    assert.equal(res2.details.budgetExhausted, true, "second search call budgetExhausted should be true");
+    assert.match(res2.content[0].text, /budget exhausted/, "second search call text should mention budget exhaustion");
+
+    // First fetch call should succeed with budgetExhausted: false
+    const res3 = (await (fetchTool.execute as any)("id-3", { url: "https://example.com/test-url" })) as any;
+    assert.equal(res3.details.budgetExhausted, false, "first fetch call budgetExhausted should be false");
+
+    // Second fetch call should skip fetch and return budgetExhausted: true
+    const res4 = (await (fetchTool.execute as any)("id-4", { url: "https://example.com/test-url" })) as any;
+    assert.equal(res4.details.budgetExhausted, true, "second fetch call budgetExhausted should be true");
+    assert.match(res4.content[0].text, /budget exhausted/, "second fetch call text should mention budget exhaustion");
+
+    // Verify that the actual fetch network path was only called twice (once for search, once for fetch)
+    assert.equal(fetchCount, 2, "network fetch should have been called exactly 2 times");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

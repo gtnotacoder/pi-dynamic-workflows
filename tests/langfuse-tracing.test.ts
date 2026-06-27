@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { installWorkflowLangfuseTracing } from "../src/langfuse-tracing.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { workflowLangfuseTraceId } from "../src/workflow-telemetry-report.js";
 
 class FakeGeneration {
   updates: Record<string, unknown>[] = [];
@@ -89,7 +90,9 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
     });
     const errors: string[] = [];
     const handle = installWorkflowLangfuseTracing(manager, {
-      config: {},
+      config: {
+        includePayloads: false,
+      },
       env: {
         LANGFUSE_PUBLIC_KEY: "pk-test",
         LANGFUSE_SECRET_KEY: "sk-test",
@@ -117,6 +120,65 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
     assert.equal(client.traces[0].spans[0].body.name, "workflow run: lf_env");
     assert.equal(client.traces[0].spans[0].generations[0].body.name, "workflow agent: reviewer");
     assert.equal(client.shutdowns, 1);
+
+    // Assert that the trace link ID is exactly the one derived by workflowLangfuseTraceId
+    const runs = manager.listRuns();
+    assert.equal(runs.length, 1);
+    const runId = runs[0].runId;
+    const expectedTraceId = workflowLangfuseTraceId(runId);
+    assert.equal(client.traces[0].body.id, expectedTraceId);
+
+    const traceBody = client.traces[0].body as any;
+    // Assert that by default includePayloads=false, and absolute paths are redacted (omitted)
+    assert.equal(traceBody.metadata?.transcriptDir, undefined);
+    assert.equal(traceBody.metadata?.runStatePath, undefined);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing includes transcriptDir and runStatePath when includePayloads is true", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-payloads-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          return "agent-output";
+        },
+      } as never,
+    });
+    const errors: string[] = [];
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {
+        includePayloads: true,
+      },
+      env: {
+        LANGFUSE_PUBLIC_KEY: "pk-test",
+        LANGFUSE_SECRET_KEY: "sk-test",
+      },
+      client: client as never,
+      onError: (message) => errors.push(message),
+      compactionEventsPath: false,
+    });
+
+    assert.equal(handle.enabled, true);
+    await manager.runSync(
+      `export const meta = { name: 'lf_payloads', description: 'Langfuse payloads test' }
+       return 'done'`,
+      { pr: 28 },
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    assert.equal(client.traces.length, 1);
+    const metadata = (client.traces[0].body as any).metadata;
+    assert.ok(metadata?.transcriptDir, "transcriptDir should be defined when includePayloads is true");
+    assert.ok(metadata?.runStatePath, "runStatePath should be defined when includePayloads is true");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

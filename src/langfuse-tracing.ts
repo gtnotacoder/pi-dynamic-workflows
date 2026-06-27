@@ -560,6 +560,7 @@ class WorkflowLangfuseTracer {
     const ownerPid = ownerPidStr ? parseInt(ownerPidStr, 10) : undefined;
     const processPid = process.pid;
     const telemetryProcessRole = ownerPid && ownerPid !== processPid ? "subagent" : "main";
+    const includePayloads = this.config?.includePayloads ?? false;
 
     return cleanObject({
       serviceName: this.config?.serviceName,
@@ -572,8 +573,8 @@ class WorkflowLangfuseTracer {
       background: run?.background,
       sessionId: state.sessionId,
       parentPiTraceId: state.parentTraceId,
-      transcriptDir: run?.transcriptDir,
-      runStatePath: run?.runStatePath,
+      transcriptDir: includePayloads ? run?.transcriptDir : undefined,
+      runStatePath: includePayloads ? run?.runStatePath : undefined,
       telemetryProcessRole,
       ownerPid,
       processPid,
