@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  createCompactionEventTail,
   emitCompactionTelemetry,
   normalizeCompactionEvent,
   onCompactionTelemetry,
@@ -56,6 +57,56 @@ test("readCompactionEvents filters JSONL by time window and session", () => {
 
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "reinject");
+});
+
+test("readCompactionEvents maxBytes tailing preserves multibyte emoji phase", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-events-multibyte-"));
+  const filePath = join(dir, "events.jsonl");
+  const emoji = "🎉🎊🎎🎏";
+  const oldLine = JSON.stringify({
+    type: "precompact",
+    session_id: "s1",
+    phase: `warmup ${emoji}`,
+    ts: "2026-06-27T00:00:00Z",
+  });
+  const finalLine = JSON.stringify({
+    type: "monitor_eval",
+    session_id: "s2",
+    phase: `review ${emoji}`,
+    ts: "2026-06-27T01:00:00Z",
+  });
+  writeFileSync(filePath, `${oldLine}\n${finalLine}\n`);
+  const maxBytes = Buffer.byteLength(finalLine + "\n");
+  const events = readCompactionEvents({ filePath, maxBytes });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].phase, `review ${emoji}`);
+});
+
+test("createCompactionEventTail incremental offsets survive multibyte UTF-8", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-tail-multibyte-"));
+  const filePath = join(dir, "events.jsonl");
+  const emoji = "🎉🎊🎎🎏";
+  const firstLine = JSON.stringify({
+    type: "precompact",
+    session_id: "s1",
+    phase: `batch ${emoji}`,
+    ts: "2026-06-27T00:00:00Z",
+  });
+  const secondLine = JSON.stringify({
+    type: "monitor_eval",
+    session_id: "s2",
+    phase: `final ${emoji}`,
+    ts: "2026-06-27T01:00:00Z",
+  });
+  writeFileSync(filePath, `${firstLine}\n`);
+  const tail = createCompactionEventTail({ filePath, startAtEnd: false });
+  const firstEvents = tail.read();
+  assert.equal(firstEvents.length, 1);
+  assert.equal(firstEvents[0].phase, `batch ${emoji}`);
+  appendFileSync(filePath, `${secondLine}\n`);
+  const secondEvents = tail.read();
+  assert.equal(secondEvents.length, 1);
+  assert.equal(secondEvents[0].phase, `final ${emoji}`);
 });
 
 test("summarizeCompactionEvents captures suppression and over-window counts", () => {

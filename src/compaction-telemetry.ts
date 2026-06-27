@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -220,8 +220,8 @@ export function createCompactionEventTail(
         const stat = statSync(filePath);
         if (stat.size < offset) offset = 0;
         if (stat.size === offset) return [];
-        const all = readFileSync(filePath, "utf-8");
-        text = all.slice(offset);
+        const buf = readByteRange(filePath, offset, stat.size);
+        text = buf.toString("utf8");
         offset = stat.size;
       } catch {
         return [];
@@ -251,12 +251,50 @@ function matchesCompactionFilter(event: CompactionTelemetryEvent, options: Compa
   return true;
 }
 
+function readByteRange(filePath: string, start: number, endExclusive: number): Buffer {
+  const fd = openSync(filePath, "r");
+  try {
+    const len = endExclusive - start;
+    const buf = Buffer.alloc(len);
+    const bytesRead = readSync(fd, buf, 0, len, start);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function readTail(filePath: string, maxBytes: number): string {
   try {
     const stat = statSync(filePath);
-    const text = readFileSync(filePath, "utf-8");
-    if (stat.size <= maxBytes) return text;
-    return text.slice(Math.max(0, text.length - maxBytes));
+    const size = stat.size;
+    if (size <= maxBytes) {
+      const buf = readByteRange(filePath, 0, size);
+      return buf.toString("utf8");
+    }
+    const start = size - maxBytes;
+    let buf: Buffer;
+    let skippedBoundary = false;
+    if (start > 0) {
+      const boundaryStart = start - 1;
+      const rawBuf = readByteRange(filePath, boundaryStart, size);
+      const leadingByte = rawBuf[0];
+      if (leadingByte === 10) {
+        buf = rawBuf.subarray(1);
+        skippedBoundary = true;
+      } else {
+        buf = readByteRange(filePath, start, size);
+      }
+    } else {
+      buf = readByteRange(filePath, start, size);
+    }
+    let text = buf.toString("utf8");
+    // Only strip to first newline when we had a mid-byte boundary (not clean newline skip).
+    // When skippedBoundary is true, buf already starts with a complete line.
+    const firstNewline = text.indexOf("\n");
+    if (firstNewline > 0 && start > 0 && !skippedBoundary) {
+      text = text.slice(firstNewline + 1);
+    }
+    return text;
   } catch {
     return "";
   }
