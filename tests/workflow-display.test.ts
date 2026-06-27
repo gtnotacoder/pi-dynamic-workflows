@@ -1047,6 +1047,27 @@ describe("deliverText <task-notification> XML (EDIT 3)", () => {
     assert.ok(!text.includes("a < b & c > d"), "should not leak raw special chars");
   });
 
+  it("escapes semantic-status reason as an XML attribute", async () => {
+    const { deliverText } = await loadTaskPanel();
+    const run = fakeManagedRun({
+      semanticStatus: {
+        status: "needs-human",
+        reason: 'quoted "reason" & <unsafe>',
+        nextAction: 'next "step" & <review>',
+      },
+    });
+    const text = deliverText(run);
+    assert.ok(
+      text.includes('reason="quoted &quot;reason&quot; &amp; &lt;unsafe&gt;"'),
+      "should XML-escape quotes inside semantic-status reason attribute",
+    );
+    assert.ok(
+      text.includes("next &quot;step&quot; &amp; &lt;review&gt;"),
+      "should XML-escape semantic nextAction text",
+    );
+    assert.ok(!text.includes('reason="quoted "reason"'), "should not leak raw quotes inside reason attribute");
+  });
+
   it("includes <failures> when agents errored", async () => {
     const { deliverText } = await loadTaskPanel();
     const run = fakeManagedRun({

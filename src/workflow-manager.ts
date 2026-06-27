@@ -521,6 +521,10 @@ export class WorkflowManager extends EventEmitter {
           this.emit("tokenUsage", { runId: managed.runId, usage });
           progress();
         },
+        onSemanticStatus: (semanticStatus) => {
+          this.setSemanticStatus(managed.runId, semanticStatus);
+          progress();
+        },
       });
 
       managed.status = "completed";
@@ -747,6 +751,7 @@ export class WorkflowManager extends EventEmitter {
     if (managed) {
       managed.semanticStatus = semanticStatus;
       this.persistRun(managed);
+      this.emit("semanticStatus", { runId, semanticStatus });
     }
   }
 

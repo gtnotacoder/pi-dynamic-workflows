@@ -59,7 +59,10 @@ const VERIFIER_SCHEMA = {
 
 // 2. ORCHESTRATION ENGINE
 const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
+const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
+
 log('[Fugu] Initiating Fugu Trinity Orchestrator for task: "' + TASK + '"')
+setSemanticStatus({ status: 'workflow-running', reason: 'Fugu workflow is planning and applying changes.', nextAction: 'Wait for worker/verifier agents to finish.' })
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
@@ -212,6 +215,7 @@ while (Object.keys(completed).length < plan.steps.length) {
 }
 
 log('[Fugu] 🎉 All steps executed and verified successfully!')
+setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'All worker/verifier steps passed. Opening PR delivery pane.', nextAction: 'Creating branch, commit, and draft PR.' })
 
 // --- Phase 4: PR Delivery ---
 phase('PR_Delivery')
@@ -238,26 +242,22 @@ log('[Fugu] Pull Request creation complete! Result:\\n' + prResult)
 // Do not declare success if changes are dirty, uncommitted, or unpushed.
 log('[Fugu:finalization] Running finalization gate...')
 
-const finalization = await agent(
-  'You are the Fugu Finalization Agent. Verify the following invariants for the current worktree:\\n' +
-  '1. git status --porcelain must be clean (ignore .fugu/ and .fastcontext/ paths).\\n' +
-  '2. There must be at least one commit beyond the base branch (origin/main).\\n\\n' +
-  '3. The branch must be pushed to its upstream/remote.\\n\\n' +
-  'Run the necessary bash commands and return a JSON object:\\n' +
-  '{ "clean": boolean, "pushedUpstream": boolean, "commitsBeyondBase": number, "branch": "string", "details": "string" }\\n\\n' +
-  'If the branch is not pushed, run: git push -u origin <branch>\\n' +
-  'If non-transient uncommitted changes remain after ignoring .fugu/ and .fastcontext/ paths, you MUST NOT stage, commit, or push them. Instead, return { "clean": false, "details": "Uncommitted changes remain in: <list of non-transient dirty paths>" } so they can be followed up on.\\n' +
-  'Return the JSON result.',
-  {
-    label: 'fugu-finalization',
-    tier: 'small'
-  }
-)
+setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })
 
-log('[Fugu:finalization] Result:\\n' + finalization)
+const finalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+
+const finalizationStatus = finalization.toRunStatus || {
+  status: finalization.status || 'unknown',
+  reason: finalization.reason || 'Finalization gate completed.',
+  nextAction: finalization.nextAction || 'Review details below.',
+  details: finalization.details || ''
+}
+
+setSemanticStatus(finalizationStatus)
+log('[Fugu:finalization] Status: ' + finalizationStatus.status + ' — ' + finalizationStatus.reason)
 
 return {
-  success: true,
+  success: finalizationStatus.status === 'completed' || finalizationStatus.status === 'finalizing',
   summary: executionState.summary,
   stepsCompleted: executionState.completedSteps,
   pr: prResult,

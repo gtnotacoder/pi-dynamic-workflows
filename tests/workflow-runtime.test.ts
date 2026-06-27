@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
+import type { CollectFinalizationOptions, FinalizationCheckResult } from "../src/conductor-finalization.js";
+import type { ConductorRunStatus } from "../src/conductor-types.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
@@ -1063,6 +1065,50 @@ return 1`;
   });
 
   assert.ok(Array.isArray(result.logs), "result.logs should be an array");
+});
+
+test("setSemanticStatus global broadcasts status to onSemanticStatus callback", async () => {
+  const captured: ConductorRunStatus[] = [];
+  const script = `export const meta = { name: 'semantic_status', description: 'set semantic status' }
+setSemanticStatus({ status: 'finalizing', reason: 'checking', nextAction: 'wait' })
+const a = await agent('after status', { label: 'a' })
+return a`;
+
+  const result = await runWorkflow(script, {
+    agent: noopAgent,
+    persistLogs: false,
+    onSemanticStatus: (status) => captured.push(status),
+  });
+
+  assert.equal(result.result, "ok");
+  assert.equal(captured.length, 1, "onSemanticStatus should have been called once");
+  assert.equal(captured[0].status, "finalizing");
+  assert.equal(captured[0].reason, "checking");
+  assert.equal(captured[0].nextAction, "wait");
+});
+
+test("checkFinalization global delegates to injected finalizationCheck callback", async () => {
+  const seenCwd: string[] = [];
+  const seenOpts: CollectFinalizationOptions[] = [];
+  const script = `export const meta = { name: 'finalize', description: 'finalization check' }
+const result = await checkFinalization(cwd, { baseRef: 'origin/main', queryChecks: false })
+return result`;
+
+  const result = await runWorkflow<{ status: string; reason: string; nextAction: string }>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+    finalizationCheck: async (cwd: string, opts: CollectFinalizationOptions = {}): Promise<FinalizationCheckResult> => {
+      seenCwd.push(cwd);
+      seenOpts.push({ ...opts });
+      return { status: "completed", reason: "all checks passed", nextAction: "none" };
+    },
+  });
+
+  assert.equal(result.result.status, "completed");
+  assert.equal(seenCwd.length, 1, "injected checker should have been called once");
+  assert.ok(seenCwd[0].length > 0, "cwd should be passed to the injected checker");
+  assert.equal(seenOpts[0].baseRef, "origin/main");
+  assert.equal(seenOpts[0].queryChecks, false);
 });
 
 // ─── Runtime determinism hardening (P0-5) ───────────────────────────────────────

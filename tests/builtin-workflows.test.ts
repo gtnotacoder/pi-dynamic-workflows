@@ -36,15 +36,19 @@ test("generateFuguWorkflow rejects broad git staging and enforces scoped deliver
     "body must instruct agents to stage and commit only explicitly listed files",
   );
 
-  // Finalization safety: uncommitted non-transient paths must be reported
-  // rather than silently staged, committed, or pushed.
-  assert.match(
+  // Finalization: use the deterministic finalization helper and semantic
+  // status lifecycle instead of a freeform finalization agent.
+  assert.match(body, /setSemanticStatus/, "body must use setSemanticStatus");
+  assert.match(body, /workflow-running/, "body must include workflow-running status");
+  assert.match(body, /workflow-complete-pane-open/, "body must include workflow-complete-pane-open status");
+  assert.match(body, /finalizing/, "body must include finalizing status");
+  assert.match(body, /checkFinalization\(cwd,/, "body must call checkFinalization(cwd,");
+  assert.doesNotMatch(body, /fugu-finalization/, "body must not reference fugu-finalization");
+  assert.doesNotMatch(
     body,
-    /MUST\s+NOT\s+stage.*commit.*or.*push/i,
-    "body must forbid staging/committing/pushing uncommitted unlisted paths",
+    /You are the Fugu Finalization Agent/,
+    "body must not contain Fugu Finalization Agent text",
   );
-  assert.match(body, /"clean"\s*:\s*false/i, "body must reference clean: false for uncommitted paths");
-  assert.match(body, /Uncommitted\s+changes\s+remain/i, "body must report uncommitted changes remain");
 });
 
 // ─── Deep Research ──────────────────────────────────────────────────────────────

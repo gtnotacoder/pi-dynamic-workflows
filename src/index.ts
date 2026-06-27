@@ -8,11 +8,15 @@ export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export {
+  type CollectFinalizationOptions,
   checkFinalization,
   collectFinalizationState,
   evaluateFinalization,
+  type FinalizationCheckResult,
   type FinalizationInput,
+  type FinalizationLoopOptions,
   type FinalizationShellRunner,
+  type FinalizationStatus,
   runFinalizationLoop,
 } from "./conductor-finalization.js";
 export {

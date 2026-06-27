@@ -72,12 +72,9 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, maxWidth);
 }
 
-/**
- * Escape `&`, `<`, `>` for safe inclusion in XML element text. (Quotes are
- * left alone — we never emit these strings inside attributes.)
- */
+/** Escape XML-special characters for safe inclusion in element text and attributes. */
 function xmlEscape(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**
