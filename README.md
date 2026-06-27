@@ -84,10 +84,12 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | Opt | Effect |
 |-----|--------|
 | `tier` | Route to a tier model (`'small'` / `'medium'` / `'big'`) — see [Model routing](#model-tier-routing). |
-| `model` | Pin a specific `provider/modelId` (overrides `tier`). |
+| `model` | Pin a specific `provider/modelId` (overrides `tier`); optional `:high`/`:xhigh` suffix sets per-agent thinking. |
+| `thinkingLevel` | Per-agent thinking/reasoning level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); overrides a model suffix. |
 | `label` | Short unique label (2–5 words) for live status + logs. |
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |
+| `agentType` | Named subagent definition; binds tools/model/prompt/context. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
 | `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
 | `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
@@ -148,6 +150,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | Command | Usage | What it does |
 |---------|-------|--------------|
 | `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
+| `/workflow-telemetry-report` | `[window=24h\|since=<iso>] [until=<iso>] [runId=<id>] [sessionId=<id>] [json=true]` | Summarize local workflow run telemetry, model cache-read ratios, large low-cache generations, compaction decisions, and trace/run IDs for dashboards. |
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
@@ -268,7 +271,31 @@ Run a workflow, then register it for reuse:
 /workflows save research_topic <runId>
 ```
 
-This creates a `/<name>` command (with `key=value` args). Saved-workflow slash commands start through the shared `WorkflowManager`, print the run ID immediately, show live progress in the task panel/`/workflows`, and deliver the final result back to chat when complete. Call a saved workflow from another workflow via `await workflow('research_topic', { key: 'value' })`. Storage is `WorkflowStorage` (`workflow-saved.ts`).
+This creates a `/<name>` command (with `key=value` args). Saved-workflow
+slash commands start through the shared `WorkflowManager`, print the run ID
+immediately, show live progress in the task panel/`/workflows`, and deliver the
+final result back to chat when complete. Call a saved workflow from another
+workflow via `await workflow('research_topic', { key: 'value' })`. Storage is
+`WorkflowStorage` (`workflow-saved.ts`).
+
+### Harness workflows
+
+A harness workflow is a saved workflow plus dispatcher metadata keyed by
+`harnessType`, so issue plans can select the right review pipeline without
+hard-coding workflow names. The current convention is:
+
+```text
+~/.pi/agents/<agent-type>.md
+~/.pi/workflows/saved/<workflow>.json
+~/.pi/workflows/harnesses/<harnessType>.json
+```
+
+The installed prototype is `harnessType: frontend.radix-shadcn`, which maps
+to `/frontend_radix_shadcn_review` and uses a `fastcontext-scout` agentType to
+retrieve vendored shadcn/ui wrappers plus installed Radix primitive/type spans
+before adversarial review. See
+**[docs/harness-workflows.md](./docs/harness-workflows.md)** for the metadata
+contract, trigger rules, and recovery checklist.
 
 ---
 

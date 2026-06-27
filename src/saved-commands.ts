@@ -5,7 +5,8 @@
 
 import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { createBudgetedWebTools } from "./web-tools.js";
+import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
@@ -33,6 +34,32 @@ function reportText(result: WorkflowRunResult): string {
   const r = result.result as { report?: unknown } | undefined;
   if (r && typeof r.report === "string" && r.report.trim()) return r.report;
   return JSON.stringify(result.result, null, 2);
+}
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function toolsForSavedWorkflow(
+  cwd: string,
+  wf: SavedWorkflow,
+  args: Record<string, unknown>,
+): WorkflowRunOptions["tools"] | undefined {
+  // The PR adversarial workflow has an explicit externalEvidence gate. When it is
+  // enabled, inject the lightweight web_fetch/web_search tools so only the
+  // dedicated evidence-verifier prompt can use outbound evidence. Generic saved
+  // workflows stay on the default coding tools unless their command opts in.
+  if (wf.name !== "pr_adversarial_review") return undefined;
+  const externalEvidence = String(args.externalEvidence ?? "auto")
+    .trim()
+    .toLowerCase();
+  if (externalEvidence === "off") return undefined;
+  const maxSearches = externalEvidence === "linked" ? 0 : boundedNumber(args.maxExternalSearches, 2, 0, 5);
+  const maxFetches = boundedNumber(args.maxExternalFetches, 6, 0, 12);
+  if (maxSearches <= 0 && maxFetches <= 0) return undefined;
+  return [...createCodingTools(cwd), ...createBudgetedWebTools({ maxSearches, maxFetches })];
 }
 
 function backgroundStartedText(name: string, runId: string, transcriptDir?: string): string {
@@ -102,6 +129,7 @@ export function registerSavedWorkflow(
       // normal saved-workflow argument; only `--mode` / `--mode=<name>` is
       // reserved for run-level context.
       const parsedArgs = parseCommandArgs(rest, wf.parameters);
+      const savedTools = toolsForSavedWorkflow(cwd, wf, parsedArgs);
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
 
@@ -113,6 +141,7 @@ export function registerSavedWorkflow(
           // show only a static "running" status.
           const { runId, promise } = manager.startInBackground(wf.script, parsedArgs, {
             contextMode: mode,
+            ...(savedTools ? { tools: savedTools } : {}),
           });
           const key = `wf:${wf.name}`;
           ctx.ui.setStatus(key, `${wf.name}: running (${runId})`);
@@ -130,7 +159,7 @@ export function registerSavedWorkflow(
         const result = await runWorkflow(wf.script, {
           cwd,
           args: parsedArgs,
-          tools: createCodingTools(cwd),
+          tools: savedTools ?? createCodingTools(cwd),
           contextMode: mode,
           contextModeRegistry: buildRegistryForCwd(cwd),
           onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),

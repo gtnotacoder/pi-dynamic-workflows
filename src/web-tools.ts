@@ -56,7 +56,8 @@ export function parseBingResults(html: string, limit: number): Array<{ url: stri
 }
 
 /** A tool that searches the web (best-effort) and returns result URLs + titles. */
-export function createWebSearchTool(): ToolDefinition {
+export function createWebSearchTool(options: { maxCalls?: number } = {}): ToolDefinition {
+  let calls = 0;
   return defineTool({
     name: "web_search",
     label: "Web Search",
@@ -67,6 +68,13 @@ export function createWebSearchTool(): ToolDefinition {
       count: Type.Optional(Type.Number({ description: "Max results (default 6)." })),
     }),
     async execute(_id, params: { query: string; count?: number }) {
+      if (options.maxCalls !== undefined && calls >= options.maxCalls) {
+        return {
+          content: [{ type: "text", text: `web_search skipped: call budget exhausted (${options.maxCalls})` }],
+          details: { results: [] as Array<{ url: string; title: string }>, budgetExhausted: true },
+        };
+      }
+      calls++;
       const limit = Math.min(Math.max(params.count ?? 6, 1), 10);
       try {
         const { status, body } = await fetchText(`https://www.bing.com/search?q=${encodeURIComponent(params.query)}`);
@@ -74,11 +82,11 @@ export function createWebSearchTool(): ToolDefinition {
         const text = results.length
           ? results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}`).join("\n")
           : `No results parsed (HTTP ${status}). Try a different query or fetch a known URL directly.`;
-        return { content: [{ type: "text", text }], details: { results } };
+        return { content: [{ type: "text", text }], details: { results, budgetExhausted: false } };
       } catch (error) {
         return {
           content: [{ type: "text", text: `web_search failed: ${error instanceof Error ? error.message : error}` }],
-          details: { results: [] as Array<{ url: string; title: string }> },
+          details: { results: [] as Array<{ url: string; title: string }>, budgetExhausted: false },
         };
       }
     },
@@ -86,7 +94,8 @@ export function createWebSearchTool(): ToolDefinition {
 }
 
 /** A tool that fetches a URL and returns readable text. */
-export function createWebFetchTool(maxChars = 6000): ToolDefinition {
+export function createWebFetchTool(maxChars = 6000, options: { maxCalls?: number } = {}): ToolDefinition {
+  let calls = 0;
   return defineTool({
     name: "web_fetch",
     label: "Web Fetch",
@@ -96,12 +105,21 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
       url: Type.String({ description: "The absolute URL to fetch." }),
     }),
     async execute(_id, params: { url: string }) {
+      if (options.maxCalls !== undefined && calls >= options.maxCalls) {
+        return {
+          content: [
+            { type: "text", text: `web_fetch skipped for ${params.url}: call budget exhausted (${options.maxCalls})` },
+          ],
+          details: { status: 0, url: params.url, budgetExhausted: true },
+        };
+      }
+      calls++;
       try {
         const { status, body } = await fetchText(params.url);
         const text = htmlToText(body).slice(0, maxChars);
         return {
           content: [{ type: "text", text: `HTTP ${status} ${params.url}\n\n${text}` }],
-          details: { status, url: params.url },
+          details: { status, url: params.url, budgetExhausted: false },
         };
       } catch (error) {
         return {
@@ -111,7 +129,7 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
               text: `web_fetch failed for ${params.url}: ${error instanceof Error ? error.message : error}`,
             },
           ],
-          details: { status: 0, url: params.url },
+          details: { status: 0, url: params.url, budgetExhausted: false },
         };
       }
     },
@@ -121,4 +139,15 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
 /** Both web tools, for injecting into a research workflow's agents. */
 export function createWebTools(): ToolDefinition[] {
   return [createWebSearchTool(), createWebFetchTool()];
+}
+
+export function createBudgetedWebTools(options: {
+  maxSearches?: number;
+  maxFetches?: number;
+  maxFetchChars?: number;
+}): ToolDefinition[] {
+  return [
+    createWebSearchTool({ maxCalls: options.maxSearches }),
+    createWebFetchTool(options.maxFetchChars ?? 6000, { maxCalls: options.maxFetches }),
+  ];
 }

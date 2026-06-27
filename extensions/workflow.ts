@@ -1,3 +1,4 @@
+import telemetryExtension from "@amaster.ai/pi-telemetry";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   buildContextModeRegistry,
@@ -7,6 +8,7 @@ import {
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
+  installWorkflowLangfuseTracing,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
@@ -14,11 +16,33 @@ import {
   registerModesCommand,
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
+  registerWorkflowTelemetryReportCommand,
   saveWorkflowSettingsForCwd,
   WorkflowManager,
 } from "../src/index.js";
 
 export default function extension(pi: ExtensionAPI) {
+  // Stale telemetry env hardening (Issue #19)
+  if (process.env.PI_TELEMETRY_OWNER_PID) {
+    let isLive = false;
+    try {
+      process.kill(parseInt(process.env.PI_TELEMETRY_OWNER_PID, 10), 0);
+      isLive = true;
+    } catch (error) {
+      if (error instanceof Error && (error as any).code === "EPERM") {
+        isLive = true;
+      }
+    }
+    if (!isLive) {
+      delete process.env.PI_TELEMETRY_OWNER_PID;
+      delete process.env.PI_TELEMETRY_SESSION_ID;
+      delete process.env.PI_TELEMETRY_TRACE_ID;
+    }
+  }
+
+  // Register runtime telemetry before workflow handlers so Pi lifecycle events can be exported.
+  telemetryExtension(pi);
+
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
@@ -36,10 +60,15 @@ export default function extension(pi: ExtensionAPI) {
     defaultAgentRetries: settings.defaultAgentRetries,
     contextModeRegistry,
   });
+  const workflowTracing = installWorkflowLangfuseTracing(manager, { cwd });
+  pi.on("session_shutdown", async () => {
+    await workflowTracing.close();
+  });
 
   const workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
   registerWorkflowCommands(pi, manager, { storage, cwd });
+  registerWorkflowTelemetryReportCommand(pi, { cwd, manager });
   registerWorkflowModelsCommand(pi);
   registerModesCommand(pi, { cwd });
   registerBuiltinWorkflows(pi, { cwd, manager });

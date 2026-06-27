@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
-import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
+import { listAvailableModelSpecs, resolveAgentModelSpec, splitModelThinkingSpec, WorkflowAgent } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
 import { runWorkflow } from "../src/workflow.js";
@@ -80,6 +80,21 @@ test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier 
 
 test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
   assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
+});
+
+test("splitModelThinkingSpec parses pi model thinking shorthand", () => {
+  assert.deepEqual(splitModelThinkingSpec("google-ai-studio/gemini-3.5-flash:high"), {
+    modelSpec: "google-ai-studio/gemini-3.5-flash",
+    thinkingLevel: "high",
+  });
+  assert.deepEqual(splitModelThinkingSpec("gemini-3.5-flash:xhigh"), {
+    modelSpec: "gemini-3.5-flash",
+    thinkingLevel: "xhigh",
+  });
+  assert.deepEqual(splitModelThinkingSpec("litellm-ny2/oc-gemini3-flash"), {
+    modelSpec: "litellm-ny2/oc-gemini3-flash",
+  });
+  assert.deepEqual(splitModelThinkingSpec("provider/model:not-a-level"), { modelSpec: "provider/model:not-a-level" });
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {
@@ -286,6 +301,18 @@ test("agent() in workflow passes model spec to runner", async () => {
   );
   assert.equal(rec.calls.length, 1);
   assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model");
+});
+
+test("agent() in workflow passes thinking level to runner", async () => {
+  const rec = new CallRecordingAgent();
+  await runWorkflow(
+    `export const meta = { name: 'test', description: 't' }
+     const r = await agent('task', { label: 't', model: 'google-ai-studio/gemini-3.5-flash', thinkingLevel: 'high' })
+     return r`,
+    { agent: rec, persistLogs: false },
+  );
+  assert.equal(rec.calls.length, 1);
+  assert.equal((rec.calls[0].options as { thinkingLevel?: string }).thinkingLevel, "high");
 });
 
 test("agent() in workflow fires onAgentStart and onAgentEnd callbacks", async () => {

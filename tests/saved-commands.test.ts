@@ -293,6 +293,36 @@ describe("registerSavedWorkflow", () => {
     assert.match(sent[0].content ?? "", /Run ID: test-run/);
   });
 
+  it("injects web tools for pr_adversarial_review unless externalEvidence is off", async () => {
+    const { registerSavedWorkflow } = await load();
+    let capturedExec: { tools?: Array<{ name?: string }> } | undefined;
+    const manager = {
+      startInBackground: (_script: string, _args: unknown, exec?: { tools?: Array<{ name?: string }> }) => {
+        capturedExec = exec;
+        return { runId: "test-run", promise: Promise.resolve({ result: { report: "done" } }) };
+      },
+      getRun: (_runId: string) => ({ transcriptDir: "/tmp/subagents" }),
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "pr_adversarial_review",
+      script: "export...",
+      parameters: { externalEvidence: { type: "string", default: "auto" } },
+    });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("prNumber=1", ctx);
+    let toolNames = (capturedExec?.tools ?? []).map((t) => t.name);
+    assert.ok(toolNames.includes("web_search"));
+    assert.ok(toolNames.includes("web_fetch"));
+
+    await commands[0].handler("prNumber=1 externalEvidence=off", ctx);
+    toolNames = (capturedExec?.tools ?? []).map((t) => t.name);
+    assert.deepEqual(toolNames, []);
+  });
+
   it("falls back to runWorkflow (inline) when no manager is provided", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands, sent } = makeCommandRegistryPi();

@@ -7,6 +7,15 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
+export type { CompactionEventSummary, CompactionTelemetryEvent } from "./compaction-telemetry.js";
+export {
+  DEFAULT_AUTOCOMPACTOR_EVENTS_PATH,
+  emitCompactionTelemetry,
+  normalizeCompactionEvent,
+  onCompactionTelemetry,
+  readCompactionEvents,
+  summarizeCompactionEvents,
+} from "./compaction-telemetry.js";
 export * from "./config.js";
 export {
   BUILTIN_CONTEXT_MODES,
@@ -59,7 +68,9 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
-export { generateFuguWorkflow } from "./fugu.js";
+export { generateClosedLoopIssueDeliveryWorkflow, generateFuguWorkflow } from "./fugu.js";
+export type { WorkflowLangfuseTracingHandle, WorkflowLangfuseTracingOptions } from "./langfuse-tracing.js";
+export { installWorkflowLangfuseTracing } from "./langfuse-tracing.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
@@ -136,6 +147,14 @@ export {
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
 } from "./workflow-settings.js";
+export { registerWorkflowTelemetryReportCommand } from "./workflow-telemetry-command.js";
+export type { UsageAnomaly, UsageRollup, WorkflowTelemetryReport } from "./workflow-telemetry-report.js";
+export {
+  buildWorkflowTelemetryReport,
+  parseTelemetryWindow,
+  renderWorkflowTelemetryReport,
+  workflowLangfuseTraceId,
+} from "./workflow-telemetry-report.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
 export { backgroundStartedText, createWorkflowTool } from "./workflow-tool.js";
 export {

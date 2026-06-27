@@ -1,16 +1,27 @@
 /**
- * Fugu Trinity (Thinker-Worker-Verifier) Multi-Agent Orchestrator.
+ * Fugu/Trinity-inspired Multi-Agent Orchestrator.
  * Built-in workflow for parallel DAG task execution and automatic PR shipping.
  */
 
 /**
- * Generate a fugu workflow that orchestrates specialized models using a
- * Directed Acyclic Graph (DAG) for parallel execution.
+ * Generate a fugu workflow for backward compatibility.
  */
 export function generateFuguWorkflow(): string {
+  return generateClosedLoopIssueDeliveryWorkflow("fugu");
+}
+
+/**
+ * Generate a closed-loop issue-to-PR delivery workflow that orchestrates specialized
+ * models using a Directed Acyclic Graph (DAG) for parallel execution.
+ */
+export function generateClosedLoopIssueDeliveryWorkflow(name = "closed_loop_issue_delivery"): string {
+  const isFugu = name === "fugu";
+  const labelPrefix = isFugu ? "fugu-" : "issue-delivery-";
+  const logPrefix = isFugu ? "[Fugu" : "[IssueDelivery";
+
   return `export const meta = {
-  name: 'fugu',
-  description: 'Fugu Trinity (Thinker-Worker-Verifier) Multi-Agent Orchestrator with PR Auto-Ship',
+  name: '${name}',
+  description: 'Trinity-inspired (Thinker-Worker-Verifier) Multi-Agent Orchestrator with PR Auto-Ship',
   phases: [
     { title: 'Thinker' },
     { title: 'Worker' },
@@ -59,11 +70,11 @@ const VERIFIER_SCHEMA = {
 
 // 2. ORCHESTRATION ENGINE
 const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
-log('[Fugu] Initiating Fugu Trinity Orchestrator for task: "' + TASK + '"')
+log('${logPrefix}] Initiating Closed-Loop Issue Delivery for task: "' + TASK + '"')
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
-log('[Fugu:Thinker] Spawning Thinker agent (big tier) to map out the execution plan...')
+log('${logPrefix}:Thinker] Spawning Thinker agent (big tier) to map out the execution plan...')
 
 const plan = await agent(
   'Analyze the codebase and map out a step-by-step modification plan to complete this task:\\n' +
@@ -74,7 +85,7 @@ const plan = await agent(
   '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n\\n' +
   'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
   {
-    label: 'fugu-thinker',
+    label: '${labelPrefix}thinker',
     tier: 'big',
     schema: THINKER_SCHEMA
   }
@@ -84,7 +95,7 @@ if (!plan || !plan.steps || plan.steps.length === 0) {
   throw new Error('Thinker failed to produce a valid execution plan.')
 }
 
-log('[Fugu:Thinker] Plan created! Found ' + plan.steps.length + ' steps in the dependency graph.')
+log('${logPrefix}:Thinker] Plan created! Found ' + plan.steps.length + ' steps in the dependency graph.')
 
 // --- Phase 2 & 3: Worker & Verifier Trinity DAG Loop ---
 const executionState = {
@@ -109,7 +120,7 @@ while (Object.keys(completed).length < plan.steps.length) {
     throw new Error('Cyclic dependency or deadlock detected in Thinker plan.')
   }
 
-  log('[Fugu:Orchestrator] Found ' + readySteps.length + ' ready step(s) to execute in parallel: ' + readySteps.map(s => s.id).join(', '))
+  log('${logPrefix}:Orchestrator] Found ' + readySteps.length + ' ready step(s) to execute in parallel: ' + readySteps.map(s => s.id).join(', '))
 
   // Mark all ready steps as started
   for (const step of readySteps) {
@@ -117,8 +128,8 @@ while (Object.keys(completed).length < plan.steps.length) {
   }
 
   // Execute ready steps concurrently using parallel()
-  await parallel(readySteps.map(step => async () => {
-    log('[Fugu:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
+  const parallelResults = await parallel(readySteps.map(step => async () => {
+    log('${logPrefix}:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
 
     const result = await gate(
       async (previousFeedback, attempt) => {
@@ -137,27 +148,27 @@ while (Object.keys(completed).length < plan.steps.length) {
           prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
         }
 
-        log('[Fugu:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
+        log('${logPrefix}:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
         return await agent(prompt, {
-          label: 'fugu-worker:' + step.id,
+          label: '${labelPrefix}worker:' + step.id,
           tier: 'medium'
         })
       },
 
       async (workerResult) => {
         phase('LocalChecks')
-        log('[Fugu:Verifier] Running compile & linter checks on ' + step.file + ' using small tier...')
+        log('${logPrefix}:Verifier] Running compile & linter checks on ' + step.file + ' using small tier...')
 
         const localChecks = await agent(
           'Check if there are compile, type-check, or linter errors in the workspace, particularly in ' + step.file + '. Run appropriate bash commands if required to check for errors. Return a short log of results.',
           {
-            label: 'fugu-checks:' + step.id,
+            label: '${labelPrefix}checks:' + step.id,
             tier: 'small'
           }
         )
 
         phase('Verifier')
-        log('[Fugu:Verifier] strict LLM verification of ' + step.file + ' using big tier...')
+        log('${logPrefix}:Verifier] strict LLM verification of ' + step.file + ' using big tier...')
         const verification = await agent(
           'Review the changes made to ' + step.file + ' for correctness and completeness.\\n' +
           'Task requirements: ' + step.instructions + '\\n' +
@@ -165,18 +176,18 @@ while (Object.keys(completed).length < plan.steps.length) {
           'Local check logs:\\n' + JSON.stringify(localChecks) + '\\n\\n' +
           'Inspect the file and perform a strict evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with helpful feedback.',
           {
-            label: 'fugu-verifier:' + step.id,
+            label: '${labelPrefix}verifier:' + step.id,
             tier: 'big',
             schema: VERIFIER_SCHEMA
           }
         )
 
         if (verification && verification.passed) {
-          log('[Fugu:Verifier] Step ' + step.id + ' PASSED verification!')
+          log('${logPrefix}:Verifier] Step ' + step.id + ' PASSED verification!')
           return { ok: true }
         } else {
           const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
-          log('[Fugu:Verifier] Step ' + step.id + ' FAILED verification! Feedback: ' + errorFeedback)
+          log('${logPrefix}:Verifier] Step ' + step.id + ' FAILED verification! Feedback: ' + errorFeedback)
           return { ok: false, feedback: errorFeedback }
         }
       },
@@ -204,34 +215,38 @@ while (Object.keys(completed).length < plan.steps.length) {
       'Write the following JSON to the transient file .fugu/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
       'JSON:\\n' + JSON.stringify(executionState, null, 2),
       {
-        label: 'fugu-write-state',
+        label: '${labelPrefix}write-state',
         tier: 'small'
       }
     )
   }))
+
+  if (parallelResults.includes(null)) {
+    throw new Error('One or more parallel steps failed. Aborting Fugu execution.')
+  }
 }
 
-log('[Fugu] 🎉 All steps executed and verified successfully!')
+log('${logPrefix}] 🎉 All steps executed and verified successfully!')
 
 // --- Phase 4: PR Delivery ---
 phase('PR_Delivery')
-log('[Fugu:PR_Delivery] Initiating automatic Git branch push and Pull Request creation...')
+log('${logPrefix}:PR_Delivery] Initiating automatic Git branch push and Pull Request creation...')
 
 const prResult = await agent(
-  'You are the Fugu Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
+  'You are the Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
   'Your task is to create a new Git branch, commit the changed files, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
   'Details of completed work:\\n' +
   'Task: "' + TASK + '"\\n' +
   'Summary of changes: ' + executionState.summary + '\\n' +
   'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
-  'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. fugu/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
+  'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. fugu/auto-pr-<timestamp> or closed-loop/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
   {
-    label: 'fugu-pr-delivery',
+    label: '${labelPrefix}pr-delivery',
     tier: 'small'
   }
 )
 
-log('[Fugu] Pull Request creation complete! Result:\\n' + prResult)
+log('${logPrefix}] Pull Request creation complete! Result:\\n' + prResult)
 
 return {
   success: true,

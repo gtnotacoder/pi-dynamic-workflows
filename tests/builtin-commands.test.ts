@@ -6,13 +6,19 @@ import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 test("registerBuiltinWorkflows registers deep-research, adversarial-review, code-review, and fugu commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
-  assert.equal(commands.length, 4);
+  assert.equal(commands.length, 5);
   const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, ["adversarial-review", "code-review", "deep-research", "fugu"]);
+  assert.deepEqual(names, ["adversarial-review", "closed_loop_issue_delivery", "code-review", "deep-research", "fugu"]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
-  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review", "code-review", "fugu"]);
+  const { pi, commands } = makeCommandRegistryPi([
+    "deep-research",
+    "adversarial-review",
+    "code-review",
+    "closed_loop_issue_delivery",
+    "fugu",
+  ]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.equal(commands.length, 0, "should not re-register when already present");
 });
@@ -22,7 +28,7 @@ test("registerBuiltinWorkflows registers only missing commands", () => {
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.deepEqual(
     commands.map((c) => c.name).sort(),
-    ["adversarial-review", "code-review", "fugu"],
+    ["adversarial-review", "closed_loop_issue_delivery", "code-review", "fugu"],
     "should only register the missing commands",
   );
 });
@@ -173,8 +179,13 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   );
   assert.equal(typeof advReviewCmd.handler, "function");
 
+  const closedLoopCmd = commands.find((c) => c.name === "closed_loop_issue_delivery");
+  assert.ok(closedLoopCmd, "closed_loop_issue_delivery should be registered");
+  assert.ok(closedLoopCmd.description?.includes("closed-loop issue-to-PR"), "should contain issue-to-PR description");
+  assert.equal(typeof closedLoopCmd.handler, "function");
+
   const fuguCmd = commands.find((c) => c.name === "fugu");
   assert.ok(fuguCmd, "fugu should be registered");
-  assert.ok(fuguCmd.description?.includes("Autonomous Fugu"), "should contain Fugu description");
+  assert.ok(fuguCmd.description?.includes("[Deprecated alias]"), "should contain deprecated alias description");
   assert.equal(typeof fuguCmd.handler, "function");
 });

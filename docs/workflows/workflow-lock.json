@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "lastReviewedDate": "2026-06-27",
+  "workflows": {
+    "closed_loop_issue_delivery": {
+      "canonicalName": "closed_loop_issue_delivery",
+      "aliases": ["fugu", "fugu_closed_loop"],
+      "description": "Autonomous Trinity-inspired issue-to-PR workflow: plan, edit, verify, and open a draft PR",
+      "version": "1.0.0",
+      "channel": "stable"
+    },
+    "surgical_pr_repair": {
+      "canonicalName": "surgical_pr_repair",
+      "aliases": ["fugu_repair"],
+      "description": "Surgical multi-agent PR repair and test alignment loop",
+      "version": "1.0.0",
+      "channel": "stable"
+    },
+    "pr_adversarial_review": {
+      "canonicalName": "pr_adversarial_review",
+      "description": "Skeptical review of PR changes with independent reviewers and synthesis",
+      "version": "1.0.0",
+      "channel": "stable"
+    },
+    "frontend_radix_shadcn_review": {
+      "canonicalName": "frontend_radix_shadcn_review",
+      "description": "FastContext-backed PR adversarial review for shadcn/ui + Radix UI",
+      "version": "1.0.0",
+      "channel": "stable"
+    },
+    "evidence_adversarial_review": {
+      "canonicalName": "evidence_adversarial_review",
+      "description": "Source-backed adversarial review with Exa and Brave Search",
+      "version": "1.0.0",
+      "channel": "stable"
+    }
+  }
+}
