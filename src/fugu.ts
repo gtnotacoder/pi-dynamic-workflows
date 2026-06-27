@@ -70,7 +70,10 @@ const VERIFIER_SCHEMA = {
 
 // 2. ORCHESTRATION ENGINE
 const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
+const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
+
 log('${logPrefix}] Initiating Closed-Loop Issue Delivery for task: "' + TASK + '"')
+setSemanticStatus({ status: 'workflow-running', reason: 'Closed-loop issue delivery is planning and applying changes.', nextAction: 'Wait for worker/verifier agents to finish.' })
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
@@ -81,8 +84,7 @@ const plan = await agent(
   'Task: "' + TASK + '"\\n\\n' +
   'Break the task down into a Directed Acyclic Graph (DAG) of sequential and parallelizable modifications.\\n' +
   'Guidelines for DAG mapping:\\n' +
-  '1. Steps touching the SAME file MUST depend on each other sequentially (e.g. step-2 depends on step-1) to avoid Git merge conflicts.\\n' +
-  '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n\\n' +
+  '1. Steps touching the SAME file MUST depend on each other sequentially (e.g. step-2 depends on step-1) to avoid Git merge conflicts. Touch different files? Keep dependencies empty so they run in parallel.\\n\\n' +
   'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
   {
     label: '${labelPrefix}thinker',
@@ -196,7 +198,7 @@ while (Object.keys(completed).length < plan.steps.length) {
 
     if (!result.ok) {
       throw new Error('Step ' + step.id + ' failed verification after ' + result.attempts + ' attempts. Aborting.')
-    } 
+    }
 
     completed[step.id] = {
       id: step.id,
@@ -221,12 +223,17 @@ while (Object.keys(completed).length < plan.steps.length) {
     )
   }))
 
-  if (parallelResults.includes(null)) {
-    throw new Error('One or more parallel steps failed. Aborting Fugu execution.')
+  const failedParallelSteps = parallelResults
+    .map((result, index) => result === null ? readySteps[index] : null)
+    .filter(Boolean)
+
+  if (failedParallelSteps.length > 0) {
+    throw new Error('One or more parallel steps failed: ' + failedParallelSteps.map(step => step.id + ' (' + step.file + ')').join(', ') + '. Aborting Fugu execution.')
   }
 }
 
 log('${logPrefix}] 🎉 All steps executed and verified successfully!')
+setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'All worker/verifier steps passed. Opening PR delivery pane.', nextAction: 'Creating branch, commit, and draft PR.' })
 
 // --- Phase 4: PR Delivery ---
 phase('PR_Delivery')
@@ -234,11 +241,12 @@ log('${logPrefix}:PR_Delivery] Initiating automatic Git branch push and Pull Req
 
 const prResult = await agent(
   'You are the Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
-  'Your task is to create a new Git branch, commit the changed files, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
+  'Your task is to create a new Git branch, commit ONLY the files listed in the Modified Files list below, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
   'Details of completed work:\\n' +
   'Task: "' + TASK + '"\\n' +
   'Summary of changes: ' + executionState.summary + '\\n' +
   'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
+  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .fugu/ or .fastcontext/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
   'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. fugu/auto-pr-<timestamp> or closed-loop/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
   {
     label: '${labelPrefix}pr-delivery',
@@ -248,10 +256,29 @@ const prResult = await agent(
 
 log('${logPrefix}] Pull Request creation complete! Result:\\n' + prResult)
 
+// --- Finalization gate: verify clean-committed-pushed invariants ---
+// Do not declare success if changes are dirty, uncommitted, or unpushed.
+log('${logPrefix}:finalization] Running finalization gate...')
+
+setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })
+
+const finalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+
+const finalizationStatus = finalization.toRunStatus || {
+  status: finalization.status || 'unknown',
+  reason: finalization.reason || 'Finalization gate completed.',
+  nextAction: finalization.nextAction || 'Review details below.',
+  details: finalization.details || ''
+}
+
+setSemanticStatus(finalizationStatus)
+log('${logPrefix}:finalization] Status: ' + finalizationStatus.status + ' — ' + finalizationStatus.reason)
+
 return {
-  success: true,
+  success: finalizationStatus.status === 'completed' || finalizationStatus.status === 'finalizing',
   summary: executionState.summary,
   stepsCompleted: executionState.completedSteps,
-  pr: prResult
+  pr: prResult,
+  finalization: finalization
 }`;
 }

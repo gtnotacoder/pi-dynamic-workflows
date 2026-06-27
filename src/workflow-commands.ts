@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { CONDUCTOR_STATUS_ICONS, CONDUCTOR_STATUS_LABELS } from "./conductor-types.js";
 import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
@@ -28,7 +29,10 @@ function summarizeRun(run: PersistedRunState): string {
   const done = run.agents.filter((a) => a.status === "done").length;
   const total = run.agents.length;
   const tokens = run.tokenUsage ? ` · ${run.tokenUsage.total.toLocaleString()} tok` : "";
-  return `${icon} ${run.runId}  ${run.workflowName} [${run.status}] ${done}/${total} agents${tokens}`;
+  const semantic = run.semanticStatus
+    ? ` [${CONDUCTOR_STATUS_ICONS[run.semanticStatus.status]} ${CONDUCTOR_STATUS_LABELS[run.semanticStatus.status]}]`
+    : "";
+  return `${icon} ${run.runId}  ${run.workflowName} [${run.status}] ${done}/${total} agents${semantic}${tokens}`;
 }
 
 function oneLineProgress(snapshot: WorkflowSnapshot): string {
@@ -87,6 +91,14 @@ function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionComm
 
 function renderPersistedStatus(run: PersistedRunState): string {
   const lines = [`${STATUS_ICON[run.status] ?? "?"} ${run.workflowName} (${run.runId}) — ${run.status}`];
+  if (run.semanticStatus) {
+    const sem = run.semanticStatus;
+    const icon = CONDUCTOR_STATUS_ICONS[sem.status];
+    const label = CONDUCTOR_STATUS_LABELS[sem.status];
+    lines.push(`  ${icon} semantic: ${label}`);
+    if (sem.reason) lines.push(`    reason: ${sem.reason}`);
+    if (sem.nextAction) lines.push(`    next: ${sem.nextAction}`);
+  }
   if (run.currentPhase) lines.push(`  phase: ${run.currentPhase}`);
   for (const agent of run.agents) {
     const icon =

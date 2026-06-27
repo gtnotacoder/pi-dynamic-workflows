@@ -468,6 +468,33 @@ test(
 );
 
 test(
+  "setSemanticStatus updates flow through manager and persist to run state",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const script = `export const meta = { name: 'sem_status', description: 'semantic status test' }
+setSemanticStatus({ status: 'workflow-running', reason: 'started' })
+const a = await agent('probe', { label: 'a' })
+setSemanticStatus({ status: 'completed', reason: 'done', nextAction: 'ship' })
+return { a }`;
+
+    const result = await manager.runSync(script);
+    assert.equal(result.agentCount, 1);
+
+    const persisted = manager.listRuns()[0];
+    const persistedSem = persisted?.semanticStatus;
+    assert.equal(persistedSem?.status, "completed", "persisted semanticStatus should be the final completed status");
+    assert.equal(persistedSem?.reason, "done", "persisted semanticStatus reason should match");
+    assert.equal(persistedSem?.nextAction, "ship", "persisted semanticStatus nextAction should match");
+
+    const managedRun = manager.getRun(persisted.runId);
+    const managedSem = managedRun?.semanticStatus;
+    assert.equal(managedSem?.status, "completed", "getRun semanticStatus should be the final completed status");
+    assert.equal(managedSem?.reason, "done", "getRun semanticStatus reason should match");
+    assert.equal(managedSem?.nextAction, "ship", "getRun semanticStatus nextAction should match");
+  }),
+);
+
+test(
   "each agent's model is recorded for /workflows: explicit opts.model, else the main model",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent(), mainModel: "anthropic/claude-opus-4-8" });

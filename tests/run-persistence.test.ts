@@ -451,6 +451,69 @@ test(
   }),
 );
 
+test(
+  "createRunPersistence save and load preserves semanticStatus metadata",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const semanticStatus = {
+      status: "needs-finalize",
+      reason: "workflow exited with un-finalized results",
+      nextAction: "run finalize to compute the verdict",
+      details: "2 agents pending finalization",
+    } as const;
+    const state: PersistedRunState = {
+      runId: "semantic-1",
+      workflowName: "wf",
+      script: "export const meta = { name: 'w', description: 'w' }",
+      status: "running",
+      semanticStatus,
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    };
+    rp.save(state);
+
+    const loaded = rp.load("semantic-1");
+    assert.ok(loaded, "should load saved state");
+    assert.equal(loaded?.status, "running", "legacy status unchanged");
+    assert.deepEqual(loaded?.semanticStatus, semanticStatus, "semanticStatus survives the round-trip");
+    assert.equal(loaded?.semanticStatus?.status, "needs-finalize");
+    assert.equal(loaded?.semanticStatus?.reason, semanticStatus.reason);
+    assert.equal(loaded?.semanticStatus?.nextAction, semanticStatus.nextAction);
+    assert.equal(loaded?.semanticStatus?.details, semanticStatus.details);
+
+    // list() should also surface the preserved field.
+    const listed = rp.list().find((r) => r.runId === "semantic-1");
+    assert.ok(listed, "run appears in list()");
+    assert.deepEqual(listed?.semanticStatus, semanticStatus, "semanticStatus survives list()");
+    assert.equal(listed?.status, "running", "legacy status in list() unchanged");
+  }),
+);
+
+test(
+  "createRunPersistence round-trips a run without semanticStatus unchanged (backward compatible)",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const state: PersistedRunState = {
+      runId: "no-semantic",
+      workflowName: "wf",
+      script: "export const meta = { name: 'w', description: 'w' }",
+      status: "completed",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    };
+    rp.save(state);
+    const loaded = rp.load("no-semantic");
+    assert.equal(loaded?.status, "completed", "legacy status unchanged");
+    assert.equal(loaded?.semanticStatus, undefined, "absent semanticStatus stays absent");
+  }),
+);
+
 test("generateRunId returns a string with timestamp and random parts", () => {
   const id = generateRunId();
   assert.equal(typeof id, "string");

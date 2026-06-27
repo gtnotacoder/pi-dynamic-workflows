@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
+import type { ConductorRunStatus } from "./conductor-types.js";
 import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
@@ -76,6 +77,9 @@ export interface ManagedRun {
    *  run can link to it from the chat <recovery> block. Set regardless of whether
    *  subagent transcript persistence is enabled (the run state is always saved). */
   runStatePath?: string;
+  /** Optional conductor-level semantic status, layered on top of the engine
+   *  `status` above. Older runs may omit this. */
+  semanticStatus?: ConductorRunStatus;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -518,6 +522,10 @@ export class WorkflowManager extends EventEmitter {
           this.emit("tokenUsage", { runId: managed.runId, usage });
           progress();
         },
+        onSemanticStatus: (semanticStatus) => {
+          this.setSemanticStatus(managed.runId, semanticStatus);
+          progress();
+        },
       });
 
       managed.status = "completed";
@@ -629,6 +637,7 @@ export class WorkflowManager extends EventEmitter {
         // Persist the effective run-wide timeout only when set, so resume keeps
         // the original explicit/settings value. Absent on old runs -> runtime constant.
         workflowTimeoutMs: managed.workflowTimeoutMs,
+        semanticStatus: managed.semanticStatus,
       });
     } catch (err) {
       // Persistence is best-effort: the run is still healthy in memory.
@@ -701,6 +710,7 @@ export class WorkflowManager extends EventEmitter {
       workflowTimeoutMsCaptured: persisted.workflowTimeoutMs !== undefined,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
+      semanticStatus: persisted.semanticStatus,
     };
     this.runs.set(runId, managed);
 
@@ -731,6 +741,20 @@ export class WorkflowManager extends EventEmitter {
    */
   getRun(runId: string): ManagedRun | undefined {
     return this.runs.get(runId);
+  }
+
+  /**
+   * Set the conductor-level semantic status for a run.
+   * The status is persisted (so it survives resume) and returned by
+   * listRuns() alongside the existing engine `status`.
+   */
+  setSemanticStatus(runId: string, semanticStatus: ConductorRunStatus): void {
+    const managed = this.runs.get(runId);
+    if (managed) {
+      managed.semanticStatus = semanticStatus;
+      this.persistRun(managed);
+      this.emit("semanticStatus", { runId, semanticStatus });
+    }
   }
 
   /** Cheap in-memory active-run check (no persistence scan) for the task panel's

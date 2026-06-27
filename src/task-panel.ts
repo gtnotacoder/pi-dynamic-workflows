@@ -9,6 +9,7 @@
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CONDUCTOR_STATUS_ICONS, CONDUCTOR_STATUS_LABELS } from "./conductor-types.js";
 import { agentErrorText, shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
 import type { RunStatus } from "./run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
@@ -71,12 +72,9 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, maxWidth);
 }
 
-/**
- * Escape `&`, `<`, `>` for safe inclusion in XML element text. (Quotes are
- * left alone — we never emit these strings inside attributes.)
- */
+/** Escape XML-special characters for safe inclusion in element text and attributes. */
 function xmlEscape(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**
@@ -130,6 +128,13 @@ function formatTaskNotification(
   }
 
   lines.push(`<status>${status}</status>`, `<summary>${xmlEscape(summary)}</summary>`);
+
+  if (run.semanticStatus) {
+    const sem = run.semanticStatus;
+    lines.push(
+      `<semantic-status status="${sem.status}" reason="${xmlEscape(sem.reason ?? "")}">${sem.nextAction ? xmlEscape(sem.nextAction) : ""}</semantic-status>`,
+    );
+  }
 
   if (status !== "completed") {
     const resume = `/workflows resume ${run.runId}`;
@@ -249,7 +254,10 @@ export function renderPanel(manager: WorkflowManager, theme: Theme, width?: numb
     const done = agents.filter((a) => a.status === "done").length;
     const icon = r.status === "paused" ? "⏸" : "◆";
     const phase = live?.snapshot.currentPhase ? ` · ${live.snapshot.currentPhase}` : "";
-    return `  ${icon} ${r.workflowName}  ${done}/${agents.length} agents${phase}`;
+    const sem = r.semanticStatus
+      ? ` [${CONDUCTOR_STATUS_ICONS[r.semanticStatus.status]} ${CONDUCTOR_STATUS_LABELS[r.semanticStatus.status]}]`
+      : "";
+    return `  ${icon} ${r.workflowName}  ${done}/${agents.length} agents${phase}${sem}`;
   });
   // Finished runs leave this live panel but are kept in the navigator. Tell the
   // user so a completed run doesn't look like it vanished.

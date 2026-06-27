@@ -317,6 +317,38 @@ Three surfaces show workflow state, by design serving different moments:
 
 ---
 
+## Conductor statuses
+
+Workflow runs carry an **engine status** (`running`, `completed`, `failed`, etc.) and
+an optional **semantic status** that layers conductor-level intent on top. This
+helps distinguish a completed workflow whose tmux pane is still open from one that
+is truly active, and signals when a repair run needs finalization attention.
+
+| Semantic status | When it appears |
+|-----------------|------------------|
+| `spawned` | tmux pane created, workflow not yet started |
+| `workflow-running` | workflow is actively executing |
+| `workflow-complete-pane-open` | workflow finished, pane still open for inspection |
+| `needs-finalize` | repair/delivery invariants (clean, committed, pushed) not yet met |
+| `finalizing` | finalization in progress (e.g. checks pending) |
+| `completed` | run finished, worktree clean and delivered |
+| `failed` | run failed |
+| `needs-human` | blocked; requires human intervention |
+
+The semantic status is displayed in `/workflows list` and `/workflows status <id>`
+output alongside the engine status. The finalization gate checks:
+
+1. Worktree clean (transient `.fugu/` and `.fastcontext/` paths are ignored)
+2. Branch pushed to upstream
+3. Local HEAD matches remote HEAD
+4. PR head SHA matches (when known)
+5. GitHub checks green or clearly pending
+
+When any invariant fails, the run reports `needs-finalize` or `needs-human`
+with an actionable `nextAction` instead of silently claiming success.
+
+---
+
 ## Our patches
 
 All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full table and per-edit commits.

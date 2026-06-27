@@ -14,6 +14,12 @@ import {
   resolveAgentType,
 } from "./agent-registry.js";
 import {
+  type CollectFinalizationOptions,
+  checkFinalization as defaultCheckFinalization,
+  type FinalizationCheckResult,
+} from "./conductor-finalization.js";
+import type { ConductorRunStatus } from "./conductor-types.js";
+import {
   DEFAULT_AGENT_TIMEOUT_MS,
   DEFAULT_WORKFLOW_TIMEOUT_MS,
   MAX_AGENT_RETRIES,
@@ -169,6 +175,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     endedAt?: string;
   }) => void;
   onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
+  /** Called to broadcast the current semantic status of the workflow run. */
+  onSemanticStatus?: (status: ConductorRunStatus) => void;
+  /**
+   * Injectable finalization-check callback so tests can avoid real git/gh.
+   * When omitted, defaults to `checkFinalization` from conductor-finalization.
+   */
+  finalizationCheck?: (cwd: string, opts?: CollectFinalizationOptions) => Promise<FinalizationCheckResult>;
   onTokenUsage?: (usage: {
     input: number;
     output: number;
@@ -421,6 +434,18 @@ export async function runWorkflow<T = unknown>(
     spent: () => shared.spent,
     remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - shared.spent)),
   });
+
+  const setSemanticStatus = (status: ConductorRunStatus) => {
+    options.onSemanticStatus?.(status);
+  };
+
+  const checkFinalization = async (
+    cwdArg: string = baseCwd,
+    opts: CollectFinalizationOptions = {},
+  ): Promise<FinalizationCheckResult> => {
+    throwIfAborted();
+    return await (options.finalizationCheck ?? defaultCheckFinalization)(cwdArg, opts);
+  };
 
   const throwIfAborted = () => {
     if (runSignal.aborted) {
@@ -1059,6 +1084,8 @@ export async function runWorkflow<T = unknown>(
     checkpoint,
     log,
     phase,
+    setSemanticStatus,
+    checkFinalization,
     args: options.args,
     cwd: options.cwd ?? process.cwd(),
     process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
@@ -1184,20 +1211,23 @@ function evaluateLiteral(node: AnyNode, path: string): unknown {
         if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
         if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
         if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
-        const key = propertyKey(prop.key as AnyNode, path);
-        if (key === "__proto__" || key === "constructor" || key === "prototype") {
-          throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+        {
+          const key = propertyKey(prop.key as AnyNode, path);
+          if (key === "__proto__" || key === "constructor" || key === "prototype") {
+            throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+          }
+          out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
         }
-        out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
       }
       return out;
     }
-    case "ArrayExpression":
+    case "ArrayExpression": {
       return (node.elements as Array<AnyNode | null>).map((element, index) => {
         if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
         if (element.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
         return evaluateLiteral(element, `${path}[${index}]`);
       });
+    }
     case "Literal":
       return node.value;
     case "TemplateLiteral":

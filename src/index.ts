@@ -16,6 +16,33 @@ export {
   readCompactionEvents,
   summarizeCompactionEvents,
 } from "./compaction-telemetry.js";
+export {
+  type CollectFinalizationOptions,
+  checkFinalization,
+  collectFinalizationState,
+  evaluateFinalization,
+  type FinalizationCheckResult,
+  type FinalizationInput,
+  type FinalizationLoopOptions,
+  type FinalizationShellRunner,
+  type FinalizationStatus,
+  runFinalizationLoop,
+} from "./conductor-finalization.js";
+export {
+  CONDUCTOR_ACTIVE_STATUSES,
+  CONDUCTOR_ATTENTION_STATUSES,
+  CONDUCTOR_STATUS_ICONS,
+  CONDUCTOR_STATUS_LABELS,
+  CONDUCTOR_TERMINAL_STATUSES,
+  type ConductorRunStatus,
+  type ConductorStatusName,
+  conductorStatusIcon,
+  conductorStatusLabel,
+  isConductorActiveStatus,
+  isConductorAttentionStatus,
+  isConductorStatusName,
+  isConductorTerminalStatus,
+} from "./conductor-types.js";
 export * from "./config.js";
 export {
   BUILTIN_CONTEXT_MODES,
@@ -47,6 +74,7 @@ export {
   createToolUpdateWorkflowDisplay,
   createWidgetWorkflowDisplay,
   createWorkflowSnapshot,
+  formatConductorStatus,
   preview,
   recomputeWorkflowSnapshot,
   renderWorkflowLines,

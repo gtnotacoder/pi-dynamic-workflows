@@ -76,7 +76,7 @@ test("readCompactionEvents maxBytes tailing preserves multibyte emoji phase", ()
     ts: "2026-06-27T01:00:00Z",
   });
   writeFileSync(filePath, `${oldLine}\n${finalLine}\n`);
-  const maxBytes = Buffer.byteLength(finalLine + "\n");
+  const maxBytes = Buffer.byteLength(`${finalLine}\n`);
   const events = readCompactionEvents({ filePath, maxBytes });
   assert.equal(events.length, 1);
   assert.equal(events[0].phase, `review ${emoji}`);
