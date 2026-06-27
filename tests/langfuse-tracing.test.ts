@@ -169,6 +169,44 @@ return 'done'`);
   }
 });
 
+test("close force-stops active runs if they do not complete within the grace period", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-force-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          await new Promise(() => {}); // never finishes
+          return "agent-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+      shutdownGraceMs: 50,
+    });
+
+    manager.startInBackground(`export const meta = { name: 'lf_force', description: 'force stop' }
+await agent('hello', { label: 'infinite-agent' })
+return 'done'`);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await handle.close();
+
+    assert.equal(client.shutdowns, 1, "should shutdown");
+    const run = manager.listRuns()[0];
+    assert.equal(run.status, "aborted", "the run should have been force-stopped (aborted)");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("installWorkflowLangfuseTracing reports incomplete LANGFUSE env instead of silently disabling", () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-missing-"));
   try {

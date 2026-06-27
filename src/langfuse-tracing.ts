@@ -67,7 +67,7 @@ export interface WorkflowLangfuseTracingOptions {
   onError?: (message: string) => void;
   /** Autocompactor JSONL bridge. false disables file tailing; string overrides path. */
   compactionEventsPath?: string | false;
-  /** Grace period to let active background runs finish before shutdown detaches listeners. Defaults to waiting. */
+  /** Grace period to let active background runs finish before shutdown detaches listeners. Defaults to 10 seconds. */
   shutdownGraceMs?: number;
 }
 
@@ -109,7 +109,7 @@ export function installWorkflowLangfuseTracing(
           startAtEnd: true,
         });
 
-  const shutdownGraceMs = Math.max(0, options.shutdownGraceMs ?? Number.POSITIVE_INFINITY);
+  const shutdownGraceMs = Math.max(0, options.shutdownGraceMs ?? 10_000);
 
   const resolveCompactionRun = (event: CompactionTelemetryEvent, fallback?: ManagedRun) =>
     event.workflowRunId ? manager.getRun(event.workflowRunId) : fallback;
@@ -206,6 +206,14 @@ export function installWorkflowLangfuseTracing(
     flush: () => tracer.flush(),
     close: async () => {
       await waitForActiveRuns(shutdownGraceMs);
+      if (manager.hasActiveRuns()) {
+        for (const run of manager.listRuns()) {
+          if (run.status === "running" || run.status === "paused") {
+            manager.stop(run.runId);
+          }
+        }
+        await waitForActiveRuns(Math.min(1_000, shutdownGraceMs));
+      }
 
       manager.off("phase", onPhase);
       manager.off("agentStart", onAgentStart);
