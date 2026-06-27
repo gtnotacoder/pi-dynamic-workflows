@@ -9,13 +9,6 @@
       "version": "1.0.0",
       "channel": "stable"
     },
-    "surgical_pr_repair": {
-      "canonicalName": "surgical_pr_repair",
-      "aliases": ["fugu_repair"],
-      "description": "Surgical multi-agent PR repair and test alignment loop",
-      "version": "1.0.0",
-      "channel": "stable"
-    },
     "pr_adversarial_review": {
       "canonicalName": "pr_adversarial_review",
       "description": "Skeptical review of PR changes with independent reviewers and synthesis",

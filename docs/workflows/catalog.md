@@ -18,13 +18,7 @@ This catalog is the source of truth for all trusted, production-ready saved work
   * **Verifier (Big Tier):** Conducts a strict LLM evaluation of correctness and completeness. If failed, feeds back error logs to the Worker for up to 3 repair attempts.
   * **PR Delivery (Small Tier):** Pushes the branch, commits changes, and opens a draft Pull Request on GitHub.
 
-### 2. `surgical_pr_repair`
-
-* **Command:** `/surgical_pr_repair`
-* **Aliases:** `/fugu_repair` (deprecated)
-* **Description:** Specialized workflow to repair failing CI checks, compiler errors, or address review feedback within an active worktree. Focuses only on correcting the files causing failures without rewriting unaffected components.
-
-### 3. `pr_adversarial_review`
+### 2. `pr_adversarial_review`
 
 * **Command:** `/pr_adversarial_review`
 * **Description:** Skeptical multi-angle code review of PR changes.
@@ -35,12 +29,12 @@ This catalog is the source of truth for all trusted, production-ready saved work
   * **Sweep:** (At xhigh/max effort) A fresh finder hunts only for gaps and secondary footguns missed in the first pass.
   * **Synthesize:** Merges semantic duplicates, ranks findings (correctness outranks quality/conventions), and outputs a highly polished markdown report.
 
-### 4. `frontend_radix_shadcn_review`
+### 3. `frontend_radix_shadcn_review`
 
 * **Command:** `/frontend_radix_shadcn_review`
 * **Description:** FastContext-backed PR adversarial review for React, vendored `shadcn/ui` components, and `@radix-ui` primitive contracts. Focuses heavily on accessibility (a11y), prop contracts, and component behaviors.
 
-### 5. `evidence_adversarial_review`
+### 4. `evidence_adversarial_review`
 
 * **Command:** `/evidence_adversarial_review`
 * **Description:** Highly secure, source-backed adversarial review. Combines Web Search (Exa & Brave), Context7 library documentation queries, and GitHub fetch probes with a skeptical review squad to assemble a factual source ledger of evidence for/against findings.
