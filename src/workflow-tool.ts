@@ -37,7 +37,6 @@ export function modelRoutingGuideline(): string {
     "Big tier: synthesis/judgment/decision agents spanning the full context.",
     "An agent with no opts.tier and no opts.model falls back to the user's medium tier; do not rely on that — tag agents explicitly so small/big are used where they fit.",
     "If the user named a specific model, use opts.model with that exact provider/id; opts.model always takes precedence over opts.tier.",
-    "For per-agent reasoning, set opts.thinkingLevel to 'off', 'minimal', 'low', 'medium', 'high', or 'xhigh', or append the same suffix to opts.model as provider/model:high. Explicit opts.thinkingLevel overrides a model suffix.",
     list,
   ].join(" ");
 }

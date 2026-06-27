@@ -129,106 +129,131 @@ while (Object.keys(completed).length < plan.steps.length) {
     started[step.id] = true
   }
 
-  // Execute ready steps concurrently using parallel()
+  // Execute ready steps concurrently using parallel(). Branches return structured
+  // failure records instead of throwing so the aggregate error can preserve the
+  // failed step id/file plus verifier attempts and feedback.
   const parallelResults = await parallel(readySteps.map(step => async () => {
     log('${logPrefix}:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
 
-    const result = await gate(
-      async (previousFeedback, attempt) => {
-        phase('Worker')
-        let prompt = 'You are the Specialized Worker. Your sole task is to implement this specific step:\\n' +
-          'Step ID: ' + step.id + '\\n' +
-          'File: ' + step.file + '\\n' +
-          'Instructions: ' + step.instructions + '\\n' +
-          'Expected Output: ' + step.expectedOutput + '\\n\\n'
+    try {
+      const result = await gate(
+        async (previousFeedback, attempt) => {
+          phase('Worker')
+          let prompt = 'You are the Specialized Worker. Your sole task is to implement this specific step:\\n' +
+            'Step ID: ' + step.id + '\\n' +
+            'File: ' + step.file + '\\n' +
+            'Instructions: ' + step.instructions + '\\n' +
+            'Expected Output: ' + step.expectedOutput + '\\n\\n'
 
-        if (previousFeedback) {
-          prompt += '⚠️ PREVIOUS ATTEMPT FAILED verification! Correct your mistakes based on this feedback:\\n' +
-                    'Feedback:\\n' + previousFeedback + '\\n\\n' +
-                    'Attempt: #' + (attempt + 1) + '. Please fix the code and try again.'
-        } else {
-          prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
-        }
-
-        log('${logPrefix}:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
-        return await agent(prompt, {
-          label: '${labelPrefix}worker:' + step.id,
-          tier: 'medium'
-        })
-      },
-
-      async (workerResult) => {
-        phase('LocalChecks')
-        log('${logPrefix}:Verifier] Running compile & linter checks on ' + step.file + ' using small tier...')
-
-        const localChecks = await agent(
-          'Check if there are compile, type-check, or linter errors in the workspace, particularly in ' + step.file + '. Run appropriate bash commands if required to check for errors. Return a short log of results.',
-          {
-            label: '${labelPrefix}checks:' + step.id,
-            tier: 'small'
+          if (previousFeedback) {
+            prompt += '⚠️ PREVIOUS ATTEMPT FAILED verification! Correct your mistakes based on this feedback:\\n' +
+                      'Feedback:\\n' + previousFeedback + '\\n\\n' +
+                      'Attempt: #' + (attempt + 1) + '. Please fix the code and try again.'
+          } else {
+            prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
           }
-        )
 
-        phase('Verifier')
-        log('${logPrefix}:Verifier] strict LLM verification of ' + step.file + ' using big tier...')
-        const verification = await agent(
-          'Review the changes made to ' + step.file + ' for correctness and completeness.\\n' +
-          'Task requirements: ' + step.instructions + '\\n' +
-          'Expected Output: ' + step.expectedOutput + '\\n\\n' +
-          'Local check logs:\\n' + JSON.stringify(localChecks) + '\\n\\n' +
-          'Inspect the file and perform a strict evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with helpful feedback.',
-          {
-            label: '${labelPrefix}verifier:' + step.id,
-            tier: 'big',
-            schema: VERIFIER_SCHEMA
+          log('${logPrefix}:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
+          return await agent(prompt, {
+            label: '${labelPrefix}worker:' + step.id,
+            tier: 'medium'
+          })
+        },
+
+        async (workerResult) => {
+          phase('LocalChecks')
+          log('${logPrefix}:Verifier] Running compile & linter checks on ' + step.file + ' using small tier...')
+
+          const localChecks = await agent(
+            'Check if there are compile, type-check, or linter errors in the workspace, particularly in ' + step.file + '. Run appropriate bash commands if required to check for errors. Return a short log of results.',
+            {
+              label: '${labelPrefix}checks:' + step.id,
+              tier: 'small'
+            }
+          )
+
+          phase('Verifier')
+          log('${logPrefix}:Verifier] strict LLM verification of ' + step.file + ' using big tier...')
+          const verification = await agent(
+            'Review the changes made to ' + step.file + ' for correctness and completeness.\\n' +
+            'Task requirements: ' + step.instructions + '\\n' +
+            'Expected Output: ' + step.expectedOutput + '\\n\\n' +
+            'Local check logs:\\n' + JSON.stringify(localChecks) + '\\n\\n' +
+            'Inspect the file and perform a strict evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with helpful feedback.',
+            {
+              label: '${labelPrefix}verifier:' + step.id,
+              tier: 'big',
+              schema: VERIFIER_SCHEMA
+            }
+          )
+
+          if (verification && verification.passed) {
+            log('${logPrefix}:Verifier] Step ' + step.id + ' PASSED verification!')
+            return { ok: true }
+          } else {
+            const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
+            log('${logPrefix}:Verifier] Step ' + step.id + ' FAILED verification! Feedback: ' + errorFeedback)
+            return { ok: false, feedback: errorFeedback }
           }
-        )
+        },
+        { attempts: 3 }
+      )
 
-        if (verification && verification.passed) {
-          log('${logPrefix}:Verifier] Step ' + step.id + ' PASSED verification!')
-          return { ok: true }
-        } else {
-          const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
-          log('${logPrefix}:Verifier] Step ' + step.id + ' FAILED verification! Feedback: ' + errorFeedback)
-          return { ok: false, feedback: errorFeedback }
+      if (!result.ok) {
+        return {
+          ok: false,
+          stepId: step.id,
+          file: step.file,
+          attempts: result.attempts || 0,
+          feedback: result.feedback || 'Gate verification failed without feedback.'
         }
-      },
-      { attempts: 3 }
-    )
-
-    if (!result.ok) {
-      throw new Error('Step ' + step.id + ' failed verification after ' + result.attempts + ' attempts. Aborting.')
-    }
-
-    completed[step.id] = {
-      id: step.id,
-      file: step.file,
-      attemptsNeeded: result.attempts
-    }
-
-    executionState.completedSteps.push({
-      id: step.id,
-      file: step.file,
-      attemptsNeeded: result.attempts
-    })
-
-    // Write state utilizing our lightweight local check model to keep overhead very low
-    await agent(
-      'Write the following JSON to the transient file .fugu/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
-      'JSON:\\n' + JSON.stringify(executionState, null, 2),
-      {
-        label: '${labelPrefix}write-state',
-        tier: 'small'
       }
-    )
+
+      completed[step.id] = {
+        id: step.id,
+        file: step.file,
+        attemptsNeeded: result.attempts
+      }
+
+      executionState.completedSteps.push({
+        id: step.id,
+        file: step.file,
+        attemptsNeeded: result.attempts
+      })
+
+      // Write state utilizing our lightweight local check model to keep overhead very low
+      await agent(
+        'Write the following JSON to the transient file .fugu/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
+        'JSON:\\n' + JSON.stringify(executionState, null, 2),
+        {
+          label: '${labelPrefix}write-state',
+          tier: 'small'
+        }
+      )
+
+      return { ok: true, stepId: step.id, file: step.file, attempts: result.attempts }
+    } catch (error) {
+      return {
+        ok: false,
+        stepId: step.id,
+        file: step.file,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
   }))
 
   const failedParallelSteps = parallelResults
-    .map((result, index) => result === null ? readySteps[index] : null)
+    .map((result, index) => {
+      if (result === null) {
+        const step = readySteps[index]
+        return { ok: false, stepId: step.id, file: step.file, error: 'parallel branch returned null before reporting a structured error' }
+      }
+      return result && result.ok === false ? result : null
+    })
     .filter(Boolean)
 
   if (failedParallelSteps.length > 0) {
-    throw new Error('One or more parallel steps failed: ' + failedParallelSteps.map(step => step.id + ' (' + step.file + ')').join(', ') + '. Aborting Fugu execution.')
+    throw new Error('One or more parallel steps failed: ' + JSON.stringify(failedParallelSteps) + '. Aborting Fugu execution.')
   }
 }
 

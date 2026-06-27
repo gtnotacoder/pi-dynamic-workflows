@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "../src/adversarial-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "../src/deep-research.js";
-import { generateFuguWorkflow } from "../src/fugu.js";
+import { generateClosedLoopIssueDeliveryWorkflow, generateFuguWorkflow } from "../src/fugu.js";
 import { createWebTools } from "../src/web-tools.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 
@@ -20,6 +20,16 @@ test("generateFuguWorkflow produces a valid, parseable script", () => {
   assert.match(body, /fugu-pr-delivery/);
   assert.match(body, /failedParallelSteps/);
   assert.match(body, /readySteps\[index\]/);
+});
+
+test("generateClosedLoopIssueDeliveryWorkflow default path is parseable and keeps issue-delivery labels", () => {
+  const { meta, body } = parseWorkflowScript(generateClosedLoopIssueDeliveryWorkflow());
+
+  assert.equal(meta.name, "closed_loop_issue_delivery");
+  assert.match(body, /issue-delivery-thinker/);
+  assert.match(body, /issue-delivery-pr-delivery/);
+  assert.match(body, /\[IssueDelivery:Thinker\]/);
+  assert.match(body, /failedParallelSteps/);
 });
 
 test("generateFuguWorkflow rejects broad git staging and enforces scoped delivery safety", () => {

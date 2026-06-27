@@ -29,30 +29,6 @@ import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./error
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return typeof value === "string" && THINKING_LEVELS.has(value as ThinkingLevel);
-}
-
-/**
- * Split `provider/model:thinking` or `model:thinking` shorthand. Mirrors pi's CLI
- * model shorthand while preserving model ids that merely contain an unrelated colon.
- */
-export function splitModelThinkingSpec(spec: string): { modelSpec: string; thinkingLevel?: ThinkingLevel } {
-  const index = spec.lastIndexOf(":");
-  if (index > 0) {
-    const maybeLevel = spec.slice(index + 1).trim();
-    if (isThinkingLevel(maybeLevel)) {
-      const modelSpec = spec.slice(0, index).trim();
-      if (modelSpec) return { modelSpec, thinkingLevel: maybeLevel };
-    }
-  }
-  return { modelSpec: spec };
-}
-
 /**
  * Find a JSON object/array in free-form text: a fenced ```json block if present,
  * else the first balanced {...} or [...]. Best-effort (the schema check is the
@@ -279,16 +255,10 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   onUsage?: (usage: AgentUsage) => void;
   /**
    * Model spec for this subagent: either `provider/modelId` (unambiguous) or a
-   * bare `modelId`. Append `:high`/`:xhigh` etc. to set thinking for this agent.
-   * When it can't be resolved, the session default is used and a warning is logged.
-   * When omitted, the session default applies.
+   * bare `modelId`. When it can't be resolved, the session default is used and
+   * a warning is logged. When omitted, the session default applies.
    */
   model?: string;
-  /**
-   * Per-agent thinking/reasoning level. Overrides any `:level` suffix on model.
-   * Omit to inherit the session/default model's current thinking level.
-   */
-  thinkingLevel?: ThinkingLevel;
   /**
    * Model tier name (e.g. "small", "medium", "big"). When set (and no explicit
    * `model` is given), the model is resolved from the user's model-tiers.json
@@ -427,10 +397,7 @@ export class WorkflowAgent {
     // Resolve the model spec (explicit model > tier > session default). This
     // composes with phase-based routing in workflow.ts, which only supplies
     // options.model when a phase pattern matches — so an explicit model wins.
-    const rawModelSpec = resolveAgentModelSpec(options, this.mainModel);
-    const parsedModel = rawModelSpec ? splitModelThinkingSpec(rawModelSpec) : undefined;
-    const modelSpec = parsedModel?.modelSpec;
-    const thinkingLevel = isThinkingLevel(options.thinkingLevel) ? options.thinkingLevel : parsedModel?.thinkingLevel;
+    const modelSpec = resolveAgentModelSpec(options, this.mainModel);
 
     // Resolve a requested model spec to a Model object. A given-but-unresolved
     // spec falls back to the session default (with a warning) rather than failing.
@@ -517,9 +484,8 @@ export class WorkflowAgent {
       // otherwise createAgentSession builds its own DefaultResourceLoader as before.
       ...(resourceLoader ? { resourceLoader } : {}),
       ...this.sessionOptions,
-      // Per-call model/thinking wins over any sessionOptions model/thinking.
+      // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(thinkingLevel ? { thinkingLevel } : {}),
     });
 
     let removeAbortListener: (() => void) | undefined;

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
-import type { TSchema } from "typebox";
-import type { AgentUsage, ThinkingLevel } from "./agent.js";
+import type { Static, TSchema } from "typebox";
+import type { AgentRunOptions, AgentUsage } from "./agent.js";
 import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import {
@@ -88,7 +88,10 @@ export interface SharedRuntime {
 }
 
 export interface WorkflowAgentRunner {
-  run(prompt: string, options: any): Promise<unknown>;
+  run<TSchemaDef extends TSchema | undefined = undefined>(
+    prompt: string,
+    options?: AgentRunOptions<TSchemaDef>,
+  ): Promise<TSchemaDef extends TSchema ? Static<TSchemaDef> : string>;
 }
 
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
@@ -216,14 +219,11 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   schema?: TSchemaDef;
   /**
    * Run this agent on a specific model (`provider/modelId` or a bare `modelId`).
-   * Append `:high`/`:xhigh` etc. or set `thinkingLevel` for per-agent reasoning.
    * The workflow author chooses per-agent models per the routing policy in the
    * tool guidelines (e.g. a lighter model for exploration, the main model for
    * analysis). When omitted, the session's main model is used.
    */
   model?: string;
-  /** Per-agent thinking/reasoning level. Overrides any `:level` suffix on model. */
-  thinkingLevel?: ThinkingLevel;
   /**
    * Coarse model tier ("small" | "medium" | "big"), resolved from the user's
    * model-tiers config (see /workflows-models). An explicit `model` takes
@@ -662,7 +662,6 @@ export async function runWorkflow<T = unknown>(
                   signal: attemptSignal,
                   instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
                   model: modelSpec,
-                  thinkingLevel: agentOptions.thinkingLevel,
                   tier: agentOptions.tier,
                   toolNames: agentDef?.tools,
                   disallowedToolNames: agentDef?.disallowedTools,
@@ -1310,7 +1309,6 @@ function hashAgentCall(
   const identity = JSON.stringify({
     prompt,
     model: model ?? null,
-    thinkingLevel: options.thinkingLevel ?? null,
     tier: options.tier ?? null,
     phase: phase ?? null,
     agentType: options.agentType ?? null,
