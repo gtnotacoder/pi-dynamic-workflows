@@ -7,6 +7,29 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
+export {
+  checkFinalization,
+  collectFinalizationState,
+  evaluateFinalization,
+  type FinalizationInput,
+  type FinalizationShellRunner,
+  runFinalizationLoop,
+} from "./conductor-finalization.js";
+export {
+  CONDUCTOR_ACTIVE_STATUSES,
+  CONDUCTOR_ATTENTION_STATUSES,
+  CONDUCTOR_STATUS_ICONS,
+  CONDUCTOR_STATUS_LABELS,
+  CONDUCTOR_TERMINAL_STATUSES,
+  type ConductorRunStatus,
+  type ConductorStatusName,
+  conductorStatusIcon,
+  conductorStatusLabel,
+  isConductorActiveStatus,
+  isConductorAttentionStatus,
+  isConductorStatusName,
+  isConductorTerminalStatus,
+} from "./conductor-types.js";
 export * from "./config.js";
 export {
   BUILTIN_CONTEXT_MODES,
@@ -38,6 +61,7 @@ export {
   createToolUpdateWorkflowDisplay,
   createWidgetWorkflowDisplay,
   createWorkflowSnapshot,
+  formatConductorStatus,
   preview,
   recomputeWorkflowSnapshot,
   renderWorkflowLines,

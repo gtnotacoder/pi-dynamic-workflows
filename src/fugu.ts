@@ -233,10 +233,33 @@ const prResult = await agent(
 
 log('[Fugu] Pull Request creation complete! Result:\\n' + prResult)
 
+// --- Finalization gate: verify clean-committed-pushed invariants ---
+// Do not declare success if changes are dirty, uncommitted, or unpushed.
+log('[Fugu:finalization] Running finalization gate...')
+
+const finalization = await agent(
+  'You are the Fugu Finalization Agent. Verify the following invariants for the current worktree:\\n' +
+  '1. git status --porcelain must be clean (ignore .fugu/ and .fastcontext/ paths).\\n' +
+  '2. There must be at least one commit beyond the base branch (origin/main).\\n\\n' +
+  '3. The branch must be pushed to its upstream/remote.\\n\\n' +
+  'Run the necessary bash commands and return a JSON object:\\n' +
+  '{ "clean": boolean, "pushedUpstream": boolean, "commitsBeyondBase": number, "branch": "string", "details": "string" }\\n\\n' +
+  'If the branch is not pushed, run: git push -u origin <branch>\\n' +
+  'If there are uncommitted changes, run: git add -A && git commit -m "fugu: finalization commit"\\n' +
+  'After ensuring the repo is clean and pushed, return the JSON result.',
+  {
+    label: 'fugu-finalization',
+    tier: 'small'
+  }
+)
+
+log('[Fugu:finalization] Result:\\n' + finalization)
+
 return {
   success: true,
   summary: executionState.summary,
   stepsCompleted: executionState.completedSteps,
-  pr: prResult
+  pr: prResult,
+  finalization: finalization
 }`;
 }
