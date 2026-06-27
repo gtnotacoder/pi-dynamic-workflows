@@ -128,3 +128,21 @@ return { ok: res.ok, value: res.value, attempts: res.attempts, seen }`;
   assert.equal(res.result.attempts, 2);
   assert.deepEqual([...res.result.seen], ["none", "try higher"], "validator feedback is fed into the next attempt");
 });
+
+test("gate(): returns final feedback when attempts are exhausted", async () => {
+  const script = `export const meta = { name: 'g_fail', description: 'gate failure' }
+const res = await gate(
+  (_feedback, i) => i,
+  (r) => ({ ok: false, feedback: 'still failing at ' + r }),
+  { attempts: 2 },
+)
+return { ok: res.ok, value: res.value, attempts: res.attempts, feedback: res.feedback }`;
+  const res = await runWorkflow<{ ok: boolean; value: number; attempts: number; feedback: string }>(script, {
+    agent: yesAgent,
+    persistLogs: false,
+  });
+  assert.equal(res.result.ok, false);
+  assert.equal(res.result.value, 1);
+  assert.equal(res.result.attempts, 2);
+  assert.equal(res.result.feedback, "still failing at 1");
+});

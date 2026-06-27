@@ -1024,7 +1024,7 @@ export async function runWorkflow<T = unknown>(
       if (verdict?.ok) return { ok: true, value: last, attempts: i + 1 };
       feedback = verdict?.feedback; // fed into the next attempt
     }
-    return { ok: false, value: last, attempts };
+    return { ok: false, value: last, attempts, feedback };
   };
 
   // Deterministic, journaled, replayable human checkpoint. Spends no tokens, so it
