@@ -20,6 +20,33 @@ test("generateFuguWorkflow produces a valid, parseable script", () => {
   assert.match(body, /fugu-pr-delivery/);
 });
 
+test("generateFuguWorkflow rejects broad git staging and enforces scoped delivery safety", () => {
+  const { body } = parseWorkflowScript(generateFuguWorkflow());
+
+  // Regression: the generated workflow must NOT prompt agents to stage
+  // everything with broad commands like `git add -A` or `git add .`.
+  assert.doesNotMatch(body, /git\s+add\s+-A/, "body must not contain 'git add -A'");
+  assert.doesNotMatch(body, /git\s+add\s+\./, "body must not contain 'git add .'");
+
+  // Scoped-delivery safety: the PR delivery prompt must instruct agents
+  // to commit only the files explicitly listed in the Modified Files list.
+  assert.match(
+    body,
+    /only\s+stage\s+and\s+commit\s+the\s+files\s+explicitly\s+listed/i,
+    "body must instruct agents to stage and commit only explicitly listed files",
+  );
+
+  // Finalization safety: uncommitted non-transient paths must be reported
+  // rather than silently staged, committed, or pushed.
+  assert.match(
+    body,
+    /MUST\s+NOT\s+stage.*commit.*or.*push/i,
+    "body must forbid staging/committing/pushing uncommitted unlisted paths",
+  );
+  assert.match(body, /"clean"\s*:\s*false/i, "body must reference clean: false for uncommitted paths");
+  assert.match(body, /Uncommitted\s+changes\s+remain/i, "body must report uncommitted changes remain");
+});
+
 // ─── Deep Research ──────────────────────────────────────────────────────────────
 
 test("generateDeepResearchWorkflow produces a valid, parseable script", () => {

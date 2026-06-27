@@ -219,11 +219,12 @@ log('[Fugu:PR_Delivery] Initiating automatic Git branch push and Pull Request cr
 
 const prResult = await agent(
   'You are the Fugu Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
-  'Your task is to create a new Git branch, commit the changed files, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
+  'Your task is to create a new Git branch, commit ONLY the files listed in the Modified Files list below, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
   'Details of completed work:\\n' +
   'Task: "' + TASK + '"\\n' +
   'Summary of changes: ' + executionState.summary + '\\n' +
   'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
+  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .fugu/ or .fastcontext/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
   'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. fugu/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
   {
     label: 'fugu-pr-delivery',
@@ -245,8 +246,8 @@ const finalization = await agent(
   'Run the necessary bash commands and return a JSON object:\\n' +
   '{ "clean": boolean, "pushedUpstream": boolean, "commitsBeyondBase": number, "branch": "string", "details": "string" }\\n\\n' +
   'If the branch is not pushed, run: git push -u origin <branch>\\n' +
-  'If there are uncommitted changes, run: git add -A && git commit -m "fugu: finalization commit"\\n' +
-  'After ensuring the repo is clean and pushed, return the JSON result.',
+  'If non-transient uncommitted changes remain after ignoring .fugu/ and .fastcontext/ paths, you MUST NOT stage, commit, or push them. Instead, return { "clean": false, "details": "Uncommitted changes remain in: <list of non-transient dirty paths>" } so they can be followed up on.\\n' +
+  'Return the JSON result.',
   {
     label: 'fugu-finalization',
     tier: 'small'
