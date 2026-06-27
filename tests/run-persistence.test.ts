@@ -80,6 +80,23 @@ test(
     assert.equal(loaded?.agents[0].label, "agent-1");
     assert.deepEqual(loaded?.logs, ["started", "phase: Scan"]);
     assert.deepEqual(loaded?.args, { key: "value" });
+
+    const expectedPath = runStateJsonPath(workflowProjectPaths(cwd).runsDir, "roundtrip-1");
+    assert.equal(loaded?.runStatePath, expectedPath, "loaded runStatePath should match expected path");
+    try {
+      assert.equal(
+        JSON.parse(readFileSync(expectedPath, "utf-8")).runStatePath,
+        expectedPath,
+        "saved JSON should contain runStatePath",
+      );
+    } catch {
+      assert.fail("should be able to read and parse saved JSON");
+    }
+    assert.equal(
+      rp.list().find((r) => r.runId === "roundtrip-1")?.runStatePath,
+      expectedPath,
+      "list() entry should expose runStatePath",
+    );
   }),
 );
 
@@ -144,6 +161,16 @@ test(
     );
 
     assert.equal(rp.load("legacy-run")?.workflowName, "legacy");
+    assert.equal(
+      rp.load("legacy-run")?.runStatePath,
+      join(legacyRunsDir, "legacy-run.json"),
+      "loaded legacy runStatePath should match expected path",
+    );
+    assert.equal(
+      rp.list().find((run) => run.runId === "legacy-run")?.runStatePath,
+      join(legacyRunsDir, "legacy-run.json"),
+      "listed legacy run should expose the same runStatePath",
+    );
     assert.equal(
       rp.list().some((run) => run.runId === "legacy-run"),
       true,

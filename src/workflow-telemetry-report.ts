@@ -303,8 +303,7 @@ function pushRollupTable(lines: string[], rollups: Record<string, UsageRollup>):
 }
 
 function runStatePathFromRun(run: PersistedRunState): string | undefined {
-  const maybeRun = run as unknown as { runStatePath?: unknown };
-  return typeof maybeRun.runStatePath === "string" ? maybeRun.runStatePath : undefined;
+  return run.runStatePath;
 }
 
 function formatNumber(value: number): string {

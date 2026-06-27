@@ -66,6 +66,8 @@ export interface PersistedRunState {
   };
   /** Cached agent results and replay metadata, keyed by deterministic call index. */
   journal?: JournalEntry[];
+  /** Absolute path to the backing run-state JSON; synthesized on load/list. */
+  runStatePath?: string;
 }
 
 export interface RunPersistence {
@@ -214,7 +216,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
       if (!isValidRunId(state.runId)) return null;
       if (expectedRunId !== undefined && state.runId !== expectedRunId) return null;
       if (isValidRunId(fileRunId) && state.runId !== fileRunId) return null;
-      return state;
+      return { ...state, runStatePath: path };
     } catch {
       return null;
     }
@@ -226,7 +228,7 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
       ensureDir();
       state.updatedAt = new Date().toISOString();
       const path = primaryRunPath(state.runId);
-      const json = JSON.stringify(state, null, 2);
+      const json = JSON.stringify({ ...state, runStatePath: path }, null, 2);
       // Atomic write: a crash mid-write can't corrupt the live file (tmp+rename is
       // atomic on the same filesystem). A .bak from the previous good save is the
       // recovery fallback if the primary is somehow truncated.

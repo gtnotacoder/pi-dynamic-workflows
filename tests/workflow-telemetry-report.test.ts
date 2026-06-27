@@ -13,6 +13,7 @@ function sampleRun(): PersistedRunState {
     runId: "run-abc",
     workflowName: "sample_workflow",
     script: "export const meta = { name: 'sample', description: 'sample' }",
+    runStatePath: "/tmp/pi-runs/run-abc.json",
     status: "completed",
     phases: ["Review"],
     agents: [
@@ -82,6 +83,10 @@ test("buildWorkflowTelemetryReport aggregates usage and flags low-cache large ge
   assert.ok(report.anomalies.some((a) => a.kind === "context_overrun"));
   assert.equal(report.compaction.recommended, 1);
   assert.equal(report.traceLinks[0].traceId, workflowLangfuseTraceId("run-abc"));
+  assert.equal(report.traceLinks[0].runStatePath, "/tmp/pi-runs/run-abc.json");
+  const lowCacheAnomaly = report.anomalies.find((a) => a.kind === "large_low_cache" && a.agentLabel === "local finder");
+  assert.ok(lowCacheAnomaly);
+  assert.equal(lowCacheAnomaly.runStatePath, "/tmp/pi-runs/run-abc.json");
 });
 
 test("renderWorkflowTelemetryReport returns a compact human-readable report", () => {
@@ -90,4 +95,5 @@ test("renderWorkflowTelemetryReport returns a compact human-readable report", ()
   assert.match(rendered, /Workflow telemetry self-optimization report/);
   assert.match(rendered, /By model/);
   assert.match(rendered, /Trace\/run references/);
+  assert.match(rendered, /state=\/tmp\/pi-runs\/run-abc\.json/);
 });

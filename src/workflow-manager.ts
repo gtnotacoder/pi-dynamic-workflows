@@ -310,6 +310,7 @@ export class WorkflowManager extends EventEmitter {
         workflowName: parsed.meta.name,
         script,
         args,
+        runStatePath: managed.runStatePath,
         sessionId: this.sessionId,
         status: "running",
         phases: managed.snapshot.phases,
@@ -588,6 +589,7 @@ export class WorkflowManager extends EventEmitter {
         // in workflow run storage — protect via directory permissions, not blanking.
         script: managed.script,
         args: managed.args,
+        runStatePath: managed.runStatePath ?? this.runStatePathFor(managed.runId),
         sessionId: this.sessionId,
         journal: managed.journal,
         status: managed.status,
