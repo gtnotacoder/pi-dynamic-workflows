@@ -122,6 +122,53 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
   }
 });
 
+test("close waits for an active background workflow before detaching tracing listeners", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-close-"));
+  try {
+    const client = new FakeLangfuseClient();
+    let finishAgent!: () => void;
+    const agentFinished = new Promise<void>((resolve) => {
+      finishAgent = resolve;
+    });
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          await agentFinished;
+          return "agent-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+      shutdownGraceMs: 1_000,
+    });
+
+    const { promise } = manager.startInBackground(`export const meta = { name: 'lf_close', description: 'close wait' }
+await agent('hello', { label: 'slow-agent' })
+return 'done'`);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const closePromise = handle.close();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(client.shutdowns, 0, "close should not detach/shutdown while the run is still active");
+
+    finishAgent();
+    await promise;
+    await closePromise;
+
+    assert.equal(client.shutdowns, 1);
+    assert.equal(client.traces[0].spans[0].generations[0].ends.length, 1);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("installWorkflowLangfuseTracing reports incomplete LANGFUSE env instead of silently disabling", () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-missing-"));
   try {

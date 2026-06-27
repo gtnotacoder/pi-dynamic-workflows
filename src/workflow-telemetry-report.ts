@@ -7,6 +7,7 @@ import {
   summarizeCompactionEvents,
 } from "./compaction-telemetry.js";
 import { createRunPersistence, type PersistedAgentState, type PersistedRunState } from "./run-persistence.js";
+import type { JournalEntry } from "./workflow.js";
 
 export interface WorkflowTelemetryReportOptions {
   cwd?: string;
@@ -107,10 +108,12 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
       runStatePath: runStatePathFromRun(run),
     });
 
-    const journalByOrdinal = [...(run.journal ?? [])].sort((a, b) => a.index - b.index);
+    const agentJournalByOrdinal = [...(run.journal ?? [])]
+      .filter(isAgentJournalEntry)
+      .sort((a, b) => a.index - b.index);
     for (let index = 0; index < run.agents.length; index++) {
       const agent = run.agents[index];
-      const journal = journalByOrdinal[index];
+      const journal = agentJournalByOrdinal[index];
       const usage = journal?.usage;
       const model = agent.model ?? journal?.model ?? "unknown";
       const label = agent.label || "unknown";
@@ -256,6 +259,14 @@ function matchesRun(run: PersistedRunState, options: WorkflowTelemetryReportOpti
 
 function emptyRollup(): UsageRollup {
   return { calls: 0, input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, cost: 0, cacheReadPct: 0 };
+}
+
+function isAgentJournalEntry(entry: JournalEntry): boolean {
+  // checkpoint() uses the same call sequence/journal array as agent(), but it
+  // has no model/token/usage metadata and no matching persisted agent row.
+  // Filter it out before ordinal matching so agent A -> checkpoint -> agent B
+  // attributes B's usage to B, not to the checkpoint entry.
+  return Boolean(entry.model || entry.usage || entry.tokens !== undefined);
 }
 
 function usageFromAgentFallback(agent: PersistedAgentState): AgentUsage | undefined {

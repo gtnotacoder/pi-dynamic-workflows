@@ -89,6 +89,38 @@ test("buildWorkflowTelemetryReport aggregates usage and flags low-cache large ge
   assert.equal(lowCacheAnomaly.runStatePath, "/tmp/pi-runs/run-abc.json");
 });
 
+test("buildWorkflowTelemetryReport skips checkpoint journal entries when matching agent usage", () => {
+  const run = sampleRun();
+  run.agents = [
+    { id: 1, label: "agent A", prompt: "a", status: "done", model: "m/a" },
+    { id: 2, label: "agent B", prompt: "b", status: "done", model: "m/b" },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "agent-a",
+      result: "a",
+      model: "m/a",
+      usage: { input: 10, output: 1, total: 11, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    },
+    { index: 1, hash: "checkpoint", result: "approved" },
+    {
+      index: 2,
+      hash: "agent-b",
+      result: "b",
+      model: "m/b",
+      usage: { input: 20, output: 2, total: 22, cacheRead: 5, cacheWrite: 0, cost: 0 },
+    },
+  ];
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: [], lowCacheInputThreshold: 1_000 });
+
+  assert.equal(report.byAgentLabel["agent A"].input, 10);
+  assert.equal(report.byAgentLabel["agent B"].input, 20);
+  assert.equal(report.byModel["m/b"].cacheRead, 5);
+  assert.equal(report.totals.input, 30);
+});
+
 test("renderWorkflowTelemetryReport returns a compact human-readable report", () => {
   const report = buildWorkflowTelemetryReport({ runs: [sampleRun()], compactionEvents: [] });
   const rendered = renderWorkflowTelemetryReport(report);
