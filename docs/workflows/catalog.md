@@ -44,10 +44,10 @@ over the prototype default when a saved workflow exposes them.
 | Canonical | Legacy aliases | Kind | Source | Status | Notes |
 |---|---|---|---|---|---|
 | `/issue-delivery` | `/fugu` | built-in command | `src/issue-delivery.ts` | active | DAG issue-to-draft-PR workflow. `/fugu` remains a deprecated alias. Supports the ad-hoc `--prototype` lane. |
-| `/closed_loop_issue_delivery` | `/fugu_closed_loop` | saved workflow | `~/.pi/workflows/saved/fugu_closed_loop.json` until migrated | planned | Should remain issue/plan driven and pass `prototype=true` only for explicit harness smoke runs. |
-| `/surgical_pr_repair` | `/fugu_repair` | saved workflow | `~/.pi/workflows/saved/fugu_repair.json` until migrated | planned | Repair loop for existing PR/worktree failures. |
-| `/pr_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/pr_adversarial_review.json` | active | Already exposes `reviewDepth`, `maxWaves`, `maxCandidates`, `externalEvidence`, `useGemini`, `commentPolicy`; add `prototype=true` mapping for ad-hoc smoke reviews. |
-| `/workflow_trace_analyzer` | `/workflow_trace_analyser` | saved workflow | `~/.pi/workflows/saved/workflow_trace_analyser.json` until migrated | planned | Prefer American spelling for new canonical name; keep installed alias. |
+| `/closed_loop_issue_delivery` | `/fugu_closed_loop` | saved workflow | `~/.pi/workflows/saved/closed_loop_issue_delivery.json` | active | Issue/plan-driven closed-loop delivery. Accepts `prototype=true` only for explicit harness smoke runs; legacy `/fugu_closed_loop` remains installed. |
+| `/surgical_pr_repair` | `/fugu_repair` | saved workflow | `~/.pi/workflows/saved/surgical_pr_repair.json` | active | Repair loop for existing PR/worktree failures; legacy `/fugu_repair` remains installed. |
+| `/pr_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/pr_adversarial_review.json` | active | Exposes detailed knobs plus `prototype=true` mapping for ad-hoc smoke reviews. Explicit `reviewDepth`, `maxWaves`, `maxCandidates`, `externalEvidence`, `useGemini`, and `commentPolicy` still override defaults. |
+| `/workflow_trace_analyzer` | `/workflow_trace_analyser` | saved workflow | `~/.pi/workflows/saved/workflow_trace_analyzer.json` | active | American-spelled canonical trace analyzer; legacy `/workflow_trace_analyser` remains installed. |
 | `/evidence_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/evidence_adversarial_review.json` | active | Source-backed adversarial validation. |
 | `/frontend_radix_shadcn_review` | — | saved workflow | `~/.pi/workflows/saved/frontend_radix_shadcn_review.json` | active | Frontend-specific review harness. |
 

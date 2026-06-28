@@ -20,25 +20,25 @@
       "canonicalName": "closed_loop_issue_delivery",
       "command": "/closed_loop_issue_delivery",
       "kind": "saved-workflow",
-      "source": "~/.pi/workflows/saved/fugu_closed_loop.json",
+      "source": "~/.pi/workflows/saved/closed_loop_issue_delivery.json",
       "sha256": null,
       "aliases": ["/fugu_closed_loop"],
       "replaces": ["fugu_closed_loop"],
-      "channel": "planned",
+      "channel": "active",
       "supportsPrototypeLane": true,
-      "notes": "Pending saved-workflow rename/wrapper; prototype=true should be reserved for explicit harness smoke runs. Normal use remains issue/plan driven."
+      "notes": "Canonical saved workflow is installed. prototype=true is reserved for explicit harness smoke runs. Normal use remains issue/plan driven."
     },
     {
       "canonicalName": "surgical_pr_repair",
       "command": "/surgical_pr_repair",
       "kind": "saved-workflow",
-      "source": "~/.pi/workflows/saved/fugu_repair.json",
+      "source": "~/.pi/workflows/saved/surgical_pr_repair.json",
       "sha256": null,
       "aliases": ["/fugu_repair"],
       "replaces": ["fugu_repair"],
-      "channel": "planned",
+      "channel": "active",
       "supportsPrototypeLane": false,
-      "notes": "Pending saved-workflow rename/wrapper. Repair should usually run only after an official review finding exists."
+      "notes": "Canonical saved workflow is installed. Repair should usually run only after an official review finding exists."
     },
     {
       "canonicalName": "pr_adversarial_review",
@@ -49,18 +49,18 @@
       "aliases": [],
       "channel": "active",
       "supportsPrototypeLane": true,
-      "notes": "Already exposes detailed review-depth knobs; add prototype=true mapping for ad-hoc smoke reviews."
+      "notes": "Exposes detailed review-depth knobs plus prototype=true mapping for ad-hoc smoke reviews. Explicit knobs override prototype defaults."
     },
     {
       "canonicalName": "workflow_trace_analyzer",
       "command": "/workflow_trace_analyzer",
       "kind": "saved-workflow",
-      "source": "~/.pi/workflows/saved/workflow_trace_analyser.json",
+      "source": "~/.pi/workflows/saved/workflow_trace_analyzer.json",
       "sha256": null,
       "aliases": ["/workflow_trace_analyser"],
       "replaces": ["workflow_trace_analyser"],
-      "channel": "planned",
-      "notes": "Prefer analyzer spelling for new canonical name; keep analyser alias because it is already installed."
+      "channel": "active",
+      "notes": "Prefer analyzer spelling for canonical name; keep analyser alias because it is already installed."
     }
   ]
 }
