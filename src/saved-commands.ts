@@ -84,7 +84,21 @@ export function registerSavedWorkflow(
   manager?: WorkflowManager,
   exists?: () => boolean,
 ): void {
-  if (isRegistered(pi, wf.name)) return;
+  if (isRegistered(pi, wf.name)) {
+    // Collision policy: builtins register first, saved workflows register
+    // second. A saved workflow whose name collides with an existing command
+    // is skipped (not silently shadowed) and the user gets a deterministic
+    // warning suggesting they rename the saved workflow. Registration stays
+    // non-blocking: pi.sendMessage is optional in the type and may be absent
+    // in minimal test doubles, so guard defensively.
+    const msg = {
+      customType: "workflow:saved-command-collision",
+      content: `Saved workflow /${wf.name} was not registered because a command with that name already exists. Rename the saved workflow to avoid the collision.`,
+      display: true,
+    };
+    void pi.sendMessage?.(msg);
+    return;
+  }
   pi.registerCommand(wf.name, {
     description: describeSavedWorkflowCommand(wf),
     async handler(args: string, ctx: ExtensionCommandContext) {

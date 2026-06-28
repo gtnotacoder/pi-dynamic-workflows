@@ -71,9 +71,12 @@ test("evaluateFinalization: dirty worktree → needs-finalize", () => {
   assert.match(r.nextAction, /Commit or stash/);
 });
 
-test("evaluateFinalization: transient .fugu/ and .fastcontext/ paths are ignored", () => {
+test("evaluateFinalization: transient issue-delivery, legacy .fugu/, and .fastcontext/ paths are ignored", () => {
   const r = evaluateFinalization(
-    cleanInput({ porcelain: "?? .fugu/run-30/state.json\n?? .fastcontext/trajectory.jsonl\n" }),
+    cleanInput({
+      porcelain:
+        "?? .issue-delivery/run-30/status.json\n?? .fugu/run-30/state.json\n?? .fastcontext/trajectory.jsonl\n",
+    }),
   );
   assert.equal(r.status, "completed");
 });

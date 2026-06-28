@@ -21,6 +21,14 @@ async function load() {
   return import("../src/saved-commands.js");
 }
 
+function parseInlineArgsReport(content: string | undefined): { _?: string; _raw?: string; mode?: string } {
+  try {
+    return JSON.parse(content ?? "{}") as { _?: string; _raw?: string; mode?: string };
+  } catch (error) {
+    assert.fail(`expected inline workflow report to be valid JSON: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 describe("parseCommandArgs", () => {
   it("parses key=value pairs", async () => {
     const { parseCommandArgs } = await load();
@@ -233,7 +241,7 @@ describe("registerSavedWorkflow", () => {
     }
 
     assert.equal(sent.length, 1, "inline fallback should deliver exactly one result message");
-    const payload = JSON.parse(sent[0].content ?? "{}") as { _?: string; _raw?: string; mode?: string };
+    const payload = parseInlineArgsReport(sent[0].content);
     assert.equal(
       payload._,
       "review the auth module",
@@ -250,6 +258,31 @@ describe("registerSavedWorkflow", () => {
 
     registerSavedWorkflow(pi, "/cwd", wf);
     assert.equal(commands.length, 0, "should not re-register when already present");
+  });
+
+  it("skips a saved workflow whose name collides with an existing command and warns the user", async () => {
+    const { registerSavedWorkflow } = await load();
+    // Pretend a builtin/reserved command named `fugu` is already registered.
+    const { pi, commands, sent } = makeCommandRegistryPi(["fugu"]);
+    const wf = savedWorkflow({
+      name: "fugu",
+      script: "export const meta = { name: 't', description: 't' };",
+    });
+
+    registerSavedWorkflow(pi, "/cwd", wf);
+
+    // No command is registered — the collision is NOT silently shadowed.
+    assert.equal(commands.length, 0, "colliding saved workflow must not be registered as a command");
+
+    // A deterministic warning message is delivered so the user knows it was skipped.
+    assert.equal(sent.length, 1, "exactly one collision warning should be sent");
+    assert.equal(sent[0].customType, "workflow:saved-command-collision");
+    assert.match(
+      sent[0].content ?? "",
+      /\/fugu.*already exists/i,
+      "warning should explain /fugu already exists and the saved workflow was skipped",
+    );
+    assert.match(sent[0].content ?? "", /rename/i, "warning should suggest renaming the saved workflow");
   });
 
   it("registers multiple saved workflows", async () => {

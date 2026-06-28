@@ -17,7 +17,9 @@
   "files": [
     "dist/",
     "docs/**/*.md",
+    "docs/**/*.json",
     "extensions/",
+    "scripts/",
     "src/",
     "CHANGELOG.md",
     "PROVENANCE.md",
@@ -28,6 +30,7 @@
     "test": "npm run check && npm run build && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
     "check": "biome check .",
+    "check:workflow-lock": "node scripts/check-workflow-lock.mjs",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "build": "tsc",

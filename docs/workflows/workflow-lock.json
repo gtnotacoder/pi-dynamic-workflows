@@ -1,0 +1,91 @@
+{
+  "schema": "pi-dynamic-workflows.workflow-lock.v1",
+  "generatedAt": "2026-06-28",
+  "mode": "warning",
+  "collisionPolicy": {
+    "registrationOrder": ["builtin-command", "saved-workflow"],
+    "savedWorkflowCommandCollision": "skip-and-warn",
+    "aliasCollisionSeverity": "warning"
+  },
+  "entries": [
+    {
+      "canonicalName": "issue-delivery",
+      "command": "/issue-delivery",
+      "kind": "builtin-command",
+      "source": "src/issue-delivery.ts",
+      "sha256": "5fe9267531fe3eafd2de69fd9321dfa9154b33e1d37866e92a08d0321ab3ffc2",
+      "aliases": ["/fugu"],
+      "replaces": ["fugu"],
+      "channel": "active",
+      "version": "0.1.7",
+      "supportsPrototypeLane": true,
+      "notes": "Legacy /fugu is registered as a deprecated alias to the canonical generated workflow."
+    },
+    {
+      "canonicalName": "closed_loop_issue_delivery",
+      "command": "/closed_loop_issue_delivery",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/closed_loop_issue_delivery.json",
+      "sha256": null,
+      "aliases": ["/fugu_closed_loop"],
+      "replaces": ["fugu_closed_loop"],
+      "channel": "active",
+      "supportsPrototypeLane": true,
+      "notes": "Canonical saved workflow is installed. prototype=true is reserved for explicit harness smoke runs. Normal use remains issue/plan driven."
+    },
+    {
+      "canonicalName": "surgical_pr_repair",
+      "command": "/surgical_pr_repair",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/surgical_pr_repair.json",
+      "sha256": null,
+      "aliases": ["/fugu_repair"],
+      "replaces": ["fugu_repair"],
+      "channel": "active",
+      "supportsPrototypeLane": false,
+      "notes": "Canonical saved workflow is installed. Repair should usually run only after an official review finding exists."
+    },
+    {
+      "canonicalName": "pr_adversarial_review",
+      "command": "/pr_adversarial_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/pr_adversarial_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "supportsPrototypeLane": true,
+      "notes": "Exposes detailed review-depth knobs plus prototype=true mapping for ad-hoc smoke reviews. Explicit knobs override prototype defaults."
+    },
+    {
+      "canonicalName": "workflow_trace_analyzer",
+      "command": "/workflow_trace_analyzer",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/workflow_trace_analyzer.json",
+      "sha256": null,
+      "aliases": ["/workflow_trace_analyser"],
+      "replaces": ["workflow_trace_analyser"],
+      "channel": "active",
+      "notes": "Prefer analyzer spelling for canonical name; keep analyser alias because it is already installed."
+    },
+    {
+      "canonicalName": "evidence_adversarial_review",
+      "command": "/evidence_adversarial_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/evidence_adversarial_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "notes": "Source-backed adversarial validation saved workflow. Recorded for operator visibility; external saved workflow contents are local installation state."
+    },
+    {
+      "canonicalName": "frontend_radix_shadcn_review",
+      "command": "/frontend_radix_shadcn_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/frontend_radix_shadcn_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "notes": "Frontend-specific review saved workflow. Recorded for operator visibility; external saved workflow contents are local installation state."
+    }
+  ]
+}

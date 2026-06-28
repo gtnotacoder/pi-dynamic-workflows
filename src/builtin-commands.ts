@@ -1,5 +1,5 @@
 /**
- * Bundled workflow commands: `/deep-research`, `/adversarial-review`, `/code-review`, and `/fugu`.
+ * Bundled workflow commands: `/deep-research`, `/adversarial-review`, `/code-review`, `/issue-delivery`, and `/fugu`.
  * They run a generated workflow script and print the final report.
  */
 
@@ -12,7 +12,7 @@ import {
 import { generateAdversarialReviewWorkflow, parseAdversarialReviewArgs } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
-import { generateFuguWorkflow } from "./fugu.js";
+import { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
@@ -55,6 +55,44 @@ function adversarialReviewTools(cwd: string, evidenceComponents: string[]): Work
     tools.push(createWebFetchTool());
   }
   return tools;
+}
+
+function parseBooleanFlag(value: string | undefined): boolean {
+  if (value === undefined || value === "") return true;
+  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+function extractPrototypeFlag(raw: string): { prototype: boolean; rest: string } {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  const keep: string[] = [];
+  let prototype = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--prototype") {
+      prototype = true;
+      continue;
+    }
+    if (token === "--no-prototype") {
+      prototype = false;
+      continue;
+    }
+    if (token.startsWith("--prototype=")) {
+      prototype = parseBooleanFlag(token.slice("--prototype=".length));
+      continue;
+    }
+    if (token.startsWith("prototype=")) {
+      prototype = parseBooleanFlag(token.slice("prototype=".length));
+      continue;
+    }
+    keep.push(token);
+  }
+  return { prototype, rest: keep.join(" ") };
+}
+
+function buildIssueDeliveryArgs(rest: string): { task: string; prototype?: boolean } {
+  const parsed = extractPrototypeFlag(rest);
+  const task = parsed.rest.trim();
+  return parsed.prototype ? { task, prototype: true } : { task };
 }
 
 export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
@@ -153,47 +191,61 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
     });
   }
 
-  if (!alreadyRegistered(pi, "fugu")) {
-    pi.registerCommand("fugu", {
-      description: "Autonomous Fugu issue-to-PR workflow: plan, edit, verify, and open a draft PR",
+  const registerIssueDelivery = (commandName: "issue-delivery" | "fugu", deprecated = false) => {
+    if (alreadyRegistered(pi, commandName)) return;
+    pi.registerCommand(commandName, {
+      description: deprecated
+        ? "Deprecated alias for /issue-delivery: autonomous issue-to-PR workflow"
+        : "Autonomous Issue Delivery workflow: plan, edit, verify, and open a draft PR",
       async handler(args: string, ctx: ExtensionCommandContext) {
         const { mode, rest } = extractModeFlag(args);
-        const task = rest.trim();
-        if (!task) return ctx.ui.notify("Usage: /fugu [--mode <name>] <task or issue>", "warning");
-        const workflowArgs = { task };
-        ctx.ui.notify("Fugu running — thinking, working, verifying, then shipping a draft PR…", "info");
+        const workflowArgs = buildIssueDeliveryArgs(rest);
+        if (!workflowArgs.task) {
+          return ctx.ui.notify(`Usage: /${commandName} [--mode <name>] [--prototype] <task or issue>`, "warning");
+        }
+        if (deprecated) {
+          ctx.ui.notify("/fugu is deprecated; use /issue-delivery for new runs.", "warning");
+        }
+        const prototypeText = workflowArgs.prototype ? " (prototype lane)" : "";
+        ctx.ui.notify(
+          `Issue Delivery running${prototypeText} — thinking, working, verifying, then shipping a draft PR…`,
+          "info",
+        );
         try {
           if (opts.manager) {
-            const { runId, promise } = opts.manager.startInBackground(generateFuguWorkflow(), workflowArgs, {
+            const { runId, promise } = opts.manager.startInBackground(generateIssueDeliveryWorkflow(), workflowArgs, {
               contextMode: mode,
             });
-            ctx.ui.setStatus("fugu", `fugu running (${runId})`);
-            void promise.finally(() => ctx.ui.setStatus("fugu", undefined)).catch(() => {});
+            ctx.ui.setStatus(commandName, `${commandName} running (${runId})`);
+            void promise.finally(() => ctx.ui.setStatus(commandName, undefined)).catch(() => {});
             await pi.sendMessage({
-              customType: "fugu:started",
-              content: backgroundStartedText("fugu", runId, opts.manager.getRun(runId)?.transcriptDir),
+              customType: `${commandName}:started`,
+              content: backgroundStartedText(commandName, runId, opts.manager.getRun(runId)?.transcriptDir),
               display: true,
             });
             return;
           }
 
-          const result = await runWorkflow(generateFuguWorkflow(), {
+          const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
             cwd,
             args: workflowArgs,
             tools: createCodingTools(cwd),
             contextMode: mode,
             contextModeRegistry: buildRegistryForCwd(cwd),
-            onPhase: (title) => ctx.ui.setStatus("fugu", `fugu: ${title}`),
+            onPhase: (title) => ctx.ui.setStatus(commandName, `${commandName}: ${title}`),
           });
-          ctx.ui.setStatus("fugu", undefined);
-          await pi.sendMessage({ customType: "fugu", content: reportText(result), display: true });
+          ctx.ui.setStatus(commandName, undefined);
+          await pi.sendMessage({ customType: commandName, content: reportText(result), display: true });
         } catch (error) {
-          ctx.ui.setStatus("fugu", undefined);
-          ctx.ui.notify(`fugu failed: ${error instanceof Error ? error.message : error}`, "error");
+          ctx.ui.setStatus(commandName, undefined);
+          ctx.ui.notify(`/${commandName} failed: ${error instanceof Error ? error.message : error}`, "error");
         }
       },
     });
-  }
+  };
+
+  registerIssueDelivery("issue-delivery");
+  registerIssueDelivery("fugu", true);
 
   if (!alreadyRegistered(pi, "code-review")) {
     pi.registerCommand("code-review", {

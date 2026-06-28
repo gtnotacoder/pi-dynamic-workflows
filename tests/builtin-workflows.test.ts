@@ -3,29 +3,36 @@ import test from "node:test";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "../src/adversarial-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "../src/deep-research.js";
 import { generateFuguWorkflow } from "../src/fugu.js";
+import { generateIssueDeliveryWorkflow } from "../src/issue-delivery.js";
 import { createWebTools } from "../src/web-tools.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 
-// ─── Fugu ──────────────────────────────────────────────────────────────────────
+// ─── Issue Delivery / Fugu compatibility ──────────────────────────────────────
 
-test("generateFuguWorkflow produces a valid, parseable script", () => {
-  const { meta, body } = parseWorkflowScript(generateFuguWorkflow());
-  assert.equal(meta.name, "fugu");
+test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
+  const { meta, body } = parseWorkflowScript(generateIssueDeliveryWorkflow());
+  assert.equal(meta.name, "issue_delivery");
   assert.deepEqual(
     meta.phases?.map((p) => p.title),
     ["Scout", "Thinker", "Worker", "LocalChecks", "Verifier", "Telemetry"],
   );
   assert.match(body, /Directed Acyclic Graph/);
   assert.match(body, /parallel\(/);
-  assert.match(body, /fugu-pr-delivery/);
+  assert.match(body, /issue-pr-delivery/);
   assert.match(body, /fastcontext-scout/);
   assert.match(body, /stageCheck\(/);
   assert.match(body, /compactFeedback\(/);
+  assert.match(body, /PROTOTYPE_LANE/);
+  assert.match(body, /WORKER_ATTEMPTS/);
   assert.doesNotMatch(body, /fugu-checks:/, "host-side stageCheck replaces the old LocalChecks LLM agent");
 });
 
-test("generateFuguWorkflow rejects broad git staging and enforces scoped delivery safety", () => {
-  const { body } = parseWorkflowScript(generateFuguWorkflow());
+test("generateFuguWorkflow remains a compatibility alias for issue delivery", () => {
+  assert.equal(generateFuguWorkflow(), generateIssueDeliveryWorkflow());
+});
+
+test("generateIssueDeliveryWorkflow rejects broad git staging and enforces scoped delivery safety", () => {
+  const { body } = parseWorkflowScript(generateIssueDeliveryWorkflow());
 
   // Regression: the generated workflow must NOT prompt agents to stage
   // everything with broad commands like `git add -A` or `git add .`.

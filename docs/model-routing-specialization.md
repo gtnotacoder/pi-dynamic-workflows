@@ -53,7 +53,7 @@ We have defined four distinct model tiers, each mapped to its ideal execution sw
 
 * **Sweet Spot:** Processing extremely large, verbose log files, analyzing trace persistence JSONs, compiling post-mortem summaries, and synthesizing multi-agent outputs.
 * **Why it shines here:** GPT Spark has a generous, underutilized allotment, parses and structures large JSON datasets at incredibly high speeds, and has the logical capacity to detect anomalies, caching ratios, and duration bottlenecks.
-* **Action:** Locked in for telemetry analysis, trace optimization reports (`workflow_trace_analyser`), and cross-agent synthesis/reporting.
+* **Action:** Locked in for telemetry analysis, trace optimization reports (`workflow_trace_analyzer`; legacy `workflow_trace_analyser` remains an alias), and cross-agent synthesis/reporting.
 
 ### C. GLM-5.2 (`litellm-ny2/oc-glm52`) — *The Heavy Coding Worker*
 
@@ -107,7 +107,7 @@ To maintain absolute, un-compromised code quality while preserving our weekly bu
 
 ## 5. Dynamic Gated Escalation (Cascading Model Routing)
 
-To maximize our use of **local Qwen** (`litellm-ny2/local-qwen27`), we establish a **Cascading Model Routing** pattern within our closed-loop execution engines (like Fugu/issue-delivery-closed-loop or closed-loop repair).
+To maximize our use of **local Qwen** (`litellm-ny2/local-qwen27`), we establish a **Cascading Model Routing** pattern within our closed-loop execution engines (like Issue Delivery, closed-loop issue delivery, and surgical PR repair).
 
 Our testing demonstrates that local Qwen achieves the same functional scores on baseline coding tasks as GLM-5.2 while costing zero premium tokens and executing with local-net speed. Therefore, we default our implementation (Worker) pass to **local Qwen**, and escalate only when necessary.
 
