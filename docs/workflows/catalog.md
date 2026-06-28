@@ -51,6 +51,20 @@ over the prototype default when a saved workflow exposes them.
 | `/evidence_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/evidence_adversarial_review.json` | active | Source-backed adversarial validation. |
 | `/frontend_radix_shadcn_review` | — | saved workflow | `~/.pi/workflows/saved/frontend_radix_shadcn_review.json` | active | Frontend-specific review harness. |
 
+## Drift check
+
+Run the warning-mode lock checker after changing workflow names, aliases, or
+repo-local workflow sources:
+
+```text
+npm run check:workflow-lock
+```
+
+It validates lock shape, duplicate commands, alias metadata, and sha256 drift for
+repo-local sources. External saved workflows under `~/.pi/workflows/saved/` are
+recorded for operator visibility but are warning-only because they are local
+installation state.
+
 ## Migration guardrails
 
 1. Add canonical commands before deleting legacy names.
