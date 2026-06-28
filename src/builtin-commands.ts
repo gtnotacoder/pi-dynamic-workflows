@@ -57,33 +57,42 @@ function adversarialReviewTools(cwd: string, evidenceComponents: string[]): Work
   return tools;
 }
 
-function extractProfileFlag(raw: string): { profile?: string; rest: string } {
+function parseBooleanFlag(value: string | undefined): boolean {
+  if (value === undefined || value === "") return true;
+  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+function extractPrototypeFlag(raw: string): { prototype: boolean; rest: string } {
   const tokens = raw.trim().split(/\s+/).filter(Boolean);
   const keep: string[] = [];
-  let profile: string | undefined;
+  let prototype = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token === "--profile" || token === "--intensity") {
-      profile = tokens[++i];
+    if (token === "--prototype") {
+      prototype = true;
       continue;
     }
-    if (token.startsWith("--profile=") || token.startsWith("--intensity=")) {
-      profile = token.slice(token.indexOf("=") + 1);
+    if (token === "--no-prototype") {
+      prototype = false;
       continue;
     }
-    if (token.startsWith("profile=") || token.startsWith("intensity=")) {
-      profile = token.slice(token.indexOf("=") + 1);
+    if (token.startsWith("--prototype=")) {
+      prototype = parseBooleanFlag(token.slice("--prototype=".length));
+      continue;
+    }
+    if (token.startsWith("prototype=")) {
+      prototype = parseBooleanFlag(token.slice("prototype=".length));
       continue;
     }
     keep.push(token);
   }
-  return { profile, rest: keep.join(" ") };
+  return { prototype, rest: keep.join(" ") };
 }
 
-function buildIssueDeliveryArgs(rest: string): { task: string; profile?: string } {
-  const parsed = extractProfileFlag(rest);
+function buildIssueDeliveryArgs(rest: string): { task: string; prototype?: boolean } {
+  const parsed = extractPrototypeFlag(rest);
   const task = parsed.rest.trim();
-  return parsed.profile ? { task, profile: parsed.profile } : { task };
+  return parsed.prototype ? { task, prototype: true } : { task };
 }
 
 export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
@@ -192,17 +201,14 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         const { mode, rest } = extractModeFlag(args);
         const workflowArgs = buildIssueDeliveryArgs(rest);
         if (!workflowArgs.task) {
-          return ctx.ui.notify(
-            `Usage: /${commandName} [--mode <name>] [--profile prototype|standard|deep|paranoid] <task or issue>`,
-            "warning",
-          );
+          return ctx.ui.notify(`Usage: /${commandName} [--mode <name>] [--prototype] <task or issue>`, "warning");
         }
         if (deprecated) {
           ctx.ui.notify("/fugu is deprecated; use /issue-delivery for new runs.", "warning");
         }
-        const profileText = workflowArgs.profile ? ` (${workflowArgs.profile} profile)` : "";
+        const prototypeText = workflowArgs.prototype ? " (prototype lane)" : "";
         ctx.ui.notify(
-          `Issue Delivery running${profileText} — thinking, working, verifying, then shipping a draft PR…`,
+          `Issue Delivery running${prototypeText} — thinking, working, verifying, then shipping a draft PR…`,
           "info",
         );
         try {

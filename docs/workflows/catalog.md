@@ -18,30 +18,35 @@ say what the workflow does.
 Legacy names stay as compatibility aliases for one migration window and should
 warn or document that they are deprecated.
 
-## Operator intensity profiles
+## Prototype / ad-hoc operating lane
 
-Intensity controls breadth/cost. It must not weaken read-only/edit boundaries or
+The normal production path is issue/plan driven: a GitHub issue has an associated
+plan markdown file, the closed-loop delivery workflow executes that plan, and PR
+review/repair gates validate the result. Do not turn this into a broad
+"intensity ladder" for normal work.
+
+`prototype` is a separate ad-hoc lane for harness development, smoke tests, and
+small repo-local experiments that are not yet worth formalizing as an issue plan.
+It controls breadth/cost only. It must not weaken read-only/edit boundaries or
 context security posture; use `--mode focused|scoped|isolated|legacy` for context
 posture.
 
-| Profile | Aliases | Purpose | Default mapping |
+| Lane | Invocation | Purpose | Mapping |
 |---|---|---|---|
-| `prototype` | `minimal`, `quick` | Harness development, smoke tests, naming/catalog migration, low-risk experiments | quick depth, one wave, low candidate cap, external evidence off, Gemini/second-family passes off, no PR comments, limited repair/fix rounds |
-| `standard` | `normal` | Normal issue delivery / PR review | existing adaptive defaults |
-| `deep` | — | Important production changes | broader waves/refuters; external evidence for dependency/API/cloud/security surfaces |
-| `paranoid` | — | High-risk/security/release gates | maximum depth, wider model diversity, stricter verification/report artifacts |
+| Plan-driven | issue + plan markdown through closed-loop delivery | Normal feature/bug delivery | Existing adaptive review/repair defaults. |
+| Prototype/ad-hoc | `/issue-delivery --prototype ...` or saved workflow `prototype=true` | Harness development and small experiments | Fewer retries/reviewers, lower verifier tier where safe, no PR comments unless explicitly requested. |
 
-Saved workflows should accept `profile=` or `intensity=`. Explicit detailed knobs
-(`reviewDepth=`, `maxWaves=`, `useGemini=`, etc.) win over profile defaults.
+Explicit detailed knobs (`reviewDepth=`, `maxWaves=`, `useGemini=`, etc.) still win
+over the prototype default when a saved workflow exposes them.
 
 ## Canonical workflows
 
 | Canonical | Legacy aliases | Kind | Source | Status | Notes |
 |---|---|---|---|---|---|
-| `/issue-delivery` | `/fugu` | built-in command | `src/issue-delivery.ts` | active | DAG issue-to-draft-PR workflow. `/fugu` remains a deprecated alias. Supports `--profile prototype|standard|deep|paranoid`. |
-| `/closed_loop_issue_delivery` | `/fugu_closed_loop` | saved workflow | `~/.pi/workflows/saved/fugu_closed_loop.json` until migrated | planned | Should pass profile/intensity through to PR review/repair/CI children. |
+| `/issue-delivery` | `/fugu` | built-in command | `src/issue-delivery.ts` | active | DAG issue-to-draft-PR workflow. `/fugu` remains a deprecated alias. Supports the ad-hoc `--prototype` lane. |
+| `/closed_loop_issue_delivery` | `/fugu_closed_loop` | saved workflow | `~/.pi/workflows/saved/fugu_closed_loop.json` until migrated | planned | Should remain issue/plan driven and pass `prototype=true` only for explicit harness smoke runs. |
 | `/surgical_pr_repair` | `/fugu_repair` | saved workflow | `~/.pi/workflows/saved/fugu_repair.json` until migrated | planned | Repair loop for existing PR/worktree failures. |
-| `/pr_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/pr_adversarial_review.json` | active | Already exposes `reviewDepth`, `maxWaves`, `maxCandidates`, `externalEvidence`, `useGemini`, `commentPolicy`; add `profile=` wrapper mapping. |
+| `/pr_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/pr_adversarial_review.json` | active | Already exposes `reviewDepth`, `maxWaves`, `maxCandidates`, `externalEvidence`, `useGemini`, `commentPolicy`; add `prototype=true` mapping for ad-hoc smoke reviews. |
 | `/workflow_trace_analyzer` | `/workflow_trace_analyser` | saved workflow | `~/.pi/workflows/saved/workflow_trace_analyser.json` until migrated | planned | Prefer American spelling for new canonical name; keep installed alias. |
 | `/evidence_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/evidence_adversarial_review.json` | active | Source-backed adversarial validation. |
 | `/frontend_radix_shadcn_review` | — | saved workflow | `~/.pi/workflows/saved/frontend_radix_shadcn_review.json` | active | Frontend-specific review harness. |
@@ -53,6 +58,6 @@ Saved workflows should accept `profile=` or `intensity=`. Explicit detailed knob
 3. New docs and trace metadata should use canonical names.
 4. Keep transient `.fugu/` ignored until old worktrees age out; new built-ins use
    `.issue-delivery/`.
-5. Use `profile=prototype` / `--profile prototype` for harness prototyping runs
-   so the review system does not spend deep-gate effort on naming/catalog smoke
-   tests.
+5. Use `prototype=true` / `--prototype` only for ad-hoc harness prototyping runs
+   so the review system does not spend merge-gate effort on naming/catalog smoke
+   tests. Normal delivery remains issue/plan driven.

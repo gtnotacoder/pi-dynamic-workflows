@@ -8,7 +8,7 @@
 export function generateIssueDeliveryWorkflow(): string {
   return `export const meta = {
   name: 'issue_delivery',
-  description: 'Issue Delivery multi-agent orchestrator with PR auto-ship, host StageCheck, compacted feedback, and intensity profiles',
+  description: 'Issue Delivery multi-agent orchestrator with PR auto-ship, host StageCheck, compacted feedback, and an ad-hoc prototype lane',
   phases: [
     { title: 'Scout' },
     { title: 'Thinker' },
@@ -60,14 +60,12 @@ const VERIFIER_SCHEMA = {
 const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
 const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
 
-const RAW_PROFILE = args && typeof args === 'object' ? String(args.profile || args.intensity || 'standard').trim().toLowerCase() : 'standard'
-const PROFILE_ALIAS = { minimal: 'prototype', quick: 'prototype', normal: 'standard' }
-const PROFILE_CANDIDATE = PROFILE_ALIAS[RAW_PROFILE] || RAW_PROFILE
-const INTENSITY_PROFILE = ['prototype', 'standard', 'deep', 'paranoid'].includes(PROFILE_CANDIDATE) ? PROFILE_CANDIDATE : 'standard'
-const WORKER_ATTEMPTS = INTENSITY_PROFILE === 'prototype' ? 2 : 3
-const VERIFIER_TIER = INTENSITY_PROFILE === 'prototype' ? 'medium' : 'big'
+const RAW_PROTOTYPE = args && typeof args === 'object' ? (args.prototype || false) : false
+const PROTOTYPE_LANE = RAW_PROTOTYPE === true || ['1', 'true', 'yes', 'on', 'prototype', 'minimal', 'quick'].includes(String(RAW_PROTOTYPE).trim().toLowerCase())
+const WORKER_ATTEMPTS = PROTOTYPE_LANE ? 2 : 3
+const VERIFIER_TIER = PROTOTYPE_LANE ? 'medium' : 'big'
 
-log('[IssueDelivery] Initiating Issue Delivery orchestrator for task: "' + TASK + '" (profile=' + INTENSITY_PROFILE + ')')
+log('[IssueDelivery] Initiating Issue Delivery orchestrator for task: "' + TASK + '" (prototype=' + PROTOTYPE_LANE + ')')
 setSemanticStatus({ status: 'workflow-running', reason: 'Issue Delivery workflow is planning and applying changes.', nextAction: 'Wait for scout/worker/verifier stages to finish.' })
 
 // --- Phase 0: Scout firewall ---

@@ -153,8 +153,8 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
-| `/issue-delivery` | `[--mode <name>] [--profile prototype\|standard\|deep\|paranoid] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
-| `/fugu` | `[--mode <name>] [--profile ...] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
+| `/issue-delivery` | `[--mode <name>] [--prototype] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
+| `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
@@ -165,14 +165,14 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
 ### Issue Delivery workflow
 
-`/issue-delivery [--mode <name>] [--profile prototype|standard|deep|paranoid] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
+`/issue-delivery [--mode <name>] [--prototype] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
 
 ```text
 /issue-delivery implement issue #42
-/issue-delivery --mode scoped --profile prototype fix the failing parser regression and open a draft PR
+/issue-delivery --mode focused --prototype fix the failing parser regression and open a draft PR
 ```
 
-Intensity profiles tune breadth/cost without changing the security posture. `prototype` (alias `minimal`/`quick`) uses fewer Worker retries and a medium-tier verifier for harness smoke tests; `standard` is the default; `deep`/`paranoid` are reserved for broader review/catalog policies and saved workflows. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
+The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is only the ad-hoc harness lane for small repo-local experiments while developing the workflow package itself; it lowers the built-in workflow's retry/review overhead without changing edit/read-only boundaries. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
 
 High-level flow:
 

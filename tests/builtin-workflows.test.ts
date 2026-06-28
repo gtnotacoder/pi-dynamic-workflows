@@ -22,7 +22,7 @@ test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
   assert.match(body, /fastcontext-scout/);
   assert.match(body, /stageCheck\(/);
   assert.match(body, /compactFeedback\(/);
-  assert.match(body, /INTENSITY_PROFILE/);
+  assert.match(body, /PROTOTYPE_LANE/);
   assert.match(body, /WORKER_ATTEMPTS/);
   assert.doesNotMatch(body, /fugu-checks:/, "host-side stageCheck replaces the old LocalChecks LLM agent");
 });

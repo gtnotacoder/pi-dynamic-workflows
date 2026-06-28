@@ -73,13 +73,13 @@ test("registerBuiltinWorkflows issue-delivery handler validates empty args (retu
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
-test("/issue-delivery uses WorkflowManager background path and profile flag when provided", async () => {
+test("/issue-delivery uses WorkflowManager background path and prototype flag when provided", async () => {
   let started = false;
   const manager = {
     startInBackground: (script: string, args: unknown, exec: { contextMode?: string }) => {
       started = true;
       assert.match(script, /name: 'issue_delivery'/);
-      assert.deepEqual(args, { task: "solve #12", profile: "prototype" });
+      assert.deepEqual(args, { task: "solve #12", prototype: true });
       assert.deepEqual(exec, { contextMode: "scoped" });
       return { runId: "issue-run", promise: new Promise(() => {}) };
     },
@@ -91,7 +91,7 @@ test("/issue-delivery uses WorkflowManager background path and profile flag when
   assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
 
   const { ctx } = makeNotifyCtx();
-  await issueDeliveryHandler("--mode scoped --profile prototype solve #12", ctx);
+  await issueDeliveryHandler("--mode scoped --prototype solve #12", ctx);
 
   assert.equal(started, true);
   assert.equal(sent.length, 1);
