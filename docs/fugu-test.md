@@ -1,3 +1,3 @@
-# Fugu Auto-PR Smoke Test
+# Legacy Fugu smoke test path
 
-This smoke test confirms that the Fugu multi-agent engine successfully went from task to PR delivery autonomously on 2026-06-24.
+This path is retained for migration compatibility. Use [Issue Delivery Auto-PR Smoke Test](./issue-delivery-smoke-test.md) for the canonical smoke-test note.

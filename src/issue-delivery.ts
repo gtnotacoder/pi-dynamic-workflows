@@ -110,7 +110,7 @@ if (!plan || !plan.steps || plan.steps.length === 0) {
 
 log('[IssueDelivery:Thinker] Plan created! Found ' + plan.steps.length + ' steps in the dependency graph.')
 
-// --- Phase 2 & 3: Worker & Verifier Trinity DAG Loop ---
+// --- Phase 2 & 3: Worker & Verifier DAG Loop ---
 const executionState = {
   task: TASK,
   summary: plan.summary,

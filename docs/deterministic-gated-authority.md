@@ -2,7 +2,7 @@
 
 ## Goal
 
-Fugu currently routes mechanical verification through a lightweight `LocalChecks` agent. That is useful because the agent can choose context-aware commands, but it still spends model tokens and requires an LLM to interpret compiler/linter output. A deterministic `StageCheck` layer would move the hard gate into the Node orchestration boundary: run known project checks directly, return structured JSON, and let the Verifier LLM reason over facts rather than raw terminal output.
+Issue Delivery routes mechanical verification through the `LocalChecks` phase. Earlier Fugu/Trinity prototypes used a lightweight check agent; the current design moves that hard gate into the Node orchestration boundary. A deterministic `StageCheck` layer runs known project checks directly, returns structured JSON, and lets the Verifier LLM reason over facts rather than raw terminal output.
 
 ## Proposed StageCheck boundary
 
@@ -133,11 +133,11 @@ Verifier policy:
 
 1. **Workflow helper**
    - Add a built-in `stageCheck()` workflow global.
-   - Fugu calls it from the `LocalChecks` phase.
+   - Issue Delivery calls it from the `LocalChecks` phase.
    - Best developer experience, but expands the workflow VM API.
 
 2. **Host tool**
-   - Expose a restricted `stage_check` tool only to Fugu/local-check phases.
+   - Expose a restricted `stage_check` tool only to Issue Delivery/local-check phases.
    - Easier to audit and sandbox than arbitrary bash.
 
 3. **Manager pre-verification hook**
@@ -149,10 +149,10 @@ A good first implementation is option 2: a host-owned `stage_check` tool with a 
 ## Open questions
 
 - How should StageCheck discover package-manager commands across npm, pnpm, yarn, uv, cargo, and go projects?
-- Should Fugu fail fast on deterministic failures, or always ask the Verifier to translate failures into Worker feedback?
-- Should successful StageCheck reports be persisted in `.fugu/status.json` and workflow run state?
+- Should Issue Delivery fail fast on deterministic failures, or always ask the Verifier to translate failures into Worker feedback?
+- Should successful StageCheck reports be persisted in `.issue-delivery/status.json` and workflow run state?
 - How do we let projects define safe custom checks without reintroducing arbitrary command execution?
 
 ## Recommendation
 
-Implement deterministic StageCheck as a restricted host tool first. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks. This preserves Fugu's Trinity model while moving hard compiler/linter authority out of the model loop and into deterministic orchestration code.
+Implement deterministic StageCheck as a restricted host tool first. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks. This preserves the Thinker-Worker-Verifier control model while moving hard compiler/linter authority out of the model loop and into deterministic orchestration code.
