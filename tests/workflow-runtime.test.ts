@@ -1111,6 +1111,42 @@ return result`;
   assert.equal(seenOpts[0].queryChecks, false);
 });
 
+test("stageCheck global delegates to host checks without consuming agent slots", async () => {
+  const seenTargets: string[] = [];
+  const script = `export const meta = { name: 'stage_check_global', description: 'stageCheck global' }
+const result = await stageCheck({ targetFile: 'src/foo.ts' })
+return result`;
+
+  const result = await runWorkflow<{ ok: boolean; summary: string }>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+    stageCheck: async (options) => {
+      seenTargets.push(options.targetFile ?? "");
+      return { ok: true, targetFile: options.targetFile, checks: [], summary: "host checks passed" };
+    },
+  });
+
+  assert.equal(result.agentCount, 0);
+  assert.deepEqual(seenTargets, ["src/foo.ts"]);
+  assert.equal(result.result.ok, true);
+  assert.ok(result.logs.some((line) => line.includes("host checks passed")));
+});
+
+test("compactFeedback globals create prompt-ready correction deltas", async () => {
+  const script = `export const meta = { name: 'compact_global', description: 'compact global' }
+const delta = compactFeedback({ rounds: [{ verdict: 'fail', feedback: 'fix tsc error' }] })
+return { ok: delta.openRootCauses.length === 1, rendered: renderCorrectionDelta(delta) }`;
+
+  const result = await runWorkflow<{ ok: boolean; rendered: string }>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+  });
+
+  assert.equal(result.agentCount, 0);
+  assert.equal(result.result.ok, true);
+  assert.match(result.result.rendered, /fix tsc error/);
+});
+
 // ─── Runtime determinism hardening (P0-5) ───────────────────────────────────────
 
 const noopAgent = {

@@ -36,6 +36,23 @@ export {
 } from "./conductor-types.js";
 export * from "./config.js";
 export {
+  CORRECTION_DELTA_JSON_SCHEMA,
+  type CompactFeedbackRequest,
+  type CorrectionDelta,
+  compactFeedback,
+  FeedbackCompactionError,
+  type FeedbackFinding,
+  type FeedbackLocation,
+  type FeedbackRound,
+  type FeedbackSeverity,
+  type FeedbackStatus,
+  type FeedbackVerdict,
+  MAX_CORRECTION_DELTA_TOKENS,
+  type OpenRootCause,
+  renderCorrectionDelta,
+  validateCorrectionDelta,
+} from "./context-compaction.js";
+export {
   BUILTIN_CONTEXT_MODES,
   buildContextModeRegistry,
   type ContextModeRegistry,
@@ -114,6 +131,16 @@ export {
   registerAllSavedWorkflows,
   registerSavedWorkflow,
 } from "./saved-commands.js";
+export {
+  detectDefaultStageCheckCommands,
+  renderStageCheckFeedback,
+  runStageCheck,
+  type StageCheckCommand,
+  type StageCheckCommandResult,
+  type StageCheckOptions,
+  type StageCheckResult,
+  type StageCheckRunner,
+} from "./stage-check.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";

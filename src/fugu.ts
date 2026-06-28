@@ -1,5 +1,5 @@
 /**
- * Fugu Trinity (Thinker-Worker-Verifier) Multi-Agent Orchestrator.
+ * Fugu Trinity (Scout-Thinker-Worker-Verifier) Multi-Agent Orchestrator.
  * Built-in workflow for parallel DAG task execution and automatic PR shipping.
  */
 
@@ -10,13 +10,14 @@
 export function generateFuguWorkflow(): string {
   return `export const meta = {
   name: 'fugu',
-  description: 'Fugu Trinity (Thinker-Worker-Verifier) Multi-Agent Orchestrator with PR Auto-Ship',
+  description: 'Fugu Trinity Multi-Agent Orchestrator with PR Auto-Ship, host StageCheck, and compacted feedback',
   phases: [
+    { title: 'Scout' },
     { title: 'Thinker' },
     { title: 'Worker' },
     { title: 'LocalChecks' },
     { title: 'Verifier' },
-    { title: 'PR_Delivery' }
+    { title: 'Telemetry' }
   ],
 }
 
@@ -53,7 +54,7 @@ const VERIFIER_SCHEMA = {
   required: ['passed', 'feedback'],
   properties: {
     passed: { type: 'boolean', description: 'True if the modification met all criteria and is bug-free.' },
-    feedback: { type: 'string', description: 'Explicit error log, linter findings, or bug details to feed back to the Worker if failed.' }
+    feedback: { type: 'string', description: 'Explicit semantic bug details to feed back to the Worker if failed. Do not paste raw chronological logs.' }
   }
 }
 
@@ -62,19 +63,36 @@ const TASK = args && typeof args === 'object' ? (args.task || args._raw || args.
 const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
 
 log('[Fugu] Initiating Fugu Trinity Orchestrator for task: "' + TASK + '"')
-setSemanticStatus({ status: 'workflow-running', reason: 'Fugu workflow is planning and applying changes.', nextAction: 'Wait for worker/verifier agents to finish.' })
+setSemanticStatus({ status: 'workflow-running', reason: 'Fugu workflow is planning and applying changes.', nextAction: 'Wait for scout/worker/verifier stages to finish.' })
+
+// --- Phase 0: Scout firewall ---
+phase('Scout')
+log('[Fugu:Scout] Spawning fastcontext-scout (small tier) to create a compact Code Map before Thinker planning...')
+
+const codeMap = await agent(
+  'Use FastContext and targeted reads to produce a compact Code Map for this task. Do not edit files. Return only relevant files, line ranges, exported APIs, tests, and caveats. Keep it under 1200 words.\\n' +
+  'Task: "' + TASK + '"',
+  {
+    label: 'fugu-scout',
+    tier: 'small',
+    agentType: 'fastcontext-scout'
+  }
+)
 
 // --- Phase 1: Thinker ---
 phase('Thinker')
-log('[Fugu:Thinker] Spawning Thinker agent (big tier) to map out the execution plan...')
+log('[Fugu:Thinker] Spawning Thinker agent (big tier) to map out the execution plan from compact Code Map...')
 
 const plan = await agent(
   'Analyze the codebase and map out a step-by-step modification plan to complete this task:\\n' +
   'Task: "' + TASK + '"\\n\\n' +
+  'Compact Code Map from Scout (candidate citations; verify before relying on them):\\n' +
+  JSON.stringify(codeMap).slice(0, 6000) + '\\n\\n' +
   'Break the task down into a Directed Acyclic Graph (DAG) of sequential and parallelizable modifications.\\n' +
   'Guidelines for DAG mapping:\\n' +
   '1. Steps touching the SAME file MUST depend on each other sequentially (e.g. step-2 depends on step-1) to avoid Git merge conflicts.\\n' +
-  '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n\\n' +
+  '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n' +
+  '3. Keep each Worker step narrow enough for one focused edit pass.\\n\\n' +
   'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
   {
     label: 'fugu-thinker',
@@ -123,9 +141,13 @@ while (Object.keys(completed).length < plan.steps.length) {
   await parallel(readySteps.map(step => async () => {
     log('[Fugu:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
 
+    const feedbackRounds = []
+    let lastDelta = null
+
     const result = await gate(
       async (previousFeedback, attempt) => {
         phase('Worker')
+        const workerTier = attempt === 0 ? 'small' : (attempt === 1 ? 'medium' : 'big')
         let prompt = 'You are the Specialized Worker. Your sole task is to implement this specific step:\\n' +
           'Step ID: ' + step.id + '\\n' +
           'File: ' + step.file + '\\n' +
@@ -133,31 +155,46 @@ while (Object.keys(completed).length < plan.steps.length) {
           'Expected Output: ' + step.expectedOutput + '\\n\\n'
 
         if (previousFeedback) {
-          prompt += '⚠️ PREVIOUS ATTEMPT FAILED verification! Correct your mistakes based on this feedback:\\n' +
-                    'Feedback:\\n' + previousFeedback + '\\n\\n' +
-                    'Attempt: #' + (attempt + 1) + '. Please fix the code and try again.'
+          prompt += '⚠️ PREVIOUS ATTEMPT FAILED. Correct your mistakes using this bounded Correction Delta only; do not chase old raw logs:\\n' +
+                    previousFeedback + '\\n\\n' +
+                    'Attempt: #' + (attempt + 1) + '. Please fix the code and try again. Treat constraints as hard rules.'
         } else {
           prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
         }
 
-        log('[Fugu:Worker] Starting implementation of ' + step.file + ' (medium tier) (Attempt #' + (attempt + 1) + ')...')
+        log('[Fugu:Worker] Starting implementation of ' + step.file + ' (' + workerTier + ' tier) (Attempt #' + (attempt + 1) + ')...')
         return await agent(prompt, {
           label: 'fugu-worker:' + step.id,
-          tier: 'medium'
+          tier: workerTier,
+          agentType: 'specialized-worker'
         })
       },
 
       async (workerResult) => {
+        const roundIndex = feedbackRounds.length + 1
         phase('LocalChecks')
-        log('[Fugu:Verifier] Running compile & linter checks on ' + step.file + ' using small tier...')
+        log('[Fugu:LocalChecks] Running host-side stageCheck on ' + step.file + ' (zero LLM tokens)...')
 
-        const localChecks = await agent(
-          'Check if there are compile, type-check, or linter errors in the workspace, particularly in ' + step.file + '. Run appropriate bash commands if required to check for errors. Return a short log of results.',
-          {
-            label: 'fugu-checks:' + step.id,
-            tier: 'small'
+        const localChecks = await stageCheck({ targetFile: step.file })
+        if (!localChecks.ok) {
+          const round = {
+            index: roundIndex,
+            verdict: 'fail',
+            feedback: renderStageCheckFeedback(localChecks),
+            localChecks
           }
-        )
+          const delta = compactFeedback({
+            rounds: feedbackRounds.concat([round]),
+            previousDelta: lastDelta,
+            maxTokens: 512,
+            auditLogId: 'fugu-' + step.id
+          })
+          feedbackRounds.push(round)
+          lastDelta = delta
+          const rendered = renderCorrectionDelta(delta)
+          log('[Fugu:LocalChecks] Step ' + step.id + ' failed host checks. Compacted correction delta size: ' + rendered.length + ' chars.')
+          return { ok: false, feedback: rendered }
+        }
 
         phase('Verifier')
         log('[Fugu:Verifier] strict LLM verification of ' + step.file + ' using big tier...')
@@ -165,8 +202,9 @@ while (Object.keys(completed).length < plan.steps.length) {
           'Review the changes made to ' + step.file + ' for correctness and completeness.\\n' +
           'Task requirements: ' + step.instructions + '\\n' +
           'Expected Output: ' + step.expectedOutput + '\\n\\n' +
-          'Local check logs:\\n' + JSON.stringify(localChecks) + '\\n\\n' +
-          'Inspect the file and perform a strict evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with helpful feedback.',
+          'Host-side LocalChecks summary (mechanical checks already passed):\\n' +
+          JSON.stringify({ summary: localChecks.summary, checks: localChecks.checks.map(c => ({ name: c.name, ok: c.ok, exitCode: c.exitCode, durationMs: c.durationMs })) }) + '\\n\\n' +
+          'Inspect the file and perform a strict semantic evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with concise, forward-looking feedback. Do not paste raw chronological logs.',
           {
             label: 'fugu-verifier:' + step.id,
             tier: 'big',
@@ -177,11 +215,33 @@ while (Object.keys(completed).length < plan.steps.length) {
         if (verification && verification.passed) {
           log('[Fugu:Verifier] Step ' + step.id + ' PASSED verification!')
           return { ok: true }
-        } else {
-          const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
-          log('[Fugu:Verifier] Step ' + step.id + ' FAILED verification! Feedback: ' + errorFeedback)
-          return { ok: false, feedback: errorFeedback }
         }
+
+        const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
+        const round = {
+          index: roundIndex,
+          verdict: 'fail',
+          feedback: errorFeedback,
+          findings: [{
+            rule: 'verifier:semantic',
+            severity: 'error',
+            message: errorFeedback,
+            status: 'open',
+            blocking: true
+          }],
+          trace: 'workerResult=' + String(workerResult).slice(0, 1000)
+        }
+        const delta = compactFeedback({
+          rounds: feedbackRounds.concat([round]),
+          previousDelta: lastDelta,
+          maxTokens: 512,
+          auditLogId: 'fugu-' + step.id
+        })
+        feedbackRounds.push(round)
+        lastDelta = delta
+        const rendered = renderCorrectionDelta(delta)
+        log('[Fugu:Verifier] Step ' + step.id + ' FAILED verification. Compacted correction delta size: ' + rendered.length + ' chars.')
+        return { ok: false, feedback: rendered }
       },
       { attempts: 3 }
     )
@@ -217,8 +277,8 @@ while (Object.keys(completed).length < plan.steps.length) {
 log('[Fugu] 🎉 All steps executed and verified successfully!')
 setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'All worker/verifier steps passed. Opening PR delivery pane.', nextAction: 'Creating branch, commit, and draft PR.' })
 
-// --- Phase 4: PR Delivery ---
-phase('PR_Delivery')
+// --- PR Delivery (execution work remains in the canonical Worker phase) ---
+phase('Worker')
 log('[Fugu:PR_Delivery] Initiating automatic Git branch push and Pull Request creation...')
 
 const prResult = await agent(
@@ -238,8 +298,9 @@ const prResult = await agent(
 
 log('[Fugu] Pull Request creation complete! Result:\\n' + prResult)
 
-// --- Finalization gate: verify clean-committed-pushed invariants ---
+// --- Finalization / Telemetry gate: verify clean-committed-pushed invariants ---
 // Do not declare success if changes are dirty, uncommitted, or unpushed.
+phase('Telemetry')
 log('[Fugu:finalization] Running finalization gate...')
 
 setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })

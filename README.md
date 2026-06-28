@@ -64,6 +64,8 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
 | `args`, `cwd`, `budget` | Run inputs + `budget.remaining()` / `budget.total`. |
 | `log(msg)` | Emit a progress log line. |
+| `stageCheck(opts)` | Host-side mechanical checks (TypeScript `tsc --noEmit` and Biome when detected) with zero LLM tokens. |
+| `compactFeedback(request)` / `renderCorrectionDelta(delta)` | Deterministically collapse retry feedback into a bounded, schema-validated Correction Delta for the next Worker turn. |
 | `checkpoint(prompt, opts)` | Human-in-the-loop yes/no gate — deterministic, journaled, replayable (resume-safe). Maps to `ctx.ui.confirm` in a UI run; headless runs use the declared `headless` default. |
 
 ### Quality helpers
@@ -151,7 +153,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
-| `/fugu` | `[--mode <name>] <task or issue>` | Autonomous Thinker → Worker → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
+| `/fugu` | `[--mode <name>] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
@@ -174,30 +176,36 @@ High-level flow:
 ```text
 Task / issue text
   ↓
-Thinker (big tier): inspect + plan a DAG
+Scout (small tier): FastContext firewall returns a compact Code Map
+  ↓
+Thinker (big tier): plan a DAG from the compact Code Map
   ↓
 Deterministic scheduler: run dependency-ready steps with parallel()
   ↓
-Worker (medium tier): edit one focused step
+Worker (small → medium → big tier on retry): edit one focused step
   ↓
-LocalChecks (small tier): run compile/type/lint/test checks as appropriate
+LocalChecks (host stageCheck): run tsc/Biome mechanically with zero LLM tokens
   ↓
-Verifier (big tier): strict pass/fail review; feedback loops through gate(..., { attempts: 3 })
+Verifier (big tier): strict semantic pass/fail review after checks pass
   ↓
-PR_Delivery (small tier): branch, commit, push, open a draft PR
+Feedback Compactor: failed checks/verdicts become a bounded Correction Delta for retry
+  ↓
+PR delivery + Telemetry finalization: branch, commit, push, PR, clean/pushed/checks gate
 ```
 
 Components:
 
 | Component | Role |
 |-----------|------|
-| **Thinker** | Reads the task and codebase, then emits structured JSON: `summary` plus `steps[]` with `id`, `file`, `instructions`, `expectedOutput`, and optional `dependencies`. Same-file edits should be sequential; independent files can stay dependency-free. |
+| **Scout** | Runs `fastcontext-scout` on the small tier to gather targeted citations and API/test hints. The Thinker receives this compact Code Map instead of large raw files. |
+| **Thinker** | Plans from the task plus Code Map, then emits structured JSON: `summary` plus `steps[]` with `id`, `file`, `instructions`, `expectedOutput`, and optional `dependencies`. Same-file edits should be sequential; independent files can stay dependency-free. |
 | **DAG scheduler** | Runs inside the workflow VM, not inside a model. It repeatedly finds steps whose dependencies are complete, starts them together with `parallel()`, and rejects cyclic/deadlocked plans. |
-| **Worker** | Receives exactly one step and edits the repo directly with coding tools. It does not own the whole task; it owns a narrow file/action slice. |
-| **LocalChecks** | Uses the small tier for cheap mechanical checks. It can run project commands for type-checking, linting, tests, or compile errors and returns logs to the verifier. |
-| **Verifier** | Performs strict LLM review with schema output `{ passed, feedback }`. On failure, `gate()` feeds the feedback back to the Worker for up to three attempts. |
+| **Worker** | Receives exactly one step and edits the repo directly with coding tools. First attempt uses `small`, second `medium`, third `big`; it sees only the current Correction Delta, not raw history. |
+| **LocalChecks** | Calls host-side `stageCheck()` (TypeScript and Biome by default) and fails fast before the LLM Verifier when mechanical checks fail. |
+| **Verifier** | Performs strict semantic LLM review with schema output `{ passed, feedback }`, only after host checks pass. |
+| **Feedback Compactor** | Converts failed stage checks or verifier feedback into a bounded, redacted Correction Delta (`maxTokens: 512`) for the next Worker attempt. |
 | **State writer** | Writes transient diagnostic progress to `.fugu/status.json` so long runs have inspectable local state. This is scratch state, not intended for commits. |
-| **PR_Delivery** | After all steps pass, creates a safe branch, commits, pushes, and opens a draft GitHub PR. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. |
+| **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. |
 
 DAG example produced by the Thinker:
 
@@ -213,9 +221,10 @@ In that example, `step-1` and `step-3` can run together, while `step-2` waits fo
 
 Model routing is intentionally portable for NPM: built-in Fugu uses tiers rather than hard-coded provider IDs.
 
+- Scout / state / PR delivery: `tier: "small"`
 - Thinker / Verifier: `tier: "big"`
-- Worker: `tier: "medium"`
-- LocalChecks / state / PR delivery: `tier: "small"`
+- Worker: attempt 1 `tier: "small"`, attempt 2 `tier: "medium"`, attempt 3 `tier: "big"`
+- LocalChecks: host-side `stageCheck()` (zero LLM tokens)
 
 Use `/workflows-models` to map those tiers to your own subscriptions or local models. For example, one machine can route big to GPT-5-class reasoning, medium to GLM/DeepSeek coding, and small to a fast local Qwen verifier without changing the shipped workflow.
 

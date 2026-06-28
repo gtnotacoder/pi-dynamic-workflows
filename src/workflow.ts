@@ -29,6 +29,7 @@ import {
   MAX_SCRIPT_BYTES,
   SCRIPT_TIMEOUT_MS,
 } from "./config.js";
+import { type CompactFeedbackRequest, compactFeedback, renderCorrectionDelta } from "./context-compaction.js";
 import {
   BUILTIN_CONTEXT_MODES,
   type ContextModeRegistry,
@@ -40,6 +41,12 @@ import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import { assertValidRunId } from "./run-persistence.js";
+import {
+  renderStageCheckFeedback,
+  runStageCheck,
+  type StageCheckOptions,
+  type StageCheckResult,
+} from "./stage-check.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -87,9 +94,13 @@ export interface SharedRuntime {
   depth: number;
 }
 
+interface WorkflowAgentRunner {
+  run(prompt: string, options?: unknown): Promise<unknown>;
+}
+
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
   args?: unknown;
-  agent?: Pick<WorkflowAgent, "run">;
+  agent?: WorkflowAgentRunner;
   /** The session's main model (provider/id), shown in /workflows for default agents. */
   mainModel?: string;
   /**
@@ -147,6 +158,11 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   sharedRuntime?: SharedRuntime;
   /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
   loadSavedWorkflow?: (name: string) => string | undefined;
+  /**
+   * Host-side mechanical verification used by the stageCheck() workflow global.
+   * Defaults to native TypeScript/Biome detection in src/stage-check.ts.
+   */
+  stageCheck?: (options: StageCheckOptions) => Promise<StageCheckResult>;
   /**
    * Ask the human a checkpoint() question and resolve to their reply. Threaded from
    * a UI-bearing tool context. Absent => headless: checkpoint() takes its declared
@@ -438,6 +454,21 @@ export async function runWorkflow<T = unknown>(
     throwIfAborted();
     return await (options.finalizationCheck ?? defaultCheckFinalization)(cwdArg, opts);
   };
+
+  const stageCheck = async (stageOptions: StageCheckOptions = {}): Promise<StageCheckResult> => {
+    throwIfAborted();
+    const input = stageOptions && typeof stageOptions === "object" ? stageOptions : {};
+    const result = await (options.stageCheck ?? runStageCheck)({
+      ...input,
+      cwd: input.cwd ?? baseCwd,
+      signal: runSignal,
+    });
+    throwIfAborted();
+    log(`[stageCheck] ${result.summary}`);
+    return result;
+  };
+
+  const compactFeedbackForWorkflow = (request: CompactFeedbackRequest) => compactFeedback(request);
 
   const throwIfAborted = () => {
     if (runSignal.aborted) {
@@ -1074,6 +1105,10 @@ export async function runWorkflow<T = unknown>(
     phase,
     setSemanticStatus,
     checkFinalization,
+    stageCheck,
+    compactFeedback: compactFeedbackForWorkflow,
+    renderCorrectionDelta,
+    renderStageCheckFeedback,
     args: options.args,
     cwd: options.cwd ?? process.cwd(),
     process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
@@ -1192,23 +1227,8 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
 
 function evaluateLiteral(node: AnyNode, path: string): unknown {
   switch (node.type) {
-    case "ObjectExpression": {
-      const out: Record<string, unknown> = {};
-      for (const prop of node.properties as AnyNode[]) {
-        if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
-        if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
-        if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
-        if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
-        {
-          const key = propertyKey(prop.key as AnyNode, path);
-          if (key === "__proto__" || key === "constructor" || key === "prototype") {
-            throw new Error(`reserved key name not allowed in ${path}: ${key}`);
-          }
-          out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
-        }
-      }
-      return out;
-    }
+    case "ObjectExpression":
+      return evaluateObjectLiteral(node, path);
     case "ArrayExpression": {
       return (node.elements as Array<AnyNode | null>).map((element, index) => {
         if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
@@ -1229,6 +1249,22 @@ function evaluateLiteral(node: AnyNode, path: string): unknown {
     default:
       throw new Error(`non-literal node type in ${path}: ${node.type}`);
   }
+}
+
+function evaluateObjectLiteral(node: AnyNode, path: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const prop of node.properties as AnyNode[]) {
+    if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+    if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
+    if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
+    if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
+    const key = propertyKey(prop.key as AnyNode, path);
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+    }
+    out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
+  }
+  return out;
 }
 
 function propertyKey(node: AnyNode, path: string): string {

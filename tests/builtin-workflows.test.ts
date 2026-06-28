@@ -13,11 +13,15 @@ test("generateFuguWorkflow produces a valid, parseable script", () => {
   assert.equal(meta.name, "fugu");
   assert.deepEqual(
     meta.phases?.map((p) => p.title),
-    ["Thinker", "Worker", "LocalChecks", "Verifier", "PR_Delivery"],
+    ["Scout", "Thinker", "Worker", "LocalChecks", "Verifier", "Telemetry"],
   );
   assert.match(body, /Directed Acyclic Graph/);
   assert.match(body, /parallel\(/);
   assert.match(body, /fugu-pr-delivery/);
+  assert.match(body, /fastcontext-scout/);
+  assert.match(body, /stageCheck\(/);
+  assert.match(body, /compactFeedback\(/);
+  assert.doesNotMatch(body, /fugu-checks:/, "host-side stageCheck replaces the old LocalChecks LLM agent");
 });
 
 test("generateFuguWorkflow rejects broad git staging and enforces scoped delivery safety", () => {
