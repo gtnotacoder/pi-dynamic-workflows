@@ -75,3 +75,32 @@ installation state.
 5. Use `prototype=true` / `--prototype` only for ad-hoc harness prototyping runs
    so the review system does not spend merge-gate effort on naming/catalog smoke
    tests. Normal delivery remains issue/plan driven.
+
+## Lock schema notes
+
+The companion `docs/workflows/workflow-lock.json` records canonical names,
+commands, kinds, sources, aliases, and (for repo-local sources) sha256 hashes.
+The following schema and policy rules keep the catalog deterministic across
+installs:
+
+- **Registration order:** built-in commands register before saved workflows.
+  This is codified in `collisionPolicy.registrationOrder`.
+- **Saved workflow command collisions** are not silently shadowed: when a saved
+  workflow's name collides with an already-registered command, the saved
+  workflow is skipped and the user gets a warning
+  (`collisionPolicy.savedWorkflowCommandCollision = "skip-and-warn"`).
+- **Deprecated aliases** are compatibility metadata only. They must not silently
+  shadow saved workflows; alias collisions surface as warnings
+  (`collisionPolicy.aliasCollisionSeverity = "warning"`).
+- **`version`** is only expected for `builtin-command` (package-shipped) entries.
+  A `version` on a non-`builtin-command` entry is flagged as a warning by the
+  lock checker.
+- **Reserved `kind` values:** `builtin-command`, `bundled-template`,
+  `saved-workflow`, `harness-metadata`, and `deprecated-alias`. The lock
+  checker rejects entries whose `kind` is outside this set.
+  `bundled-template`, `harness-metadata`, and `deprecated-alias` are reserved
+  for future use and not necessarily populated today.
+- **External saved workflows** under `~/.pi/workflows/saved/*.json` are
+  declarative/operator-visibility only, not package-shipped APIs. Their sources
+  are recorded in the lock with `sha256: null` and are warning-only in the drift
+  checker, because their contents are local installation state.

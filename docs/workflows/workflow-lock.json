@@ -2,6 +2,11 @@
   "schema": "pi-dynamic-workflows.workflow-lock.v1",
   "generatedAt": "2026-06-28",
   "mode": "warning",
+  "collisionPolicy": {
+    "registrationOrder": ["builtin-command", "saved-workflow"],
+    "savedWorkflowCommandCollision": "skip-and-warn",
+    "aliasCollisionSeverity": "warning"
+  },
   "entries": [
     {
       "canonicalName": "issue-delivery",
@@ -61,6 +66,26 @@
       "replaces": ["workflow_trace_analyser"],
       "channel": "active",
       "notes": "Prefer analyzer spelling for canonical name; keep analyser alias because it is already installed."
+    },
+    {
+      "canonicalName": "evidence_adversarial_review",
+      "command": "/evidence_adversarial_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/evidence_adversarial_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "notes": "Source-backed adversarial validation saved workflow. Recorded for operator visibility; external saved workflow contents are local installation state."
+    },
+    {
+      "canonicalName": "frontend_radix_shadcn_review",
+      "command": "/frontend_radix_shadcn_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/frontend_radix_shadcn_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "notes": "Frontend-specific review saved workflow. Recorded for operator visibility; external saved workflow contents are local installation state."
     }
   ]
 }

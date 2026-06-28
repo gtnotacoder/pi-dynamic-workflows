@@ -19,7 +19,7 @@ export interface CommandRegistryPi {
   /** Commands registered so far (most code registers, then we inspect/invoke). */
   commands: RegisteredCommand[];
   /** Messages delivered via pi.sendMessage, captured for assertions. */
-  sent: Array<{ customType?: string; content?: string }>;
+  sent: Array<{ customType?: string; content?: string; display?: boolean }>;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface CommandRegistryPi {
  */
 export function makeCommandRegistryPi(existing: string[] = []): CommandRegistryPi {
   const commands: RegisteredCommand[] = [];
-  const sent: Array<{ customType?: string; content?: string }> = [];
+  const sent: Array<{ customType?: string; content?: string; display?: boolean }> = [];
   const names = () => [...existing, ...commands.map((c) => c.name)];
 
   const pi = {
@@ -38,7 +38,7 @@ export function makeCommandRegistryPi(existing: string[] = []): CommandRegistryP
     registerCommand: (name: string, spec: Omit<RegisteredCommand, "name">) => {
       commands.push({ name, ...spec });
     },
-    sendMessage: (msg: { customType?: string; content?: string }) => {
+    sendMessage: (msg: { customType?: string; content?: string; display?: boolean }) => {
       sent.push(msg);
     },
   } as unknown as ExtensionAPI;
