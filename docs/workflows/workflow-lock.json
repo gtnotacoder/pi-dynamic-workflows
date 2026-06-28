@@ -1,0 +1,66 @@
+{
+  "schema": "pi-dynamic-workflows.workflow-lock.v1",
+  "generatedAt": "2026-06-28",
+  "mode": "warning",
+  "entries": [
+    {
+      "canonicalName": "issue-delivery",
+      "command": "/issue-delivery",
+      "kind": "builtin-command",
+      "source": "src/issue-delivery.ts",
+      "sha256": "1b646444e3497c349408cd997deabf8ed3a1bee56dcc66ff804eccde52be4106",
+      "aliases": ["/fugu"],
+      "replaces": ["fugu"],
+      "channel": "active",
+      "version": "0.1.7",
+      "profiles": ["prototype", "standard", "deep", "paranoid"],
+      "notes": "Legacy /fugu is registered as a deprecated alias to the canonical generated workflow."
+    },
+    {
+      "canonicalName": "closed_loop_issue_delivery",
+      "command": "/closed_loop_issue_delivery",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/fugu_closed_loop.json",
+      "sha256": null,
+      "aliases": ["/fugu_closed_loop"],
+      "replaces": ["fugu_closed_loop"],
+      "channel": "planned",
+      "profiles": ["prototype", "standard", "deep", "paranoid"],
+      "notes": "Pending saved-workflow rename/wrapper; profile should flow to review/repair/CI children."
+    },
+    {
+      "canonicalName": "surgical_pr_repair",
+      "command": "/surgical_pr_repair",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/fugu_repair.json",
+      "sha256": null,
+      "aliases": ["/fugu_repair"],
+      "replaces": ["fugu_repair"],
+      "channel": "planned",
+      "profiles": ["prototype", "standard", "deep", "paranoid"],
+      "notes": "Pending saved-workflow rename/wrapper."
+    },
+    {
+      "canonicalName": "pr_adversarial_review",
+      "command": "/pr_adversarial_review",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/pr_adversarial_review.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "profiles": ["prototype", "standard", "deep", "paranoid"],
+      "notes": "Already exposes detailed review-depth knobs; add profile/intensity wrapper mapping next."
+    },
+    {
+      "canonicalName": "workflow_trace_analyzer",
+      "command": "/workflow_trace_analyzer",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/workflow_trace_analyser.json",
+      "sha256": null,
+      "aliases": ["/workflow_trace_analyser"],
+      "replaces": ["workflow_trace_analyser"],
+      "channel": "planned",
+      "notes": "Prefer analyzer spelling for new canonical name; keep analyser alias because it is already installed."
+    }
+  ]
+}

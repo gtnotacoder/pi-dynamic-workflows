@@ -3,16 +3,22 @@ import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
-test("registerBuiltinWorkflows registers deep-research, adversarial-review, code-review, and fugu commands", () => {
+test("registerBuiltinWorkflows registers deep-research, adversarial-review, code-review, issue-delivery, and fugu commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
-  assert.equal(commands.length, 4);
+  assert.equal(commands.length, 5);
   const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, ["adversarial-review", "code-review", "deep-research", "fugu"]);
+  assert.deepEqual(names, ["adversarial-review", "code-review", "deep-research", "fugu", "issue-delivery"]);
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
-  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review", "code-review", "fugu"]);
+  const { pi, commands } = makeCommandRegistryPi([
+    "deep-research",
+    "adversarial-review",
+    "code-review",
+    "issue-delivery",
+    "fugu",
+  ]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.equal(commands.length, 0, "should not re-register when already present");
 });
@@ -22,7 +28,7 @@ test("registerBuiltinWorkflows registers only missing commands", () => {
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
   assert.deepEqual(
     commands.map((c) => c.name).sort(),
-    ["adversarial-review", "code-review", "fugu"],
+    ["adversarial-review", "code-review", "fugu", "issue-delivery"],
     "should only register the missing commands",
   );
 });
@@ -54,43 +60,43 @@ test("registerBuiltinWorkflows adversarial-review handler validates empty args (
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
-test("registerBuiltinWorkflows fugu handler validates empty args (returns early)", async () => {
+test("registerBuiltinWorkflows issue-delivery handler validates empty args (returns early)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
-  const fuguHandler = commands.find((c) => c.name === "fugu")?.handler;
-  assert.ok(fuguHandler, "fugu handler should exist");
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
 
   const { ctx, notified } = makeNotifyCtx();
-  await fuguHandler("", ctx);
+  await issueDeliveryHandler("", ctx);
   assert.equal(notified.length, 1, "should notify with warning");
   assert.equal(notified[0].type, "warning", "should be a warning");
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
-test("/fugu uses WorkflowManager background path when provided", async () => {
+test("/issue-delivery uses WorkflowManager background path and profile flag when provided", async () => {
   let started = false;
   const manager = {
     startInBackground: (script: string, args: unknown, exec: { contextMode?: string }) => {
       started = true;
-      assert.match(script, /name: 'fugu'/);
-      assert.deepEqual(args, { task: "solve #12" });
+      assert.match(script, /name: 'issue_delivery'/);
+      assert.deepEqual(args, { task: "solve #12", profile: "prototype" });
       assert.deepEqual(exec, { contextMode: "scoped" });
-      return { runId: "fugu-run", promise: new Promise(() => {}) };
+      return { runId: "issue-run", promise: new Promise(() => {}) };
     },
-    getRun: (_runId: string) => ({ transcriptDir: "/tmp/fugu-run/subagents" }),
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
   };
   const { pi, commands, sent } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
-  const fuguHandler = commands.find((c) => c.name === "fugu")?.handler;
-  assert.ok(fuguHandler, "fugu handler should exist");
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
 
   const { ctx } = makeNotifyCtx();
-  await fuguHandler("--mode scoped solve #12", ctx);
+  await issueDeliveryHandler("--mode scoped --profile prototype solve #12", ctx);
 
   assert.equal(started, true);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].customType, "fugu:started");
-  assert.match(sent[0].content ?? "", /Run ID: fugu-run/);
+  assert.equal(sent[0].customType, "issue-delivery:started");
+  assert.match(sent[0].content ?? "", /Run ID: issue-run/);
 });
 
 test("/adversarial-review uses WorkflowManager background path when provided", async () => {
@@ -173,8 +179,16 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   );
   assert.equal(typeof advReviewCmd.handler, "function");
 
+  const issueDeliveryCmd = commands.find((c) => c.name === "issue-delivery");
+  assert.ok(issueDeliveryCmd, "issue-delivery should be registered");
+  assert.ok(
+    issueDeliveryCmd.description?.includes("Autonomous Issue Delivery"),
+    "should contain canonical description",
+  );
+  assert.equal(typeof issueDeliveryCmd.handler, "function");
+
   const fuguCmd = commands.find((c) => c.name === "fugu");
-  assert.ok(fuguCmd, "fugu should be registered");
-  assert.ok(fuguCmd.description?.includes("Autonomous Fugu"), "should contain Fugu description");
+  assert.ok(fuguCmd, "fugu alias should be registered");
+  assert.ok(fuguCmd.description?.includes("Deprecated alias"), "should describe fugu as a deprecated alias");
   assert.equal(typeof fuguCmd.handler, "function");
 });

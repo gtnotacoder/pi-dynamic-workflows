@@ -8,11 +8,12 @@
  * touching git or GitHub.
  *
  * The evaluator is intentionally strict but forgiving on transient artifacts:
- * untracked/modified paths under `.fugu/` and `.fastcontext/` are treated as
- * transient porcelain and ignored when deciding whether the worktree is
- * "clean enough" to ship. A rename/copy is only ignored when *both* sides of
- * the rename live under a transient prefix — if a real source file is moved
- * into (or out of) `.fugu/`/`.fastcontext/`, that blocks finalization.
+ * untracked/modified paths under `.issue-delivery/`, legacy `.fugu/`, and
+ * `.fastcontext/` are treated as transient porcelain and ignored when deciding
+ * whether the worktree is "clean enough" to ship. A rename/copy is only ignored
+ * when *both* sides of the rename live under a transient prefix — if a real
+ * source file is moved into (or out of) one of those prefixes, that blocks
+ * finalization.
  *
  * Evaluation rules (in order):
  *  1. Worktree clean modulo transient prefixes (and extra `ignorePathPrefixes`).
@@ -91,7 +92,7 @@ export interface FinalizationInput {
 }
 
 /** Transient porcelain path prefixes that never block finalization. */
-const TRANSIENT_IGNORE_PREFIXES = [".fugu/", ".fastcontext/"];
+const TRANSIENT_IGNORE_PREFIXES = [".issue-delivery/", ".fugu/", ".fastcontext/"];
 
 /**
  * A parsed line of `git status --porcelain`. Renames/copies carry both the

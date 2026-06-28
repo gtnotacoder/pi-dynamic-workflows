@@ -153,7 +153,8 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
-| `/fugu` | `[--mode <name>] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
+| `/issue-delivery` | `[--mode <name>] [--profile prototype\|standard\|deep\|paranoid] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
+| `/fugu` | `[--mode <name>] [--profile ...] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
@@ -162,14 +163,16 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
 
-### Fugu issue-to-PR workflow
+### Issue Delivery workflow
 
-`/fugu [--mode <name>] <task or issue>` is the built-in Fugu/Trinity coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. It is intended for scoped issue-to-draft-PR tasks.
+`/issue-delivery [--mode <name>] [--profile prototype|standard|deep|paranoid] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
 
 ```text
-/fugu implement issue #42
-/fugu --mode scoped fix the failing parser regression and open a draft PR
+/issue-delivery implement issue #42
+/issue-delivery --mode scoped --profile prototype fix the failing parser regression and open a draft PR
 ```
+
+Intensity profiles tune breadth/cost without changing the security posture. `prototype` (alias `minimal`/`quick`) uses fewer Worker retries and a medium-tier verifier for harness smoke tests; `standard` is the default; `deep`/`paranoid` are reserved for broader review/catalog policies and saved workflows. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
 
 High-level flow:
 
@@ -204,7 +207,7 @@ Components:
 | **LocalChecks** | Calls host-side `stageCheck()` (TypeScript and Biome by default) and fails fast before the LLM Verifier when mechanical checks fail. |
 | **Verifier** | Performs strict semantic LLM review with schema output `{ passed, feedback }`, only after host checks pass. |
 | **Feedback Compactor** | Converts failed stage checks or verifier feedback into a bounded, redacted Correction Delta (`maxTokens: 512`) for the next Worker attempt. |
-| **State writer** | Writes transient diagnostic progress to `.fugu/status.json` so long runs have inspectable local state. This is scratch state, not intended for commits. |
+| **State writer** | Writes transient diagnostic progress to `.issue-delivery/status.json` so long runs have inspectable local state. Legacy `.fugu/` scratch state is still ignored during migration. This is scratch state, not intended for commits. |
 | **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. |
 
 DAG example produced by the Thinker:
@@ -219,7 +222,7 @@ DAG example produced by the Thinker:
 
 In that example, `step-1` and `step-3` can run together, while `step-2` waits for the parser change.
 
-Model routing is intentionally portable for NPM: built-in Fugu uses tiers rather than hard-coded provider IDs.
+Model routing is intentionally portable for NPM: built-in Issue Delivery uses tiers rather than hard-coded provider IDs.
 
 - Scout / state / PR delivery: `tier: "small"`
 - Thinker / Verifier: `tier: "big"`
@@ -230,11 +233,11 @@ Use `/workflows-models` to map those tiers to your own subscriptions or local mo
 
 Operational notes:
 
-- Start from a clean git working tree when possible; Fugu will create its own branch during PR delivery.
+- Start from a clean git working tree when possible; Issue Delivery will create its own branch during PR delivery.
 - `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
 - Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
 - Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.
-- Fugu opens a draft PR; it does not auto-merge.
+- Issue Delivery opens a draft PR; it does not auto-merge.
 
 ### Adversarial review evidence mode
 
@@ -314,7 +317,7 @@ is truly active, and signals when a repair run needs finalization attention.
 The semantic status is displayed in `/workflows list` and `/workflows status <id>`
 output alongside the engine status. The finalization gate checks:
 
-1. Worktree clean (transient `.fugu/` and `.fastcontext/` paths are ignored)
+1. Worktree clean (transient `.issue-delivery/`, legacy `.fugu/`, and `.fastcontext/` paths are ignored)
 2. Branch pushed to upstream
 3. Local HEAD matches remote HEAD
 4. PR head SHA matches (when known)

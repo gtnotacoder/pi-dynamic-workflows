@@ -105,6 +105,7 @@ export {
   wrapError,
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
+export { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";

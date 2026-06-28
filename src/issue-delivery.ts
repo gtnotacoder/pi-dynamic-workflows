@@ -1,0 +1,332 @@
+/**
+ * Issue Delivery (Scout-Thinker-Worker-Verifier) multi-agent orchestrator.
+ * Built-in workflow for parallel DAG task execution and automatic PR shipping.
+ *
+ * Fugu/Trinity are historical inspirations; operator-facing names should use
+ * the project-neutral "Issue Delivery" vocabulary.
+ */
+export function generateIssueDeliveryWorkflow(): string {
+  return `export const meta = {
+  name: 'issue_delivery',
+  description: 'Issue Delivery multi-agent orchestrator with PR auto-ship, host StageCheck, compacted feedback, and intensity profiles',
+  phases: [
+    { title: 'Scout' },
+    { title: 'Thinker' },
+    { title: 'Worker' },
+    { title: 'LocalChecks' },
+    { title: 'Verifier' },
+    { title: 'Telemetry' }
+  ],
+}
+
+// 1. SCHEMAS
+const THINKER_SCHEMA = {
+  type: 'object',
+  required: ['summary', 'steps'],
+  properties: {
+    summary: { type: 'string', description: 'High-level summary of the architectural approach.' },
+    steps: {
+      type: 'array',
+      description: 'List of isolated modifications, forming a Directed Acyclic Graph (DAG) of dependencies.',
+      items: {
+        type: 'object',
+        required: ['id', 'file', 'instructions', 'expectedOutput'],
+        properties: {
+          id: { type: 'string', description: 'Unique step ID, e.g., \\'step-1\\'.' },
+          file: { type: 'string', description: 'Target file path relative to project root.' },
+          instructions: { type: 'string', description: 'Extremely focused, explicit instructions for the Worker. State what to edit/write.' },
+          expectedOutput: { type: 'string', description: 'Concrete code signature or functionality added.' },
+          dependencies: {
+            type: 'array',
+            description: 'Step IDs that MUST be completed and verified BEFORE this step can start. Touch the same file? Sequentially depend them to avoid git conflict. Touch different files? Keep dependencies empty so they run in parallel.',
+            items: { type: 'string' }
+          }
+        }
+      }
+    }
+  }
+}
+
+const VERIFIER_SCHEMA = {
+  type: 'object',
+  required: ['passed', 'feedback'],
+  properties: {
+    passed: { type: 'boolean', description: 'True if the modification met all criteria and is bug-free.' },
+    feedback: { type: 'string', description: 'Explicit semantic bug details to feed back to the Worker if failed. Do not paste raw chronological logs.' }
+  }
+}
+
+// 2. ORCHESTRATION ENGINE
+const TASK = args && typeof args === 'object' ? (args.task || args._raw || args._ || 'Implement a safe addition helper with tests.') : 'Implement a safe addition helper with tests.'
+const FINALIZATION_BASE_REF = (args && typeof args === 'object' && typeof args.baseRef === 'string' && args.baseRef) ? args.baseRef : 'origin/main'
+
+const RAW_PROFILE = args && typeof args === 'object' ? String(args.profile || args.intensity || 'standard').trim().toLowerCase() : 'standard'
+const PROFILE_ALIAS = { minimal: 'prototype', quick: 'prototype', normal: 'standard' }
+const PROFILE_CANDIDATE = PROFILE_ALIAS[RAW_PROFILE] || RAW_PROFILE
+const INTENSITY_PROFILE = ['prototype', 'standard', 'deep', 'paranoid'].includes(PROFILE_CANDIDATE) ? PROFILE_CANDIDATE : 'standard'
+const WORKER_ATTEMPTS = INTENSITY_PROFILE === 'prototype' ? 2 : 3
+const VERIFIER_TIER = INTENSITY_PROFILE === 'prototype' ? 'medium' : 'big'
+
+log('[IssueDelivery] Initiating Issue Delivery orchestrator for task: "' + TASK + '" (profile=' + INTENSITY_PROFILE + ')')
+setSemanticStatus({ status: 'workflow-running', reason: 'Issue Delivery workflow is planning and applying changes.', nextAction: 'Wait for scout/worker/verifier stages to finish.' })
+
+// --- Phase 0: Scout firewall ---
+phase('Scout')
+log('[IssueDelivery:Scout] Spawning fastcontext-scout (small tier) to create a compact Code Map before Thinker planning...')
+
+const codeMap = await agent(
+  'Use FastContext and targeted reads to produce a compact Code Map for this task. Do not edit files. Return only relevant files, line ranges, exported APIs, tests, and caveats. Keep it under 1200 words.\\n' +
+  'Task: "' + TASK + '"',
+  {
+    label: 'issue-scout',
+    tier: 'small',
+    agentType: 'fastcontext-scout'
+  }
+)
+
+// --- Phase 1: Thinker ---
+phase('Thinker')
+log('[IssueDelivery:Thinker] Spawning Thinker agent (big tier) to map out the execution plan from compact Code Map...')
+
+const plan = await agent(
+  'Analyze the codebase and map out a step-by-step modification plan to complete this task:\\n' +
+  'Task: "' + TASK + '"\\n\\n' +
+  'Compact Code Map from Scout (candidate citations; verify before relying on them):\\n' +
+  JSON.stringify(codeMap).slice(0, 6000) + '\\n\\n' +
+  'Break the task down into a Directed Acyclic Graph (DAG) of sequential and parallelizable modifications.\\n' +
+  'Guidelines for DAG mapping:\\n' +
+  '1. Steps touching the SAME file MUST depend on each other sequentially (e.g. step-2 depends on step-1) to avoid Git merge conflicts.\\n' +
+  '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n' +
+  '3. Keep each Worker step narrow enough for one focused edit pass.\\n\\n' +
+  'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
+  {
+    label: 'issue-thinker',
+    tier: 'big',
+    schema: THINKER_SCHEMA
+  }
+)
+
+if (!plan || !plan.steps || plan.steps.length === 0) {
+  throw new Error('Thinker failed to produce a valid execution plan.')
+}
+
+log('[IssueDelivery:Thinker] Plan created! Found ' + plan.steps.length + ' steps in the dependency graph.')
+
+// --- Phase 2 & 3: Worker & Verifier Trinity DAG Loop ---
+const executionState = {
+  task: TASK,
+  summary: plan.summary,
+  completedSteps: [],
+  logs: []
+}
+
+const completed = {}
+const started = {}
+
+while (Object.keys(completed).length < plan.steps.length) {
+  // Find steps that are ready (all dependencies met, not started)
+  const readySteps = plan.steps.filter(step => {
+    if (started[step.id]) return false
+    const deps = step.dependencies || []
+    return deps.every(depId => completed[depId])
+  })
+
+  if (readySteps.length === 0) {
+    throw new Error('Cyclic dependency or deadlock detected in Thinker plan.')
+  }
+
+  log('[IssueDelivery:Orchestrator] Found ' + readySteps.length + ' ready step(s) to execute in parallel: ' + readySteps.map(s => s.id).join(', '))
+
+  // Mark all ready steps as started
+  for (const step of readySteps) {
+    started[step.id] = true
+  }
+
+  // Execute ready steps concurrently using parallel()
+  await parallel(readySteps.map(step => async () => {
+    log('[IssueDelivery:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
+
+    const feedbackRounds = []
+    let lastDelta = null
+
+    const result = await gate(
+      async (previousFeedback, attempt) => {
+        phase('Worker')
+        const workerTier = attempt === 0 ? 'small' : (attempt === 1 ? 'medium' : 'big')
+        let prompt = 'You are the Specialized Worker. Your sole task is to implement this specific step:\\n' +
+          'Step ID: ' + step.id + '\\n' +
+          'File: ' + step.file + '\\n' +
+          'Instructions: ' + step.instructions + '\\n' +
+          'Expected Output: ' + step.expectedOutput + '\\n\\n'
+
+        if (previousFeedback) {
+          prompt += '⚠️ PREVIOUS ATTEMPT FAILED. Correct your mistakes using this bounded Correction Delta only; do not chase old raw logs:\\n' +
+                    previousFeedback + '\\n\\n' +
+                    'Attempt: #' + (attempt + 1) + '. Please fix the code and try again. Treat constraints as hard rules.'
+        } else {
+          prompt += 'Use your file edit tools (edit/write) to apply these changes directly to the codebase.'
+        }
+
+        log('[IssueDelivery:Worker] Starting implementation of ' + step.file + ' (' + workerTier + ' tier) (Attempt #' + (attempt + 1) + ')...')
+        return await agent(prompt, {
+          label: 'issue-worker:' + step.id,
+          tier: workerTier,
+          agentType: 'specialized-worker'
+        })
+      },
+
+      async (workerResult) => {
+        const roundIndex = feedbackRounds.length + 1
+        phase('LocalChecks')
+        log('[IssueDelivery:LocalChecks] Running host-side stageCheck on ' + step.file + ' (zero LLM tokens)...')
+
+        const localChecks = await stageCheck({ targetFile: step.file })
+        if (!localChecks.ok) {
+          const round = {
+            index: roundIndex,
+            verdict: 'fail',
+            feedback: renderStageCheckFeedback(localChecks),
+            localChecks
+          }
+          const delta = compactFeedback({
+            rounds: feedbackRounds.concat([round]),
+            previousDelta: lastDelta,
+            maxTokens: 512,
+            auditLogId: 'issue-delivery-' + step.id
+          })
+          feedbackRounds.push(round)
+          lastDelta = delta
+          const rendered = renderCorrectionDelta(delta)
+          log('[IssueDelivery:LocalChecks] Step ' + step.id + ' failed host checks. Compacted correction delta size: ' + rendered.length + ' chars.')
+          return { ok: false, feedback: rendered }
+        }
+
+        phase('Verifier')
+        log('[IssueDelivery:Verifier] strict LLM verification of ' + step.file + ' using ' + VERIFIER_TIER + ' tier...')
+        const verification = await agent(
+          'Review the changes made to ' + step.file + ' for correctness and completeness.\\n' +
+          'Task requirements: ' + step.instructions + '\\n' +
+          'Expected Output: ' + step.expectedOutput + '\\n\\n' +
+          'Host-side LocalChecks summary (mechanical checks already passed):\\n' +
+          JSON.stringify({ summary: localChecks.summary, checks: localChecks.checks.map(c => ({ name: c.name, ok: c.ok, exitCode: c.exitCode, durationMs: c.durationMs })) }) + '\\n\\n' +
+          'Inspect the file and perform a strict semantic evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with concise, forward-looking feedback. Do not paste raw chronological logs.',
+          {
+            label: 'issue-verifier:' + step.id,
+            tier: VERIFIER_TIER,
+            schema: VERIFIER_SCHEMA
+          }
+        )
+
+        if (verification && verification.passed) {
+          log('[IssueDelivery:Verifier] Step ' + step.id + ' PASSED verification!')
+          return { ok: true }
+        }
+
+        const errorFeedback = verification ? verification.feedback : 'Verification failed without specific logs.'
+        const round = {
+          index: roundIndex,
+          verdict: 'fail',
+          feedback: errorFeedback,
+          findings: [{
+            rule: 'verifier:semantic',
+            severity: 'error',
+            message: errorFeedback,
+            status: 'open',
+            blocking: true
+          }],
+          trace: 'workerResult=' + String(workerResult).slice(0, 1000)
+        }
+        const delta = compactFeedback({
+          rounds: feedbackRounds.concat([round]),
+          previousDelta: lastDelta,
+          maxTokens: 512,
+          auditLogId: 'issue-delivery-' + step.id
+        })
+        feedbackRounds.push(round)
+        lastDelta = delta
+        const rendered = renderCorrectionDelta(delta)
+        log('[IssueDelivery:Verifier] Step ' + step.id + ' FAILED verification. Compacted correction delta size: ' + rendered.length + ' chars.')
+        return { ok: false, feedback: rendered }
+      },
+      { attempts: WORKER_ATTEMPTS }
+    )
+
+    if (!result.ok) {
+      throw new Error('Step ' + step.id + ' failed verification after ' + result.attempts + ' attempts. Aborting.')
+    } 
+
+    completed[step.id] = {
+      id: step.id,
+      file: step.file,
+      attemptsNeeded: result.attempts
+    }
+
+    executionState.completedSteps.push({
+      id: step.id,
+      file: step.file,
+      attemptsNeeded: result.attempts
+    })
+
+    // Write state utilizing our lightweight local check model to keep overhead very low
+    await agent(
+      'Write the following JSON to the transient file .issue-delivery/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
+      'JSON:\\n' + JSON.stringify(executionState, null, 2),
+      {
+        label: 'issue-state',
+        tier: 'small'
+      }
+    )
+  }))
+}
+
+log('[IssueDelivery] 🎉 All steps executed and verified successfully!')
+setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'All worker/verifier steps passed. Opening PR delivery pane.', nextAction: 'Creating branch, commit, and draft PR.' })
+
+// --- PR Delivery (execution work remains in the canonical Worker phase) ---
+phase('Worker')
+log('[IssueDelivery:PR_Delivery] Initiating automatic Git branch push and Pull Request creation...')
+
+const prResult = await agent(
+  'You are the Issue Delivery Agent. All file modifications and verification checks are 100% green and successful!\\n' +
+  'Your task is to create a new Git branch, commit ONLY the files listed in the Modified Files list below, push the branch to GitHub, and create a draft Pull Request.\\n\\n' +
+  'Details of completed work:\\n' +
+  'Task: "' + TASK + '"\\n' +
+  'Summary of changes: ' + executionState.summary + '\\n' +
+  'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
+  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .issue-delivery/, legacy .fugu/, or .fastcontext/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
+  'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. issue-delivery/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
+  {
+    label: 'issue-pr-delivery',
+    tier: 'small'
+  }
+)
+
+log('[IssueDelivery] Pull Request creation complete! Result:\\n' + prResult)
+
+// --- Finalization / Telemetry gate: verify clean-committed-pushed invariants ---
+// Do not declare success if changes are dirty, uncommitted, or unpushed.
+phase('Telemetry')
+log('[IssueDelivery:finalization] Running finalization gate...')
+
+setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })
+
+const finalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+
+const finalizationStatus = finalization.toRunStatus || {
+  status: finalization.status || 'unknown',
+  reason: finalization.reason || 'Finalization gate completed.',
+  nextAction: finalization.nextAction || 'Review details below.',
+  details: finalization.details || ''
+}
+
+setSemanticStatus(finalizationStatus)
+log('[IssueDelivery:finalization] Status: ' + finalizationStatus.status + ' — ' + finalizationStatus.reason)
+
+return {
+  success: finalizationStatus.status === 'completed' || finalizationStatus.status === 'finalizing',
+  summary: executionState.summary,
+  stepsCompleted: executionState.completedSteps,
+  pr: prResult,
+  finalization: finalization
+}`;
+}
