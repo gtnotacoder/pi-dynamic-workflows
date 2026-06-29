@@ -15,6 +15,7 @@ import {
   registerModesCommand,
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
+  registerWorkflowTelemetryReportCommand,
   saveWorkflowSettingsForCwd,
   scrubStalePiTelemetryEnv,
   WorkflowManager,
@@ -55,6 +56,7 @@ export default function extension(pi: ExtensionAPI) {
   pi.registerTool(workflowTool);
   registerWorkflowCommands(pi, manager, { storage, cwd });
   registerWorkflowModelsCommand(pi);
+  registerWorkflowTelemetryReportCommand(pi, { cwd, manager });
   registerModesCommand(pi, { cwd });
   registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);

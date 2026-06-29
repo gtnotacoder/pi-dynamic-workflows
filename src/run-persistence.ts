@@ -57,6 +57,8 @@ export interface PersistedRunState {
   updatedAt: string;
   completedAt?: string;
   durationMs?: number;
+  /** Absolute path to this persisted run-state JSON, when recorded by WorkflowManager. */
+  runStatePath?: string;
   /** Effective run-wide wall-clock timeout (ms) captured at start, so resume
    *  keeps the original explicit/settings value. null disables the timeout;
    *  absent (old runs) means the runtime default still applies. */
