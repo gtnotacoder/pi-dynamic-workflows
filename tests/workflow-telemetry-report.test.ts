@@ -81,7 +81,7 @@ test("buildWorkflowTelemetryReport aggregates usage and flags low-cache large ge
 
   assert.equal(report.totals.runs, 1);
   assert.equal(report.totals.agents, 2);
-  assert.equal(report.byModel["openai-codex/gpt-5.5"].cacheReadPct, 0.8);
+  assert.equal(report.byModel["openai-codex/gpt-5.5"].cacheReadPct, 80_000 / (100_000 + 80_000));
   assert.equal(report.byModel["litellm-ny2/local-qwen27"].cacheReadPct, 0);
   assert.ok(report.anomalies.some((a) => a.kind === "large_low_cache" && a.agentLabel === "local finder"));
   assert.ok(report.anomalies.some((a) => a.kind === "context_overrun"));

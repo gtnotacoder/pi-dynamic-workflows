@@ -448,12 +448,16 @@ function hasUsage(usage: AgentUsage): boolean {
 }
 
 function finalizeRollup(rollup: UsageRollup): void {
-  rollup.cacheReadPct = rollup.input > 0 ? rollup.cacheRead / rollup.input : 0;
+  rollup.cacheReadPct = cacheReadFraction(rollup.input, rollup.cacheRead);
 }
 
 function usageCacheReadPct(usage: AgentUsage): number {
-  const input = usage.input ?? 0;
-  return input > 0 ? (usage.cacheRead ?? 0) / input : 0;
+  return cacheReadFraction(usage.input ?? 0, usage.cacheRead ?? 0);
+}
+
+function cacheReadFraction(input: number, cacheRead: number): number {
+  const totalCacheableInput = input + cacheRead;
+  return totalCacheableInput > 0 ? cacheRead / totalCacheableInput : 0;
 }
 
 function maybePushLowCacheAnomaly(
