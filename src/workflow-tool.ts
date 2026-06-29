@@ -123,6 +123,22 @@ const workflowToolSchema = Type.Object({
         "Reserve tokens subtracted from each model context window when calculating occupancy warnings. Omit to use the model maxTokens when known. Pass null to disable a configured default reserve for this run.",
     }),
   ),
+  compactionPolicy: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal("auto"),
+        Type.Literal("default"),
+        Type.Literal("aggressive-local"),
+        Type.Literal("cache-preserving"),
+        Type.Literal("off"),
+        Type.Null(),
+      ],
+      {
+        description:
+          "Default per-agent compaction policy. Omit or use auto unless explicitly requested; auto makes local/no-cache models compact earlier.",
+      },
+    ),
+  ),
 });
 
 export type WorkflowToolInput = {
@@ -137,6 +153,7 @@ export type WorkflowToolInput = {
   tokenBudget?: number;
   agentMaxContextTokens?: number | null;
   agentContextReserveTokens?: number | null;
+  compactionPolicy?: "auto" | "default" | "aggressive-local" | "cache-preserving" | "off" | null;
 };
 
 export interface WorkflowToolOptions {
@@ -201,6 +218,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; likewise do not set agentMaxContextTokens unless asked to cap context size; the defaults are unbounded.",
       "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds or choose a lighter tier.",
       "For workflow context-window guardrails: pass agentMaxContextTokens for a run-wide hard cap, or per-call agent(..., { maxContextTokens }) for one noisy agent; occupancy warnings are logged/persisted automatically at 70/85/95% of the effective model window.",
+      "For workflow compaction: opts.compactionPolicy accepts 'auto', 'default', 'aggressive-local', 'cache-preserving', or 'off'. Leave it as auto unless the user explicitly asks; auto makes local/no-cache models compact earlier while cacheable remote models keep the default policy.",
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
@@ -248,6 +266,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           tokenBudget: params.tokenBudget,
           agentMaxContextTokens: params.agentMaxContextTokens,
           agentContextReserveTokens: params.agentContextReserveTokens,
+          compactionPolicy: params.compactionPolicy,
         });
         const transcriptDir = manager.getRun(runId)?.transcriptDir;
         return {
@@ -288,6 +307,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           tokenBudget: params.tokenBudget,
           agentMaxContextTokens: params.agentMaxContextTokens,
           agentContextReserveTokens: params.agentContextReserveTokens,
+          compactionPolicy: params.compactionPolicy,
           confirm,
           externalSignal: signal,
           onProgress(live) {

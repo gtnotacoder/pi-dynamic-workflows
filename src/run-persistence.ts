@@ -8,7 +8,7 @@ import type { AgentContextWindowStats } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
-import type { JournalEntry } from "./workflow.js";
+import type { JournalEntry, WorkflowRunOptions } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "aborted";
@@ -70,6 +70,8 @@ export interface PersistedRunState {
   agentMaxContextTokens?: number | null;
   /** Effective run-level context reserve override captured at start. */
   agentContextReserveTokens?: number | null;
+  /** Effective run-level compaction policy captured at start. */
+  compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
   tokenUsage?: {
     input: number;
     output: number;

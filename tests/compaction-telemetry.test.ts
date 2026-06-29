@@ -24,6 +24,10 @@ test("normalizeCompactionEvent maps autocompactor JSONL fields into a stable sch
     cache_read_pct: 0.996,
     cache_hot: true,
     suppressed_by_cache_hot: true,
+    compaction_policy: "aggressive-local",
+    compaction_policy_reason: "local/no-cache model",
+    compaction_cache_value: "none",
+    compaction_keep_recent_tokens: 12000,
     inventory: { huge: "redacted" },
     ts: "2026-06-27T07:00:00Z",
   });
@@ -33,7 +37,17 @@ test("normalizeCompactionEvent maps autocompactor JSONL fields into a stable sch
   assert.equal(event?.contextTokens, 230_017);
   assert.equal(event?.cacheReadPct, 0.996);
   assert.equal(event?.suppressedByCacheHot, true);
+  assert.equal(event?.compactionPolicy, "aggressive-local");
+  assert.equal(event?.compactionPolicyReason, "local/no-cache model");
+  assert.equal(event?.compactionCacheValue, "none");
+  assert.equal(event?.compactionKeepRecentTokens, 12000);
   assert.equal((event as unknown as { inventory?: unknown }).inventory, undefined);
+});
+
+test("normalizeCompactionEvent preserves an explicit telemetry source", () => {
+  const event = normalizeCompactionEvent({ type: "workflow_compaction_policy", source: "openai/gpt-5" });
+
+  assert.equal(event?.source, "openai/gpt-5");
 });
 
 test("normalizeCompactionEvent keeps rawType tied to an explicit source discriminator", () => {

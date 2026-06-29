@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
   buildContextWindowStatsForSession,
@@ -15,6 +16,8 @@ import { runWorkflow } from "../src/workflow.js";
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
   lastAssistantText(messages: unknown[]): string;
+  resolveModel(spec: string): unknown;
+  resolveSettingsDefaultModel(settingsManager: SettingsManager): { provider?: string; id?: string } | undefined;
 };
 
 test("listAvailableModelSpecs returns an array (empty when no auth configured)", () => {
@@ -97,6 +100,16 @@ test("buildContextWindowStatsForSession uses current context tokens instead of c
   assert.equal(stats.contextTokens, 80);
   assert.equal(stats.runtimeContextWindow, 200);
   assert.equal(stats.exceededMaxContextTokens, false);
+});
+
+test("WorkflowAgent resolves the settings default model for compaction policy detection", () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
+  agent.resolveModel = (spec: string) => ({ provider: "litellm-ny2", id: spec, contextWindow: 100_000 });
+
+  const model = agent.resolveSettingsDefaultModel(SettingsManager.inMemory({ defaultModel: "local-qwen27" }));
+
+  assert.equal(model?.provider, "litellm-ny2");
+  assert.equal(model?.id, "local-qwen27");
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {
@@ -320,6 +333,47 @@ test("agent() in workflow fires onAgentStart and onAgentEnd callbacks", async ()
     },
   );
   assert.deepEqual(events, ["start:greeter", "end:greeter"]);
+});
+
+test("agent() in workflow forwards compactionPolicy to runner and metadata", async () => {
+  const rec = new CallRecordingAgent();
+  let agentConfigPolicy: unknown;
+  await runWorkflow(
+    `export const meta = { name: 'test', description: 't' }
+     await agent('task', { label: 'local worker', compactionPolicy: 'aggressive-local' })
+     return 1`,
+    {
+      agent: rec,
+      persistLogs: false,
+      onAgentStart: (event) => {
+        agentConfigPolicy = event.agentConfig?.compactionPolicy;
+      },
+    },
+  );
+
+  assert.equal(rec.calls[0].options.compactionPolicy, "aggressive-local");
+  assert.equal(agentConfigPolicy, "aggressive-local");
+});
+
+test("agent() in workflow lets null opt out of a run-level compactionPolicy", async () => {
+  const rec = new CallRecordingAgent();
+  let agentConfigPolicy: unknown;
+  await runWorkflow(
+    `export const meta = { name: 'test', description: 't' }
+     await agent('task', { label: 'remote worker', compactionPolicy: null })
+     return 1`,
+    {
+      agent: rec,
+      persistLogs: false,
+      compactionPolicy: "aggressive-local",
+      onAgentStart: (event) => {
+        agentConfigPolicy = event.agentConfig?.compactionPolicy;
+      },
+    },
+  );
+
+  assert.equal(rec.calls[0].options.compactionPolicy, null);
+  assert.equal(agentConfigPolicy, "auto");
 });
 
 test("agent() in workflow forwards compact subagent history snapshots", async () => {

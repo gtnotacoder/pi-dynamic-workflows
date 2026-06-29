@@ -682,6 +682,28 @@ test("installWorkflowLangfuseTracing redacts JSONL bridge source paths by defaul
   }
 });
 
+test("installWorkflowLangfuseTracing preserves provider/model compaction sources", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-model-source-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({ cwd, defaultWorkflowTimeoutMs: null });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    emitCompactionTelemetry({ type: "workflow_compaction_policy", source: "litellm-ny2/local-qwen27" });
+    await handle.close();
+
+    const spanMetadata = metadata(client.traces[0].spans[0].body);
+    assert.equal(spanMetadata?.source, "litellm-ny2/local-qwen27");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("installWorkflowLangfuseTracing keeps unscoped JSONL events standalone", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-unscoped-"));
   try {

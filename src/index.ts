@@ -13,6 +13,13 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
+export type {
+  WorkflowCompactionCacheValue,
+  WorkflowCompactionPolicyDecision,
+  WorkflowCompactionPolicyName,
+  WorkflowCompactionSettingsOverride,
+} from "./compaction-policy.js";
+export { resolveWorkflowCompactionPolicy } from "./compaction-policy.js";
 export type { CompactionEventSummary, CompactionEventTail, CompactionTelemetryEvent } from "./compaction-telemetry.js";
 export {
   createCompactionEventTail,
