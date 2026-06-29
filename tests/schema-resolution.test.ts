@@ -79,6 +79,27 @@ describe("resolveStructuredOutput", () => {
     assert.equal(prompts(), 1, "one repair prompt recovered it");
   });
 
+  it("checks context caps before issuing schema repair prompts", async () => {
+    const { session, capture, prompts } = makeSession({ callAfter: 1 });
+    await assert.rejects(
+      () =>
+        resolveStructuredOutput(
+          session,
+          capture,
+          Schema,
+          {
+            ...opts,
+            checkContextCap: () => {
+              throw new Error("context cap hit");
+            },
+          },
+          noText,
+        ),
+      /context cap hit/,
+    );
+    assert.equal(prompts(), 0, "cap check should stop before repair prompts");
+  });
+
   it("falls back to strict prose extraction when repair fails", async () => {
     const { session, capture } = makeSession();
     const r = await resolveStructuredOutput(session, capture, Schema, opts, () => '{"word":"fromProse"}');

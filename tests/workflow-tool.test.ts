@@ -111,6 +111,13 @@ test("resolveWorkflowToolDefaults honors null context overrides", () => {
   }
 });
 
+test("createWorkflowTool schema allows null context cap overrides", () => {
+  const tool = createWorkflowTool();
+  const parameters = tool.parameters as { properties?: Record<string, unknown> };
+  assert.match(JSON.stringify(parameters.properties?.agentMaxContextTokens), /null/);
+  assert.match(JSON.stringify(parameters.properties?.agentContextReserveTokens), /null/);
+});
+
 test("createWorkflowTool schema exposes concurrency and agentRetries", () => {
   const tool = createWorkflowTool();
   const parameters = tool.parameters as { properties?: Record<string, { description?: string }> };

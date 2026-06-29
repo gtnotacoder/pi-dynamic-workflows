@@ -112,15 +112,15 @@ const workflowToolSchema = Type.Object({
     }),
   ),
   agentMaxContextTokens: Type.Optional(
-    Type.Number({
+    Type.Union([Type.Number(), Type.Null()], {
       description:
-        "Hard per-agent provider input/context token cap. When set, agent() rejects prompts/runs that exceed it to prevent repeated huge prompts on smaller-window models.",
+        "Hard per-agent provider input/context token cap. When set, agent() rejects prompts/runs that exceed it to prevent repeated huge prompts on smaller-window models. Pass null to disable a configured default cap for this run.",
     }),
   ),
   agentContextReserveTokens: Type.Optional(
-    Type.Number({
+    Type.Union([Type.Number(), Type.Null()], {
       description:
-        "Reserve tokens subtracted from each model context window when calculating occupancy warnings. Omit to use the model maxTokens when known.",
+        "Reserve tokens subtracted from each model context window when calculating occupancy warnings. Omit to use the model maxTokens when known. Pass null to disable a configured default reserve for this run.",
     }),
   ),
 });
@@ -135,8 +135,8 @@ export type WorkflowToolInput = {
   agentTimeoutMs?: number;
   workflowTimeoutMs?: number;
   tokenBudget?: number;
-  agentMaxContextTokens?: number;
-  agentContextReserveTokens?: number;
+  agentMaxContextTokens?: number | null;
+  agentContextReserveTokens?: number | null;
 };
 
 export interface WorkflowToolOptions {

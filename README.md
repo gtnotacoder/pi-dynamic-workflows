@@ -371,7 +371,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **1050/1050** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
+**Status:** **1053/1053** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now

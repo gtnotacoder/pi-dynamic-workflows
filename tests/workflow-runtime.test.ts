@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import type { CollectFinalizationOptions, FinalizationCheckResult } from "../src/conductor-finalization.js";
@@ -936,6 +937,39 @@ const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
 
+function legacyDefaultAgentHash(prompt: string): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        prompt,
+        model: null,
+        tier: null,
+        phase: null,
+        agentType: null,
+        context: {
+          inheritProjectContext: true,
+          systemPromptMode: "append",
+          inheritSkills: true,
+          inheritMainRules: false,
+        },
+        rawContext: {
+          contextMode: null,
+          inheritProjectContext: null,
+          systemPromptMode: null,
+          inheritSkills: null,
+          inheritMainRules: null,
+        },
+        toolPolicy: {
+          tools: null,
+          disallowedTools: null,
+        },
+        agentDef: null,
+        schema: null,
+      }),
+    )
+    .digest("hex");
+}
+
 test("resume replays cached results without re-running agents", async () => {
   const first = countingAgent();
   const journal: JournalEntry[] = [];
@@ -959,6 +993,37 @@ test("resume replays cached results without re-running agents", async () => {
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
+});
+
+test("resume accepts legacy hashes without context policy only when policy is opt-out", async () => {
+  const script = `export const meta = { name: 'legacy_policy_resume', description: 'legacy policy resume' }
+const a = await agent('first', { label: 'a' })
+return a`;
+  const legacyEntry: JournalEntry = {
+    index: 0,
+    hash: legacyDefaultAgentHash("first"),
+    result: "cached-result",
+    label: "a",
+    tokens: 7,
+  };
+
+  const replay = countingAgent();
+  const result = await runWorkflow(script, {
+    agent: replay.runner,
+    persistLogs: false,
+    resumeJournal: new Map([[0, legacyEntry]]),
+  });
+  assert.equal(result.result, "cached-result");
+  assert.equal(replay.state.calls, 0, "legacy no-policy hash should replay under opt-out/no cap");
+
+  const capped = countingAgent();
+  await runWorkflow(script, {
+    agent: capped.runner,
+    agentMaxContextTokens: 1000,
+    persistLogs: false,
+    resumeJournal: new Map([[0, legacyEntry]]),
+  });
+  assert.equal(capped.state.calls, 1, "legacy hash must not replay under an active context policy");
 });
 
 test("resume hash includes resolved context primitives", async () => {

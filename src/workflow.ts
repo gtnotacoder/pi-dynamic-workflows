@@ -636,17 +636,28 @@ export async function runWorkflow<T = unknown>(
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
     const agentCallId = `${runId}:${callIndex}`;
+    const effectiveContextPolicy = {
+      maxContextTokens: effectiveMaxContextTokens,
+      contextReserveTokens: effectiveContextReserveTokens,
+    };
     const callHash = hashAgentCall(
       prompt,
       modelSpec,
       assignedPhase,
       agentOptions,
-      {
-        maxContextTokens: effectiveMaxContextTokens,
-        contextReserveTokens: effectiveContextReserveTokens,
-      },
+      effectiveContextPolicy,
       agentDefinitionKey(agentDef),
       ctx,
+    );
+    const legacyCallHash = hashAgentCall(
+      prompt,
+      modelSpec,
+      assignedPhase,
+      agentOptions,
+      effectiveContextPolicy,
+      agentDefinitionKey(agentDef),
+      ctx,
+      { includeContextPolicy: false },
     );
 
     if (effectiveMaxContextTokens !== undefined) {
@@ -676,7 +687,12 @@ export async function runWorkflow<T = unknown>(
     // Claude Code's contract), so an edited upstream call never leaves stale
     // downstream results served from the journal.
     const cached = options.resumeJournal?.get(callIndex);
-    const hashMatches = cached != null && cached.hash === callHash;
+    const legacyHashMatches =
+      cached != null &&
+      cached.hash === legacyCallHash &&
+      effectiveMaxContextTokens === undefined &&
+      effectiveContextReserveTokens === undefined;
+    const hashMatches = cached != null && (cached.hash === callHash || legacyHashMatches);
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       const cachedModel = cached.model ?? displayModel;
@@ -1516,8 +1532,9 @@ function hashAgentCall(
   effectiveContextPolicy: { maxContextTokens?: number; contextReserveTokens?: number },
   agentDefKey: string | null,
   resolvedContext: ContextPrimitives,
+  hashOptions: { includeContextPolicy?: boolean } = {},
 ): string {
-  const identity = JSON.stringify({
+  const identityValue: Record<string, unknown> = {
     prompt,
     model: model ?? null,
     tier: options.tier ?? null,
@@ -1543,16 +1560,18 @@ function hashAgentCall(
       tools: options.tools ?? null,
       disallowedTools: options.disallowedTools ?? null,
     },
-    contextPolicy: {
-      maxContextTokens: effectiveContextPolicy.maxContextTokens ?? null,
-      contextReserveTokens: effectiveContextPolicy.contextReserveTokens ?? null,
-    },
     // Resolved definition (tools/model/prompt/context) so editing an agent .md
     // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,
     schema: options.schema ?? null,
-  });
-  return createHash("sha256").update(identity).digest("hex");
+  };
+  if (hashOptions.includeContextPolicy !== false) {
+    identityValue.contextPolicy = {
+      maxContextTokens: effectiveContextPolicy.maxContextTokens ?? null,
+      contextReserveTokens: effectiveContextPolicy.contextReserveTokens ?? null,
+    };
+  }
+  return createHash("sha256").update(JSON.stringify(identityValue)).digest("hex");
 }
 
 function buildAgentInstructions(
