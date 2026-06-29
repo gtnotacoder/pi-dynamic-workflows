@@ -698,7 +698,7 @@ export class WorkflowManager extends EventEmitter {
       startedAt: new Date(),
       script: persisted.script,
       args: persisted.args,
-      journal: persisted.journal ?? [],
+      journal: hydrateJournalHistory(persisted.journal ?? [], persisted.agents ?? []),
       background: true,
       lease,
       // Preserve the original explicit/settings timeout so a resumed run keeps
@@ -715,7 +715,7 @@ export class WorkflowManager extends EventEmitter {
     };
     this.runs.set(runId, managed);
 
-    const resumeJournal = new Map((persisted.journal ?? []).map((e) => [e.index, e] as const));
+    const resumeJournal = new Map(managed.journal.map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
     void this.executeRun(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
@@ -809,4 +809,33 @@ export class WorkflowManager extends EventEmitter {
   getPersistence(): RunPersistence {
     return this.persistence;
   }
+}
+
+function hydrateJournalHistory(journal: JournalEntry[], agents: PersistedRunState["agents"]): JournalEntry[] {
+  let nextAgentIndex = 0;
+  return [...journal]
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => {
+      if (entry.history?.length || !isAgentJournalEntry(entry)) return entry;
+      const matchingAgentIndex = agents.findIndex(
+        (agent, index) =>
+          index >= nextAgentIndex &&
+          agent.status === "done" &&
+          agent.label === entry.label &&
+          Boolean(agent.history?.length),
+      );
+      const fallbackAgentIndex = entry.label
+        ? -1
+        : agents.findIndex(
+            (agent, index) => index >= nextAgentIndex && agent.status === "done" && Boolean(agent.history?.length),
+          );
+      const agentIndex = matchingAgentIndex >= 0 ? matchingAgentIndex : fallbackAgentIndex;
+      if (agentIndex < 0) return entry;
+      nextAgentIndex = agentIndex + 1;
+      return { ...entry, history: agents[agentIndex].history };
+    });
+}
+
+function isAgentJournalEntry(entry: JournalEntry): boolean {
+  return Boolean(entry.label || entry.model || entry.usage || entry.tokens !== undefined);
 }

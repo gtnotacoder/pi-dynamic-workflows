@@ -125,6 +125,8 @@ export {
 export { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 export type { WorkflowLangfuseTracingHandle, WorkflowLangfuseTracingOptions } from "./langfuse-tracing.js";
 export { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "./langfuse-tracing.js";
+export type { LeanCtxTelemetrySummary } from "./lean-ctx-telemetry.js";
+export { summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";

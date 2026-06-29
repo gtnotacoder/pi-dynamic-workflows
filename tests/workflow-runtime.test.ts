@@ -467,6 +467,35 @@ return a`;
   assert.equal(replayEvents[0].tokens, usage.total);
 });
 
+test("runWorkflow journals and replays compact agent history", async () => {
+  const script = `export const meta = { name: 'history_replay', description: 'history replay' }
+const a = await agent('first', { label: 'a' })
+return a`;
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script, {
+    agent: {
+      async run(_prompt: string, options: { onHistory?: (history: unknown[]) => void }) {
+        options.onHistory?.([{ role: "assistant", kind: "toolCall", toolName: "ctx_read", text: "{}" }]);
+        return "ok";
+      },
+    },
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  assert.equal(journal[0].history?.[0]?.toolName, "ctx_read");
+
+  const replayedHistories: unknown[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+    onAgentHistory: (event) => replayedHistories.push(event.history),
+  });
+
+  assert.deepEqual(replayedHistories, [journal[0].history]);
+});
+
 test("runWorkflow accumulates retry attempt usage into the final agent event and journal", async () => {
   let calls = 0;
   const events: Array<{ usage?: AgentUsage; tokens?: number }> = [];

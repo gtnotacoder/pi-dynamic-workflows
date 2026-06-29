@@ -93,6 +93,107 @@ test("buildWorkflowTelemetryReport aggregates usage and flags low-cache large ge
   assert.equal(lowCacheAnomaly.runStatePath, "/tmp/pi-runs/run-abc.json");
 });
 
+test("buildWorkflowTelemetryReport includes lean-ctx cache and compression summary", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "ctx agent",
+      prompt: "a",
+      status: "done",
+      model: "m/a",
+      history: [
+        { role: "assistant", kind: "toolCall", toolName: "ctx_read", text: "{}" },
+        {
+          role: "tool",
+          kind: "toolResult",
+          toolName: "ctx_read",
+          text: "source=lean-ctx-bridge\nCompressed 1,000 → 100 tok\nsecond_read_is_stub=true",
+        },
+      ],
+    },
+  ];
+  run.journal = [];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: [] });
+
+  assert.equal(report.leanCtx.ctxToolCalls, 1);
+  assert.equal(report.leanCtx.savedTokens, 900);
+  assert.equal(report.leanCtx.cacheStubHits, 1);
+});
+
+test("buildWorkflowTelemetryReport falls back to journal history for resumed cached agents", () => {
+  const run = sampleRun();
+  run.agents = [{ id: 1, label: "cached ctx", prompt: "a", status: "done", model: "m/a" }];
+  run.journal = [
+    {
+      index: 0,
+      hash: "cached-history",
+      result: "ok",
+      label: "cached ctx",
+      model: "m/a",
+      usage: { input: 10, output: 1, total: 11, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      history: [
+        { role: "assistant", kind: "toolCall", toolName: "ctx_read", text: "{}" },
+        { role: "tool", kind: "toolResult", toolName: "ctx_read", text: "Compressed 1,000 → 100 tok" },
+      ],
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: [] });
+
+  assert.equal(report.leanCtx.ctxToolCalls, 1);
+  assert.equal(report.leanCtx.savedTokens, 900);
+});
+
+test("buildWorkflowTelemetryReport deduplicates active agent and journal history", () => {
+  const run = sampleRun();
+  const history = [
+    { role: "assistant" as const, kind: "toolCall" as const, toolName: "ctx_read", text: "{}" },
+    { role: "tool" as const, kind: "toolResult" as const, toolName: "ctx_read", text: "Compressed 1,000 → 100 tok" },
+  ];
+  run.status = "running";
+  run.agents = [{ id: 1, label: "active ctx", prompt: "a", status: "running", model: "m/a", history }];
+  run.journal = [
+    {
+      index: 0,
+      hash: "active-history",
+      result: "ok",
+      label: "active ctx",
+      model: "m/a",
+      usage: { input: 10, output: 1, total: 11, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      history: [...history],
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: [] });
+
+  assert.equal(report.leanCtx.ctxToolCalls, 1);
+  assert.equal(report.leanCtx.savedTokens, 900);
+});
+
+test("buildWorkflowTelemetryReport keeps identical histories from distinct agents", () => {
+  const run = sampleRun();
+  const history = [
+    { role: "assistant" as const, kind: "toolCall" as const, toolName: "ctx_read", text: "{}" },
+    { role: "tool" as const, kind: "toolResult" as const, toolName: "ctx_read", text: "Compressed 1,000 → 100 tok" },
+  ];
+  run.agents = [
+    { id: 1, label: "ctx one", prompt: "a", status: "done", model: "m/a", history },
+    { id: 2, label: "ctx two", prompt: "b", status: "done", model: "m/a", history: [...history] },
+  ];
+  run.journal = [];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: [] });
+
+  assert.equal(report.leanCtx.ctxToolCalls, 2);
+  assert.equal(report.leanCtx.savedTokens, 1_800);
+});
+
 test("buildWorkflowTelemetryReport skips checkpoint journal entries when matching agent usage", () => {
   const run = sampleRun();
   run.agents = [
@@ -538,6 +639,7 @@ test("renderWorkflowTelemetryReport returns a compact human-readable report", ()
   assert.match(rendered, /Workflow telemetry self-optimization report/);
   assert.match(rendered, /By model/);
   assert.match(rendered, /By agent label/);
+  assert.match(rendered, /Lean-ctx cache\/compression/);
   assert.match(rendered, /cached reviewer/);
   assert.match(rendered, /Trace\/run references/);
   assert.match(rendered, /state=\/tmp\/pi-runs\/run-abc\.json/);
