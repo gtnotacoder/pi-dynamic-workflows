@@ -147,6 +147,8 @@ export {
 export { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 export type { WorkflowLangfuseTracingHandle, WorkflowLangfuseTracingOptions } from "./langfuse-tracing.js";
 export { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "./langfuse-tracing.js";
+export type { CtxReadGuardrailKind, CtxReadGuardrailOutcome, GuardCtxReadOptions } from "./lean-ctx-guardrail.js";
+export { FRONTEND_COMPONENT_EXTENSIONS, guardCtxReadPath, PACKAGE_INTERNAL_RE } from "./lean-ctx-guardrail.js";
 export type { LeanCtxTelemetrySummary } from "./lean-ctx-telemetry.js";
 export { summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
