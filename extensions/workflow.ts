@@ -4,6 +4,7 @@ import {
   createEffortState,
   createWorkflowStorage,
   createWorkflowTool,
+  installHerdrReporter,
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
@@ -88,6 +89,10 @@ export default function extension(pi: ExtensionAPI) {
     }
     // Deliver a background run's result into the conversation when it finishes.
     installResultDelivery(pi, manager);
+    // Tier 0 herdr bridge: mirror live workflow status into the host herdr pane's
+    // cell (a no-op outside herdr, or when `herdrStatus: "off"`). Idempotent
+    // across session_start re-fires.
+    installHerdrReporter(manager, { enabled: loadWorkflowSettings({ cwd }).herdrStatus !== "off" });
     // Live "workflows running" panel below the input (focus + enter to open).
     // Pass a live settings loader so /workflows-progress (compact|detailed) takes
     // effect without a restart.

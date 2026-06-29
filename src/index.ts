@@ -115,6 +115,13 @@ export {
   wrapError,
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
+export {
+  type ActiveRunView,
+  type HerdrReporterOptions,
+  herdrPaneTarget,
+  installHerdrReporter,
+  summarizeActiveRuns,
+} from "./herdr-reporter.js";
 export { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 export type { WorkflowLangfuseTracingHandle, WorkflowLangfuseTracingOptions } from "./langfuse-tracing.js";
 export { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "./langfuse-tracing.js";

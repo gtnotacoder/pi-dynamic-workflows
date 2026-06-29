@@ -38,6 +38,13 @@ export interface WorkflowSettings {
    */
   persistSubagentTranscripts?: boolean;
   /**
+   * herdr TUI status bridge: "auto" (default — mirror live workflow status into
+   * the host herdr pane's cell when running inside herdr; a no-op otherwise) or
+   * "off" (never report). The `PI_WORKFLOWS_HERDR=0` env var also disables it.
+   * See docs/herdr-integration.md.
+   */
+  herdrStatus?: "auto" | "off";
+  /**
    * Project-defined context modes, merged OVER the built-ins (focused|isolated|
    * scoped|legacy) for `--mode <name>` and agentType frontmatter. Each name maps
    * to the full inheritance primitive set. Built-in names are reserved and
@@ -165,6 +172,9 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   }
   if (typeof raw.persistSubagentTranscripts === "boolean") {
     settings.persistSubagentTranscripts = raw.persistSubagentTranscripts;
+  }
+  if (raw.herdrStatus === "auto" || raw.herdrStatus === "off") {
+    settings.herdrStatus = raw.herdrStatus;
   }
   const contextModes = normalizeContextModes(raw.contextModes);
   if (contextModes) settings.contextModes = contextModes;
