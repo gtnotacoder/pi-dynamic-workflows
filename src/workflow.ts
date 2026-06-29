@@ -40,6 +40,11 @@ import {
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import {
+  checkPrototypeWorktreeSafety,
+  type PrototypeSafetyOptions,
+  type PrototypeSafetyResult,
+} from "./prototype-safety.js";
 import { assertValidRunId } from "./run-persistence.js";
 import {
   renderStageCheckFeedback,
@@ -208,6 +213,11 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * When omitted, defaults to `checkFinalization` from conductor-finalization.
    */
   finalizationCheck?: (cwd: string, opts?: CollectFinalizationOptions) => Promise<FinalizationCheckResult>;
+  /**
+   * Injectable prototype-mode safety check so tests can avoid real git state.
+   * When omitted, defaults to the deterministic git worktree checker.
+   */
+  prototypeSafetyCheck?: (cwd: string, opts?: PrototypeSafetyOptions) => Promise<PrototypeSafetyResult>;
   onTokenUsage?: (usage: {
     input: number;
     output: number;
@@ -278,6 +288,10 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   inheritSkills?: boolean;
   /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
   inheritMainRules?: boolean;
+  /** Per-call coding-tool allowlist. Undefined = agentType/default tool policy. */
+  tools?: string[];
+  /** Per-call coding-tool denylist, applied after the allowlist. */
+  disallowedTools?: string[];
   /** Override timeout for this specific agent. null means no hard timeout. */
   timeoutMs?: number | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
@@ -468,6 +482,11 @@ export async function runWorkflow<T = unknown>(
   ): Promise<FinalizationCheckResult> => {
     throwIfAborted();
     return await (options.finalizationCheck ?? defaultCheckFinalization)(cwdArg, opts);
+  };
+
+  const prototypeSafetyCheck = async (safetyOptions: PrototypeSafetyOptions = {}): Promise<PrototypeSafetyResult> => {
+    throwIfAborted();
+    return await (options.prototypeSafetyCheck ?? checkPrototypeWorktreeSafety)(baseCwd, safetyOptions);
   };
 
   const stageCheck = async (stageOptions: StageCheckOptions = {}): Promise<StageCheckResult> => {
@@ -709,8 +728,8 @@ export async function runWorkflow<T = unknown>(
                   instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
                   model: modelSpec,
                   tier: agentOptions.tier,
-                  toolNames: agentDef?.tools,
-                  disallowedToolNames: agentDef?.disallowedTools,
+                  toolNames: agentOptions.tools ?? agentDef?.tools,
+                  disallowedToolNames: agentOptions.disallowedTools ?? agentDef?.disallowedTools,
                   // The workflow layer is the single resolution authority: it passes
                   // the fully-resolved primitives, so the raw mode name is intentionally
                   // NOT forwarded (a project-mode name would be unknown to agent.ts's
@@ -1139,6 +1158,7 @@ export async function runWorkflow<T = unknown>(
     phase,
     setSemanticStatus,
     checkFinalization,
+    prototypeSafetyCheck,
     stageCheck,
     compactFeedback: compactFeedbackForWorkflow,
     renderCorrectionDelta,
@@ -1386,6 +1406,10 @@ function hashAgentCall(
       systemPromptMode: options.systemPromptMode ?? null,
       inheritSkills: options.inheritSkills ?? null,
       inheritMainRules: options.inheritMainRules ?? null,
+    },
+    toolPolicy: {
+      tools: options.tools ?? null,
+      disallowedTools: options.disallowedTools ?? null,
     },
     // Resolved definition (tools/model/prompt/context) so editing an agent .md
     // invalidates this call's cached result on a later resume.

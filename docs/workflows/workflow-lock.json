@@ -13,13 +13,13 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "5fe9267531fe3eafd2de69fd9321dfa9154b33e1d37866e92a08d0321ab3ffc2",
+      "sha256": "14fdcdb4b0523637a0a4b843f5c553f5b88efe8f4581a4206c93f430b3ad7762",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",
       "version": "0.1.7",
       "supportsPrototypeLane": true,
-      "notes": "Legacy /fugu is registered as a deprecated alias to the canonical generated workflow."
+      "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },
     {
       "canonicalName": "closed_loop_issue_delivery",

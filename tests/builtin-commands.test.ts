@@ -99,6 +99,80 @@ test("/issue-delivery uses WorkflowManager background path and prototype flag wh
   assert.match(sent[0].content ?? "", /Run ID: issue-run/);
 });
 
+test("/issue-delivery parses prototype dry-run guardrail options", async () => {
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>, exec: { contextMode?: string }) => {
+      assert.deepEqual(args, {
+        prototype: true,
+        dryRun: false,
+        maxSteps: 2,
+        worktreeRequired: false,
+        allowSharedCheckout: true,
+        baseBranch: "main",
+        task: "implement #35",
+      });
+      assert.deepEqual(exec, { contextMode: undefined });
+      return { runId: "issue-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx } = makeNotifyCtx();
+  await issueDeliveryHandler(
+    "--prototype --dry-run=false --max-steps=2 --worktree-required=false --allow-shared-checkout --base-branch main implement #35",
+    ctx,
+  );
+});
+
+test("/issue-delivery dry-run implies prototype lane and preserves repo option", async () => {
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>) => {
+      assert.deepEqual(args, {
+        dryRun: true,
+        repo: "gtnotacoder/pi-dynamic-workflows",
+        issue: "#35",
+        prototype: true,
+        task: "#35",
+      });
+      return { runId: "issue-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx } = makeNotifyCtx();
+  await issueDeliveryHandler("--dry-run --repo gtnotacoder/pi-dynamic-workflows --issue #35", ctx);
+});
+
+test("/issue-delivery boolean flags do not consume task words and issue context survives task text", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>) => {
+      seen.push(args);
+      return { runId: `issue-run-${seen.length}`, promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx } = makeNotifyCtx();
+  await issueDeliveryHandler("--dry-run fix parser", ctx);
+  await issueDeliveryHandler("--issue #35 fix parser", ctx);
+
+  assert.deepEqual(seen[0], { dryRun: true, prototype: true, task: "fix parser" });
+  assert.deepEqual(seen[1], { issue: "#35", task: "fix parser" });
+});
+
 test("/adversarial-review uses WorkflowManager background path when provided", async () => {
   let started = false;
   const manager = {
