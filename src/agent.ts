@@ -518,7 +518,10 @@ export class WorkflowAgent {
       }
     }
 
-    const activeModel = resolvedModel ?? (this.sessionOptions.model as Partial<Model<any>> | undefined);
+    const activeModel =
+      resolvedModel ??
+      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined) ??
+      (this.sessionOptions.model as Partial<Model<any>> | undefined);
     const agentDir = getAgentDir();
 
     // Resolve the context-inheritance posture (run options are the runtime layer;

@@ -494,6 +494,158 @@ return 1`,
   assert.equal(end?.contextWindow?.maxContextTokens, 100);
 });
 
+test("runWorkflow enforces maxContextTokens on recoverable empty-output failures", async () => {
+  let end:
+    | {
+        errorCode?: WorkflowErrorCode;
+        recoverable?: boolean;
+        contextWindow?: { exceededMaxContextTokens?: boolean };
+      }
+    | undefined;
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'ctx_cap_empty', description: 'context cap empty' }
+await agent('first', { label: 'a' })
+return 1`,
+        {
+          agent: {
+            async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
+              options.onUsage?.({ input: 120, output: 0, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0 });
+              return "";
+            },
+          },
+          agentMaxContextTokens: 100,
+          persistLogs: false,
+          onAgentEnd: (event) => {
+            end = {
+              errorCode: event.errorCode,
+              recoverable: event.recoverable,
+              contextWindow: event.contextWindow,
+            };
+          },
+        },
+      ),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+  );
+
+  assert.equal(end?.errorCode, WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED);
+  assert.equal(end?.recoverable, false);
+  assert.equal(end?.contextWindow?.exceededMaxContextTokens, true);
+});
+
+test("runWorkflow resets context-window stats between retry attempts", async () => {
+  let calls = 0;
+  let finalContext: { contextTokens?: number; warning?: string } | undefined;
+  const result = await runWorkflow(
+    `export const meta = { name: 'ctx_retry_reset', description: 'context retry reset' }
+const a = await agent('first', { label: 'a' })
+return a`,
+    {
+      agentRetries: 1,
+      agentMaxContextTokens: 200,
+      persistLogs: false,
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onUsage?: (u: AgentUsage) => void; onContextWindow?: (stats: unknown) => void },
+        ) {
+          calls++;
+          if (calls === 1) {
+            options.onUsage?.({ input: 150, output: 0, cacheRead: 0, cacheWrite: 0, total: 150, cost: 0 });
+            options.onContextWindow?.({
+              contextTokens: 150,
+              runtimeContextWindow: 200,
+              reserve: 0,
+              effectiveWindow: 200,
+              occupancy: 0.75,
+              threshold: 0.7,
+              level: "warn",
+              warning: "context window 75% used (150/200 tokens)",
+            });
+            return "";
+          }
+          options.onUsage?.({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0, total: 11, cost: 0 });
+          options.onContextWindow?.({ contextTokens: 10, runtimeContextWindow: 200, reserve: 0, level: "ok" });
+          return "ok";
+        },
+      },
+      onAgentEnd: (event) => {
+        finalContext = event.contextWindow;
+      },
+    },
+  );
+
+  assert.equal(result.result, "ok");
+  assert.equal(calls, 2);
+  assert.equal(finalContext?.contextTokens, 10);
+  assert.equal(finalContext?.warning, undefined);
+});
+
+test("runWorkflow uses estimated tokens when reported context stats are zero", async () => {
+  let end: { contextWindow?: { contextTokens?: number; exceededMaxContextTokens?: boolean } } | undefined;
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'ctx_zero_fallback', description: 'zero usage fallback' }
+await agent('tiny', { label: 'a' })
+return 1`,
+        {
+          agentMaxContextTokens: 20,
+          persistLogs: false,
+          agent: {
+            async run(
+              _prompt: string,
+              options: { onUsage?: (u: AgentUsage) => void; onContextWindow?: (stats: unknown) => void },
+            ) {
+              options.onUsage?.({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 });
+              options.onContextWindow?.({ contextTokens: 0, runtimeContextWindow: 100, reserve: 0, level: "ok" });
+              return "x".repeat(200);
+            },
+          },
+          onAgentEnd: (event) => {
+            end = { contextWindow: event.contextWindow };
+          },
+        },
+      ),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+  );
+
+  assert.ok((end?.contextWindow?.contextTokens ?? 0) > 20);
+  assert.equal(end?.contextWindow?.exceededMaxContextTokens, true);
+});
+
+test("resume hash includes run-level context policy", async () => {
+  const script = `export const meta = { name: 'ctx_policy_resume', description: 'context policy resume' }
+const a = await agent('first', { label: 'a' })
+return a`;
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    agentMaxContextTokens: 1000,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  const same = countingAgent();
+  await runWorkflow(script, {
+    agent: same.runner,
+    agentMaxContextTokens: 1000,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(same.state.calls, 0, "same run-level context policy should replay");
+
+  const changed = countingAgent();
+  await runWorkflow(script, {
+    agent: changed.runner,
+    agentMaxContextTokens: 2000,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(changed.state.calls, 1, "changed run-level context policy should miss cache");
+});
+
 test("meta.model is parsed and routes as the default model for agents", async () => {
   let seenModel: string | undefined;
   const recorder = {

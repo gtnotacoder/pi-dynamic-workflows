@@ -387,7 +387,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
   });
 }
 
-function resolveWorkflowToolDefaults(
+export function resolveWorkflowToolDefaults(
   options: WorkflowToolOptions,
   cwd: string,
 ): {
@@ -410,9 +410,14 @@ function resolveWorkflowToolDefaults(
         : settings.defaultWorkflowTimeoutMs,
     concurrency: options.defaultConcurrency ?? options.concurrency ?? settings.defaultConcurrency,
     agentRetries: options.defaultAgentRetries ?? settings.defaultAgentRetries ?? 0,
-    agentMaxContextTokens: options.defaultAgentMaxContextTokens ?? settings.defaultAgentMaxContextTokens ?? null,
+    agentMaxContextTokens:
+      options.defaultAgentMaxContextTokens !== undefined
+        ? options.defaultAgentMaxContextTokens
+        : (settings.defaultAgentMaxContextTokens ?? null),
     agentContextReserveTokens:
-      options.defaultAgentContextReserveTokens ?? settings.defaultAgentContextReserveTokens ?? null,
+      options.defaultAgentContextReserveTokens !== undefined
+        ? options.defaultAgentContextReserveTokens
+        : (settings.defaultAgentContextReserveTokens ?? null),
   };
 }
 
