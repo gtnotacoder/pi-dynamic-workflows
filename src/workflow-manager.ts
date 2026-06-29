@@ -77,6 +77,10 @@ export interface ManagedRun {
    *  run can link to it from the chat <recovery> block. Set regardless of whether
    *  subagent transcript persistence is enabled (the run state is always saved). */
   runStatePath?: string;
+  /** Effective run-level hard per-agent context cap captured at start/resume. */
+  agentMaxContextTokens?: number | null;
+  /** Effective run-level context reserve override captured at start/resume. */
+  agentContextReserveTokens?: number | null;
   /** Optional conductor-level semantic status, layered on top of the engine
    *  `status` above. Older runs may omit this. */
   semanticStatus?: ConductorRunStatus;
@@ -98,6 +102,10 @@ export interface ExecOptions {
   onProgress?: (snapshot: WorkflowSnapshot) => void;
   /** Hard token budget for this run; once spent reaches it, agent() throws. */
   tokenBudget?: number | null;
+  /** Default hard cap for provider input/context tokens per agent. */
+  agentMaxContextTokens?: number | null;
+  /** Default reserve subtracted from model context windows for occupancy. */
+  agentContextReserveTokens?: number | null;
   /** Max concurrent agents for this execution. */
   concurrency?: number;
   /** Retry attempts after recoverable agent failures for this execution. */
@@ -138,6 +146,10 @@ export interface WorkflowManagerOptions {
   defaultWorkflowTimeoutMs?: number | null;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
+  /** Default hard cap for provider input/context tokens per agent. */
+  defaultAgentMaxContextTokens?: number | null;
+  /** Default reserve subtracted from model context windows for occupancy. */
+  defaultAgentContextReserveTokens?: number | null;
   /** Named context-mode registry (built-ins + project-defined) for tool-driven runs. */
   contextModeRegistry?: ContextModeRegistry;
 }
@@ -161,6 +173,8 @@ export class WorkflowManager extends EventEmitter {
   /** Resolved settings/option default for the run-wide timeout. undefined keeps the runtime default. */
   private defaultWorkflowTimeoutMs: number | null | undefined;
   private defaultAgentRetries: number;
+  private defaultAgentMaxContextTokens: number | null;
+  private defaultAgentContextReserveTokens: number | null;
   /** Named context-mode registry threaded into every run so project modes resolve. */
   private contextModeRegistry?: ContextModeRegistry;
   /** Cached setting: whether subagent transcripts are persisted to disk. */
@@ -178,12 +192,21 @@ export class WorkflowManager extends EventEmitter {
     // Preserve undefined (runtime constant applies) vs null (explicit disable).
     this.defaultWorkflowTimeoutMs = options.defaultWorkflowTimeoutMs;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
+    this.defaultAgentMaxContextTokens = normalizePositiveIntegerOption(options.defaultAgentMaxContextTokens) ?? null;
+    this.defaultAgentContextReserveTokens =
+      normalizePositiveIntegerOption(options.defaultAgentContextReserveTokens) ?? null;
     this.contextModeRegistry = options.contextModeRegistry;
     this.persistence = createRunPersistence(this.cwd);
     // Read the opt-out once (run start is rare). Default true matches Claude Code.
     try {
       const settings: WorkflowSettings = loadWorkflowSettings({ cwd: this.cwd });
       this.persistSubagentTranscripts = settings.persistSubagentTranscripts ?? PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT;
+      if (options.defaultAgentMaxContextTokens === undefined) {
+        this.defaultAgentMaxContextTokens = settings.defaultAgentMaxContextTokens ?? null;
+      }
+      if (options.defaultAgentContextReserveTokens === undefined) {
+        this.defaultAgentContextReserveTokens = settings.defaultAgentContextReserveTokens ?? null;
+      }
     } catch {
       this.persistSubagentTranscripts = PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT;
     }
@@ -224,6 +247,16 @@ export class WorkflowManager extends EventEmitter {
    *  manager/settings default applies. undefined is preserved (runtime constant). */
   private resolveStartWorkflowTimeoutMs(exec: ExecOptions): number | null | undefined {
     return exec.workflowTimeoutMs !== undefined ? exec.workflowTimeoutMs : this.defaultWorkflowTimeoutMs;
+  }
+
+  private resolveStartAgentMaxContextTokens(exec: ExecOptions): number | null {
+    if (exec.agentMaxContextTokens === null) return null;
+    return normalizePositiveIntegerOption(exec.agentMaxContextTokens) ?? this.defaultAgentMaxContextTokens;
+  }
+
+  private resolveStartAgentContextReserveTokens(exec: ExecOptions): number | null {
+    if (exec.agentContextReserveTokens === null) return null;
+    return normalizePositiveIntegerOption(exec.agentContextReserveTokens) ?? this.defaultAgentContextReserveTokens;
   }
 
   /** Bind the manager to the current pi session, so new runs are tagged with it and
@@ -299,6 +332,8 @@ export class WorkflowManager extends EventEmitter {
       lease,
       workflowTimeoutMs: this.resolveStartWorkflowTimeoutMs(exec),
       workflowTimeoutMsCaptured: true,
+      agentMaxContextTokens: this.resolveStartAgentMaxContextTokens(exec),
+      agentContextReserveTokens: this.resolveStartAgentContextReserveTokens(exec),
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
@@ -323,6 +358,8 @@ export class WorkflowManager extends EventEmitter {
         updatedAt: managed.startedAt.toISOString(),
         runStatePath: managed.runStatePath,
         workflowTimeoutMs: managed.workflowTimeoutMs,
+        agentMaxContextTokens: managed.agentMaxContextTokens,
+        agentContextReserveTokens: managed.agentContextReserveTokens,
       });
     } catch (err) {
       this.releaseRunLease(managed);
@@ -351,6 +388,8 @@ export class WorkflowManager extends EventEmitter {
     const managed = this.createManaged(script, args);
     managed.workflowTimeoutMs = this.resolveStartWorkflowTimeoutMs(exec);
     managed.workflowTimeoutMsCaptured = true;
+    managed.agentMaxContextTokens = this.resolveStartAgentMaxContextTokens(exec);
+    managed.agentContextReserveTokens = this.resolveStartAgentContextReserveTokens(exec);
     const lease = this.persistence.acquireRunLease(managed.runId);
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -404,6 +443,8 @@ export class WorkflowManager extends EventEmitter {
       externalSignal,
       onProgress,
       tokenBudget,
+      agentMaxContextTokens,
+      agentContextReserveTokens,
       concurrency,
       agentRetries,
       tools,
@@ -430,6 +471,16 @@ export class WorkflowManager extends EventEmitter {
           : this.defaultWorkflowTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
     const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
+    const resolvedAgentMaxContextTokens = resolveContextPolicyOption(
+      agentMaxContextTokens,
+      managed.agentMaxContextTokens,
+      this.defaultAgentMaxContextTokens,
+    );
+    const resolvedAgentContextReserveTokens = resolveContextPolicyOption(
+      agentContextReserveTokens,
+      managed.agentContextReserveTokens,
+      this.defaultAgentContextReserveTokens,
+    );
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -452,6 +503,8 @@ export class WorkflowManager extends EventEmitter {
         agentTimeoutMs: resolvedAgentTimeoutMs,
         workflowTimeoutMs: resolvedWorkflowTimeoutMs,
         tokenBudget,
+        agentMaxContextTokens: resolvedAgentMaxContextTokens,
+        agentContextReserveTokens: resolvedAgentContextReserveTokens,
         confirm,
         contextMode,
         loadSavedWorkflow: this.loadSavedWorkflow,
@@ -501,6 +554,7 @@ export class WorkflowManager extends EventEmitter {
             agent.errorCode = event.errorCode;
             agent.recoverable = event.recoverable;
             agent.tokens = event.tokens;
+            agent.contextWindow = event.contextWindow;
             if (event.model) agent.model = event.model;
             if (event.startedAt) agent.startedAt = event.startedAt;
             agent.endedAt = event.endedAt ?? new Date().toISOString();
@@ -638,6 +692,8 @@ export class WorkflowManager extends EventEmitter {
         // Persist the effective run-wide timeout only when set, so resume keeps
         // the original explicit/settings value. Absent on old runs -> runtime constant.
         workflowTimeoutMs: managed.workflowTimeoutMs,
+        agentMaxContextTokens: managed.agentMaxContextTokens,
+        agentContextReserveTokens: managed.agentContextReserveTokens,
         semanticStatus: managed.semanticStatus,
       });
     } catch (err) {
@@ -709,6 +765,11 @@ export class WorkflowManager extends EventEmitter {
       // default the run never opted into.
       workflowTimeoutMs: persisted.workflowTimeoutMs,
       workflowTimeoutMsCaptured: persisted.workflowTimeoutMs !== undefined,
+      // Older persisted runs predate context caps. Treat absent fields as a
+      // captured opt-out so resuming them does not silently inherit newer manager
+      // defaults and change the original run's policy mid-resume.
+      agentMaxContextTokens: persisted.agentMaxContextTokens ?? null,
+      agentContextReserveTokens: persisted.agentContextReserveTokens ?? null,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
       semanticStatus: persisted.semanticStatus,
@@ -838,4 +899,22 @@ function hydrateJournalHistory(journal: JournalEntry[], agents: PersistedRunStat
 
 function isAgentJournalEntry(entry: JournalEntry): boolean {
   return Boolean(entry.label || entry.model || entry.usage || entry.tokens !== undefined);
+}
+
+function resolveContextPolicyOption(
+  execValue: number | null | undefined,
+  managedValue: number | null | undefined,
+  defaultValue: number | null,
+): number | null {
+  if (execValue !== undefined) {
+    if (execValue === null) return null;
+    return normalizePositiveIntegerOption(execValue) ?? (managedValue !== undefined ? managedValue : defaultValue);
+  }
+  if (managedValue !== undefined) return managedValue;
+  return defaultValue;
+}
+
+function normalizePositiveIntegerOption(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }

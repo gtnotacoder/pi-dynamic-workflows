@@ -1,4 +1,5 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentContextWindowStats } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import { CONDUCTOR_STATUS_ICONS, CONDUCTOR_STATUS_LABELS, type ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
@@ -19,6 +20,8 @@ export interface WorkflowAgentSnapshot {
   history?: AgentHistoryEntry[];
   /** Tokens used by this agent. */
   tokens?: number;
+  /** Context-window occupancy stats for this agent, when known. */
+  contextWindow?: AgentContextWindowStats;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
   /** ISO timestamp when this agent originally started. Preserved across resume replay. */
@@ -220,9 +223,12 @@ export function renderWorkflowLines(
       const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
+      const contextWarn = agent.contextWindow?.warning
+        ? theme.fg("warning", ` ⚠ ${contextWindowShort(agent.contextWindow)}`)
+        : "";
       const errTxt = agentErrorText(agent, theme);
       lines.push(
-        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${contextWarn}${agentTokens}${result}`,
       );
     }
     if (agents.length > visibleAgents.length)
@@ -235,9 +241,12 @@ export function renderWorkflowLines(
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
+      const contextWarn = agent.contextWindow?.warning
+        ? theme.fg("warning", ` ⚠ ${contextWindowShort(agent.contextWindow)}`)
+        : "";
       const errTxt = agentErrorText(agent, theme);
       lines.push(
-        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${contextWarn}${agentTokens}${result}`,
       );
     }
   }
@@ -289,6 +298,11 @@ export function shorten(value: string, max: number): string {
 /** First non-empty, trimmed line of a (possibly multi-line) message. Keeps the
  * actionable summary instead of space-joining a whole stack trace into one
  * flattened blob that a coarse length cap then clips to a generic prefix. */
+function contextWindowShort(stats: AgentContextWindowStats): string {
+  if (stats.occupancy !== undefined) return `${Math.round(stats.occupancy * 100)}% ctx`;
+  return `${stats.contextTokens.toLocaleString()} ctx`;
+}
+
 export function firstLine(value: string | undefined | null): string {
   if (!value) return "";
   for (const line of value.split(/\r?\n/)) {

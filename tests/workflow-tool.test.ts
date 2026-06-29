@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { backgroundStartedText, createWorkflowTool, modelRoutingGuideline } from "../src/workflow-tool.js";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
+import {
+  backgroundStartedText,
+  createWorkflowTool,
+  modelRoutingGuideline,
+  resolveWorkflowToolDefaults,
+} from "../src/workflow-tool.js";
 
 // ─── backgroundStartedText ─────────────────────────────────────────────────────
 
@@ -77,6 +86,36 @@ test("createWorkflowTool schema describes unbounded default timeout", () => {
   const description = parameters.properties?.agentTimeoutMs?.description ?? "";
   assert.match(description, /Omit for no hard timeout/i);
   assert.match(description, /only when the user asks/i);
+});
+
+test("resolveWorkflowToolDefaults honors null context overrides", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-tool-defaults-"));
+  try {
+    saveWorkflowSettings(
+      { defaultAgentMaxContextTokens: 123, defaultAgentContextReserveTokens: 45 },
+      { cwd, scope: "project" },
+    );
+
+    const inherited = resolveWorkflowToolDefaults({}, cwd);
+    assert.equal(inherited.agentMaxContextTokens, 123);
+    assert.equal(inherited.agentContextReserveTokens, 45);
+
+    const disabled = resolveWorkflowToolDefaults(
+      { defaultAgentMaxContextTokens: null, defaultAgentContextReserveTokens: null },
+      cwd,
+    );
+    assert.equal(disabled.agentMaxContextTokens, null);
+    assert.equal(disabled.agentContextReserveTokens, null);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("createWorkflowTool schema allows null context cap overrides", () => {
+  const tool = createWorkflowTool();
+  const parameters = tool.parameters as { properties?: Record<string, unknown> };
+  assert.match(JSON.stringify(parameters.properties?.agentMaxContextTokens), /null/);
+  assert.match(JSON.stringify(parameters.properties?.agentContextReserveTokens), /null/);
 });
 
 test("createWorkflowTool schema exposes concurrency and agentRetries", () => {

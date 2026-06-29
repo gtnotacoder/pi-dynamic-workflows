@@ -13,6 +13,8 @@ export enum WorkflowErrorCode {
   AGENT_LIMIT_EXCEEDED = "AGENT_LIMIT_EXCEEDED",
   /** Token budget exhausted. */
   TOKEN_BUDGET_EXHAUSTED = "TOKEN_BUDGET_EXHAUSTED",
+  /** Subagent exceeded its configured/effective context-window guardrail. */
+  CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED",
   /**
    * The provider's subscription/usage/quota/rate limit was hit. Distinct from the
    * user's self-imposed TOKEN_BUDGET_EXHAUSTED: a provider limit refills on its own,

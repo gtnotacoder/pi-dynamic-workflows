@@ -4,6 +4,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import type { AgentContextWindowStats } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
@@ -27,6 +28,8 @@ export interface PersistedAgentState {
   endedAt?: string;
   /** Tokens used by this agent, when known. */
   tokens?: number;
+  /** Context-window occupancy stats for this agent, when known. */
+  contextWindow?: AgentContextWindowStats;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
 }
@@ -63,6 +66,10 @@ export interface PersistedRunState {
    *  keeps the original explicit/settings value. null disables the timeout;
    *  absent (old runs) means the runtime default still applies. */
   workflowTimeoutMs?: number | null;
+  /** Effective run-level hard per-agent context cap captured at start. */
+  agentMaxContextTokens?: number | null;
+  /** Effective run-level context reserve override captured at start. */
+  agentContextReserveTokens?: number | null;
   tokenUsage?: {
     input: number;
     output: number;

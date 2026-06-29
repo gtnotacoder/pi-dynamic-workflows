@@ -3,8 +3,8 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
-import type { AgentUsage } from "./agent.js";
-import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import type { AgentContextWindowStats, AgentUsage } from "./agent.js";
+import { buildAgentContextWindowStats, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import {
   type AgentDefinition,
@@ -82,6 +82,8 @@ export interface JournalEntry {
   tokens?: number;
   /** Provider usage reported by the original live agent call, when available. */
   usage?: AgentUsage;
+  /** Context-window occupancy stats captured for this agent, when measurable. */
+  contextWindow?: AgentContextWindowStats;
   /** Resolved model used by the original live agent call, when known. */
   model?: string;
   /** ISO timestamp for the original live agent start. */
@@ -124,6 +126,10 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Retry attempts after a recoverable agent failure. Default 0. */
   agentRetries?: number;
   tokenBudget?: number | null;
+  /** Default hard cap for provider input/context tokens per agent. */
+  agentMaxContextTokens?: number | null;
+  /** Default reserve subtracted from model context windows for occupancy. */
+  agentContextReserveTokens?: number | null;
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
   maxAgents?: number;
@@ -197,6 +203,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     result: unknown;
     tokens?: number;
     usage?: AgentUsage;
+    contextWindow?: AgentContextWindowStats;
     worktree?: string;
     model?: string;
     error?: string;
@@ -294,6 +301,10 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   disallowedTools?: string[];
   /** Override timeout for this specific agent. null means no hard timeout. */
   timeoutMs?: number | null;
+  /** Hard cap for provider input/context tokens for this agent. */
+  maxContextTokens?: number | null;
+  /** Override the reserve subtracted from model context windows for occupancy. */
+  contextReserveTokens?: number | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
   retries?: number;
 }
@@ -528,6 +539,15 @@ export async function runWorkflow<T = unknown>(
       });
     }
 
+    const effectiveMaxContextTokens = resolveContextPolicyValue(
+      agentOptions.maxContextTokens,
+      options.agentMaxContextTokens,
+    );
+    const effectiveContextReserveTokens = resolveContextPolicyValue(
+      agentOptions.contextReserveTokens,
+      options.agentContextReserveTokens,
+    );
+
     const assignedPhase = agentOptions.phase ?? state.currentPhase;
 
     // Per-phase soft sub-budget gate: a noisy phase can exhaust its own ceiling
@@ -616,7 +636,42 @@ export async function runWorkflow<T = unknown>(
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
     const agentCallId = `${runId}:${callIndex}`;
-    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef), ctx);
+    const effectiveContextPolicy = {
+      maxContextTokens: effectiveMaxContextTokens,
+      contextReserveTokens: effectiveContextReserveTokens,
+    };
+    const callHash = hashAgentCall(
+      prompt,
+      modelSpec,
+      assignedPhase,
+      agentOptions,
+      effectiveContextPolicy,
+      agentDefinitionKey(agentDef),
+      ctx,
+    );
+    const legacyCallHash = hashAgentCall(
+      prompt,
+      modelSpec,
+      assignedPhase,
+      agentOptions,
+      effectiveContextPolicy,
+      agentDefinitionKey(agentDef),
+      ctx,
+      { includeContextPolicy: false },
+    );
+
+    if (effectiveMaxContextTokens !== undefined) {
+      const estimatedPromptTokens =
+        estimateTokens(prompt) +
+        estimateTokens(buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt));
+      if (estimatedPromptTokens > effectiveMaxContextTokens) {
+        throw new WorkflowError(
+          `agent "${requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount + 1)}" estimated prompt context ${estimatedPromptTokens.toLocaleString()} exceeds maxContextTokens ${effectiveMaxContextTokens.toLocaleString()}`,
+          WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+          { recoverable: false, agentLabel: requestedLabel },
+        );
+      }
+    }
 
     // Reserve the agent slot synchronously — atomic with the limit/budget gate
     // above (no await in between) — so a parallel() fan-out can't all observe the
@@ -632,7 +687,12 @@ export async function runWorkflow<T = unknown>(
     // Claude Code's contract), so an edited upstream call never leaves stale
     // downstream results served from the journal.
     const cached = options.resumeJournal?.get(callIndex);
-    const hashMatches = cached != null && cached.hash === callHash;
+    const legacyHashMatches =
+      cached != null &&
+      cached.hash === legacyCallHash &&
+      effectiveMaxContextTokens === undefined &&
+      effectiveContextReserveTokens === undefined;
+    const hashMatches = cached != null && (cached.hash === callHash || legacyHashMatches);
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       const cachedModel = cached.model ?? displayModel;
@@ -655,6 +715,31 @@ export async function runWorkflow<T = unknown>(
         startedAt: cached.startedAt,
       });
       if (cached.history) options.onAgentHistory?.({ label, phase: assignedPhase, history: cached.history });
+      const cachedContextWindow =
+        cached.contextWindow ??
+        contextWindowFromUsage(cached.usage, cached.tokens, {
+          maxContextTokens: effectiveMaxContextTokens,
+          reserve: effectiveContextReserveTokens,
+        });
+      const cachedContextError = contextWindowExceededError(label, cachedContextWindow);
+      if (cachedContextError) {
+        options.onAgentEnd?.({
+          agentCallId,
+          label,
+          phase: assignedPhase,
+          result: null,
+          tokens: cached.tokens,
+          usage: cached.usage,
+          contextWindow: cachedContextWindow,
+          model: cachedModel,
+          error: cachedContextError.message,
+          errorCode: cachedContextError.code,
+          recoverable: cachedContextError.recoverable,
+          startedAt: cached.startedAt,
+          endedAt: cached.endedAt,
+        });
+        throw cachedContextError;
+      }
       options.onAgentEnd?.({
         agentCallId,
         label,
@@ -662,6 +747,7 @@ export async function runWorkflow<T = unknown>(
         result: cached.result,
         tokens: cached.tokens,
         usage: cached.usage,
+        contextWindow: cachedContextWindow,
         model: cachedModel,
         startedAt: cached.startedAt,
         endedAt: cached.endedAt,
@@ -694,8 +780,10 @@ export async function runWorkflow<T = unknown>(
       let usage: AgentUsage | undefined;
       let agentTokens = 0;
       let agentUsage: AgentUsage | undefined;
+      let contextWindow: AgentContextWindowStats | undefined;
+      let contextWindowWarningEmitted = false;
       let compactHistory: AgentHistoryEntry[] | undefined;
-      const recordTokens = (result: unknown): void => {
+      const recordTokens = (result: unknown): number => {
         const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
         if (usage) {
           shared.tokenUsage.input += usage.input;
@@ -708,11 +796,16 @@ export async function runWorkflow<T = unknown>(
         shared.tokenUsage.total += tokens;
         shared.spent += tokens;
         agentTokens += tokens;
+        return tokens;
       };
 
       try {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           usage = undefined;
+          contextWindow = undefined;
+          contextWindowWarningEmitted = false;
+          let attemptTokens = 0;
+          let recordedAttempt = false;
           try {
             throwIfAborted();
 
@@ -752,6 +845,14 @@ export async function runWorkflow<T = unknown>(
                   onUsage: (u: AgentUsage) => {
                     usage = u;
                   },
+                  onContextWindow: (stats: AgentContextWindowStats) => {
+                    contextWindow = withContextWindowPolicy(stats, {
+                      maxContextTokens: effectiveMaxContextTokens,
+                      reserve: effectiveContextReserveTokens,
+                    });
+                  },
+                  maxContextTokens: effectiveMaxContextTokens,
+                  contextReserveTokens: effectiveContextReserveTokens,
                   onHistory: (history: AgentHistoryEntry[]) => {
                     compactHistory = history;
                     options.onAgentHistory?.({ label, phase: assignedPhase, history });
@@ -770,7 +871,20 @@ export async function runWorkflow<T = unknown>(
               });
             }
 
-            recordTokens(result);
+            attemptTokens = recordTokens(result);
+            recordedAttempt = true;
+            contextWindow = contextWindowForAttempt(contextWindow, usage, attemptTokens, {
+              maxContextTokens: effectiveMaxContextTokens,
+              reserve: effectiveContextReserveTokens,
+            });
+            contextWindowWarningEmitted = emitContextWindowWarning(
+              label,
+              contextWindow,
+              log,
+              contextWindowWarningEmitted,
+            );
+            const successContextError = contextWindowExceededError(label, contextWindow);
+            if (successContextError) throw successContextError;
             const endedAt = new Date().toISOString();
             const finalUsage = alignAgentUsageTotal(agentUsage, agentTokens);
             options.onAgentJournal?.({
@@ -781,6 +895,7 @@ export async function runWorkflow<T = unknown>(
               phase: assignedPhase,
               tokens: agentTokens,
               usage: finalUsage,
+              contextWindow,
               model: displayModel,
               startedAt,
               endedAt,
@@ -793,6 +908,7 @@ export async function runWorkflow<T = unknown>(
               result,
               tokens: agentTokens,
               usage: finalUsage,
+              contextWindow,
               worktree: runCwd,
               model: displayModel,
               startedAt,
@@ -804,7 +920,39 @@ export async function runWorkflow<T = unknown>(
 
             const workflowError = wrapError(error, { agentLabel: label });
             logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
-            recordTokens(null);
+            if (!recordedAttempt) attemptTokens = recordTokens(null);
+
+            contextWindow = contextWindowForAttempt(contextWindow, usage, attemptTokens, {
+              maxContextTokens: effectiveMaxContextTokens,
+              reserve: effectiveContextReserveTokens,
+            });
+            contextWindowWarningEmitted = emitContextWindowWarning(
+              label,
+              contextWindow,
+              log,
+              contextWindowWarningEmitted,
+            );
+            const capError = contextWindowExceededError(label, contextWindow);
+            const finalUsage = alignAgentUsageTotal(agentUsage, agentTokens);
+            if (capError) {
+              options.onAgentEnd?.({
+                agentCallId,
+                label,
+                phase: assignedPhase,
+                result: null,
+                tokens: agentTokens,
+                usage: finalUsage,
+                contextWindow,
+                worktree: runCwd,
+                model: displayModel,
+                error: capError.message,
+                errorCode: capError.code,
+                recoverable: capError.recoverable,
+                startedAt,
+                endedAt: new Date().toISOString(),
+              });
+              throw capError;
+            }
 
             if (workflowError.recoverable && attempt < maxAttempts) {
               log(
@@ -812,8 +960,6 @@ export async function runWorkflow<T = unknown>(
               );
               continue;
             }
-
-            const finalUsage = alignAgentUsageTotal(agentUsage, agentTokens);
             options.onAgentEnd?.({
               agentCallId,
               label,
@@ -821,6 +967,7 @@ export async function runWorkflow<T = unknown>(
               result: null,
               tokens: agentTokens,
               usage: finalUsage,
+              contextWindow,
               worktree: runCwd,
               model: displayModel,
               error: workflowError.message,
@@ -1382,10 +1529,12 @@ function hashAgentCall(
   model: string | undefined,
   phase: string | undefined,
   options: AgentOptions,
+  effectiveContextPolicy: { maxContextTokens?: number; contextReserveTokens?: number },
   agentDefKey: string | null,
   resolvedContext: ContextPrimitives,
+  hashOptions: { includeContextPolicy?: boolean } = {},
 ): string {
-  const identity = JSON.stringify({
+  const identityValue: Record<string, unknown> = {
     prompt,
     model: model ?? null,
     tier: options.tier ?? null,
@@ -1415,8 +1564,14 @@ function hashAgentCall(
     // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,
     schema: options.schema ?? null,
-  });
-  return createHash("sha256").update(identity).digest("hex");
+  };
+  if (hashOptions.includeContextPolicy !== false) {
+    identityValue.contextPolicy = {
+      maxContextTokens: effectiveContextPolicy.maxContextTokens ?? null,
+      contextReserveTokens: effectiveContextPolicy.contextReserveTokens ?? null,
+    };
+  }
+  return createHash("sha256").update(JSON.stringify(identityValue)).digest("hex");
 }
 
 function buildAgentInstructions(
@@ -1445,6 +1600,104 @@ function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): b
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
+function resolveContextPolicyValue(callValue: unknown, runValue: unknown): number | undefined {
+  if (callValue === null) return undefined;
+  const callNormalized = normalizeOptionalPositiveInteger(callValue);
+  if (callNormalized !== undefined) return callNormalized;
+  return normalizeOptionalPositiveInteger(runValue);
+}
+
+function normalizeOptionalPositiveInteger(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
+}
+
+function withContextWindowPolicy(
+  stats: AgentContextWindowStats,
+  options: { maxContextTokens?: number; reserve?: number },
+): AgentContextWindowStats {
+  const adjusted =
+    options.reserve !== undefined && stats.runtimeContextWindow !== undefined
+      ? buildAgentContextWindowStats(
+          { input: stats.contextTokens, total: stats.contextTokens },
+          {
+            runtimeContextWindow: stats.runtimeContextWindow,
+            reserve: options.reserve,
+            maxContextTokens: options.maxContextTokens,
+          },
+        )
+      : { ...stats, maxContextTokens: options.maxContextTokens ?? stats.maxContextTokens };
+  if (options.maxContextTokens === undefined) return adjusted;
+  return buildAgentContextWindowStats(
+    { input: adjusted.contextTokens, total: adjusted.contextTokens },
+    {
+      runtimeContextWindow: adjusted.runtimeContextWindow,
+      reserve: adjusted.reserve,
+      maxContextTokens: options.maxContextTokens,
+    },
+  );
+}
+
+function contextWindowFromUsage(
+  usage: AgentUsage | undefined,
+  tokens: number | undefined,
+  options: { maxContextTokens?: number; reserve?: number } = {},
+): AgentContextWindowStats | undefined {
+  if (!usage && typeof tokens !== "number") return undefined;
+  return buildAgentContextWindowStats(
+    { input: usage?.input ?? 0, total: usage?.total ?? tokens ?? 0 },
+    { reserve: options.reserve, maxContextTokens: options.maxContextTokens },
+  );
+}
+
+function contextWindowForAttempt(
+  reported: AgentContextWindowStats | undefined,
+  usage: AgentUsage | undefined,
+  tokens: number | undefined,
+  options: { maxContextTokens?: number; reserve?: number } = {},
+): AgentContextWindowStats | undefined {
+  const adjusted = reported ? withContextWindowPolicy(reported, options) : undefined;
+  if (adjusted && adjusted.contextTokens > 0) return adjusted;
+  if (!usage && typeof tokens !== "number") return adjusted;
+  const contextTokens = usage && usage.input > 0 ? usage.input : usage && usage.total > 0 ? usage.total : (tokens ?? 0);
+  return buildAgentContextWindowStats(
+    { input: contextTokens, total: contextTokens },
+    {
+      runtimeContextWindow: adjusted?.runtimeContextWindow,
+      reserve: options.reserve ?? adjusted?.reserve,
+      maxContextTokens: options.maxContextTokens,
+    },
+  );
+}
+
+function contextWindowExceededError(
+  label: string,
+  stats: AgentContextWindowStats | undefined,
+): WorkflowError | undefined {
+  if (!stats?.exceededMaxContextTokens) return undefined;
+  return new WorkflowError(
+    stats.warning ?? `agent "${label}" exceeded maxContextTokens`,
+    WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+    {
+      recoverable: false,
+      agentLabel: label,
+      details: stats,
+    },
+  );
+}
+
+function emitContextWindowWarning(
+  label: string,
+  stats: AgentContextWindowStats | undefined,
+  log: (message: string) => void,
+  alreadyEmitted = false,
+): boolean {
+  if (alreadyEmitted || !stats?.warning) return alreadyEmitted;
+  log(`[context-window] ${label}: ${stats.warning}`);
+  return true;
 }
 
 function addAgentUsage(current: AgentUsage | undefined, next: AgentUsage): AgentUsage {

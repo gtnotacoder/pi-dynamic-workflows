@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 // NOTE: This tracer targets the pinned legacy Langfuse v3 client — see README for the dependency-pin
 // rationale. It will be migrated to the @langfuse/* observation API once the v3 pin is lifted.
 import { Langfuse } from "langfuse";
-import type { AgentUsage } from "./agent.js";
+import type { AgentContextWindowStats, AgentUsage } from "./agent.js";
 import {
   type CompactionTelemetryEvent,
   createCompactionEventTail,
@@ -194,6 +194,7 @@ export function installWorkflowLangfuseTracing(
     startedAt?: string;
     endedAt?: string;
     usage?: AgentUsage;
+    contextWindow?: AgentContextWindowStats;
   }) => {
     const run = manager.getRun(event.runId);
     safe(() => tracer.agentEnd(run, event), run);
@@ -389,6 +390,7 @@ class WorkflowLangfuseTracer {
       recoverable?: boolean;
       endedAt?: string;
       usage?: AgentUsage;
+      contextWindow?: AgentContextWindowStats;
     },
   ): void {
     const state = this.ensureRun(run);
@@ -422,6 +424,7 @@ class WorkflowLangfuseTracer {
         cacheUsageSource: usageSummary.cacheSource,
         errorCode: event.errorCode,
         recoverable: event.recoverable,
+        contextWindow: event.contextWindow,
       }),
     });
     if (agent) agent.ended = true;

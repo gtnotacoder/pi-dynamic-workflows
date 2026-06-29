@@ -16,6 +16,7 @@
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { AgentContextWindowStats } from "./agent.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
@@ -197,6 +198,7 @@ function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
       recoverable: a.recoverable,
       history: a.history,
       model: a.model,
+      contextWindow: a.contextWindow,
     })),
     agentCount: p.agents.length,
     runningCount: p.agents.filter((a) => a.status === "running").length,
@@ -410,6 +412,7 @@ export function renderNavigator(
       const body: string[] = [];
       body.push(dim("Status: ") + (a.status ?? ""));
       if (a.model) body.push(dim("Model: ") + (shortModel(a.model) ?? ""));
+      if (a.contextWindow) body.push(dim("Context: ") + formatContextWindow(a.contextWindow));
       if (a.error) body.push(dim("Error: ") + a.error);
       if (a.errorCode) body.push(`${dim("Error code: ")}${a.errorCode}${a.recoverable ? " (recoverable)" : ""}`);
       body.push("", dim("Prompt:"));
@@ -476,6 +479,13 @@ function footerHint(state: NavigatorState, model: NavigatorModel, theme: ThemeLi
       parts.push("↑/↓ select", "enter open", "esc back", "q quit");
   }
   return theme.fg("dim", parts.join(" · "));
+}
+
+function formatContextWindow(stats: AgentContextWindowStats): string {
+  const tokens = `${stats.contextTokens.toLocaleString()} tokens`;
+  const occupancy = stats.occupancy !== undefined ? `, ${Math.round(stats.occupancy * 100)}% occupancy` : "";
+  const effective = stats.effectiveWindow ? ` of ${stats.effectiveWindow.toLocaleString()} effective` : "";
+  return `${tokens}${effective}${occupancy}${stats.warning ? ` — ${stats.warning}` : ""}`;
 }
 
 function wrap(text: string, width: number): string[] {
@@ -573,6 +583,69 @@ export function openWorkflowNavigator(
       const act = (data: string) => {
         const itemKind = state.kind === "runs" ? state.itemKindAt(model, state.cursor) : undefined;
         const action = keyToAction(parseKey(data), state.kind, itemKind);
+        const deleteSelectedSaved = () => {
+          if (state.kind === "runs") {
+            const saved = model.saved();
+            const runCount = model.runs().length;
+            const item = saved[state.cursor - runCount];
+            if (item) {
+              model.deleteSaved(item.name);
+              ui.notify(`Deleted /${item.name}`, "info");
+            }
+          } else if (state.kind === "savedDetail" && state.savedName) {
+            model.deleteSaved(state.savedName);
+            ui.notify(`Deleted /${state.savedName}`, "info");
+            state.back();
+          }
+        };
+        const pauseActiveRun = () => {
+          const id = state.activeRunId(model);
+          if (id) ui.notify(manager.pause(id) ? `Paused ${id}` : `Cannot pause ${id}`, "info");
+        };
+        const stopActiveRun = () => {
+          const id = state.activeRunId(model);
+          if (id) ui.notify(manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id}`, "info");
+        };
+        const restartActiveRun = () => {
+          const id = state.activeRunId(model);
+          const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+          if (!run?.script) {
+            ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
+            return;
+          }
+          const { runId: newId } = manager.startInBackground(run.script, run.args);
+          ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
+        };
+        const saveActiveRun = () => {
+          const id = state.activeRunId(model);
+          const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+          if (!run?.script) {
+            ui.notify("No saved run script to save", "warning");
+            return;
+          }
+          if (!opts.storage) {
+            ui.notify("Saving is not available (no storage)", "error");
+            return;
+          }
+          const storage = opts.storage;
+          const name = run.workflowName || "workflow";
+          let savedWorkflow: ReturnType<WorkflowStorage["save"]>;
+          try {
+            savedWorkflow = storage.save({
+              name,
+              description: run.workflowName,
+              script: run.script,
+              location: "project",
+            });
+          } catch (error) {
+            ui.notify(error instanceof Error ? error.message : String(error), "error");
+            return;
+          }
+          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), savedWorkflow, undefined, () =>
+            storage.list().some((w) => w.name === savedWorkflow.name),
+          );
+          ui.notify(`Saved /${name}`, "info");
+        };
         switch (action.type) {
           case "move":
             state.move(action.delta, currentCount(state, model));
@@ -590,72 +663,21 @@ export function openWorkflowNavigator(
             cleanup();
             done(undefined);
             return;
-          case "deleteSaved": {
-            if (state.kind === "runs") {
-              const saved = model.saved();
-              const runCount = model.runs().length;
-              const item = saved[state.cursor - runCount];
-              if (item) {
-                model.deleteSaved(item.name);
-                ui.notify(`Deleted /${item.name}`, "info");
-              }
-            } else if (state.kind === "savedDetail" && state.savedName) {
-              model.deleteSaved(state.savedName);
-              ui.notify(`Deleted /${state.savedName}`, "info");
-              state.back();
-            }
+          case "deleteSaved":
+            deleteSelectedSaved();
             break;
-          }
-          case "pause": {
-            const id = state.activeRunId(model);
-            if (id) ui.notify(manager.pause(id) ? `Paused ${id}` : `Cannot pause ${id}`, "info");
+          case "pause":
+            pauseActiveRun();
             break;
-          }
-          case "stop": {
-            const id = state.activeRunId(model);
-            if (id) ui.notify(manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id}`, "info");
+          case "stop":
+            stopActiveRun();
             break;
-          }
-          case "restart": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
-            if (!run?.script) {
-              ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
-              break;
-            }
-            const { runId: newId } = manager.startInBackground(run.script, run.args);
-            ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
+          case "restart":
+            restartActiveRun();
             break;
-          }
-          case "save": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
-            if (!run?.script) {
-              ui.notify("No saved run script to save", "warning");
-            } else if (!opts.storage) {
-              ui.notify("Saving is not available (no storage)", "error");
-            } else {
-              const storage = opts.storage;
-              const name = run.workflowName || "workflow";
-              let saved: ReturnType<WorkflowStorage["save"]>;
-              try {
-                saved = storage.save({
-                  name,
-                  description: run.workflowName,
-                  script: run.script,
-                  location: "project",
-                });
-              } catch (error) {
-                ui.notify(error instanceof Error ? error.message : String(error), "error");
-                break;
-              }
-              registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-                storage.list().some((w) => w.name === saved.name),
-              );
-              ui.notify(`Saved /${name}`, "info");
-            }
+          case "save":
+            saveActiveRun();
             break;
-          }
           default:
             return;
         }

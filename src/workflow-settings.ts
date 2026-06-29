@@ -26,6 +26,10 @@ export interface WorkflowSettings {
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
+  /** Default hard per-agent provider input/context token cap. */
+  defaultAgentMaxContextTokens?: number | null;
+  /** Default reserve subtracted from model context windows for occupancy warnings. */
+  defaultAgentContextReserveTokens?: number | null;
   /** Bottom task-panel display mode: "detailed" (default — per-phase/per-agent tree with status, tokens, model, and each finished agent's result preview) | "compact" (one line per run). */
   progressPanelMode?: "compact" | "detailed";
   /** Max agents shown per phase in detailed progress mode (default 8). */
@@ -160,6 +164,18 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   if (defaultConcurrency !== undefined) settings.defaultConcurrency = defaultConcurrency;
   const defaultAgentRetries = normalizeInteger(raw.defaultAgentRetries, 0, MAX_AGENT_RETRIES);
   if (defaultAgentRetries !== undefined) settings.defaultAgentRetries = defaultAgentRetries;
+  if (raw.defaultAgentMaxContextTokens === null) {
+    settings.defaultAgentMaxContextTokens = null;
+  } else {
+    const maxContextTokens = normalizeInteger(raw.defaultAgentMaxContextTokens, 1, Number.MAX_SAFE_INTEGER);
+    if (maxContextTokens !== undefined) settings.defaultAgentMaxContextTokens = maxContextTokens;
+  }
+  if (raw.defaultAgentContextReserveTokens === null) {
+    settings.defaultAgentContextReserveTokens = null;
+  } else {
+    const reserveTokens = normalizeInteger(raw.defaultAgentContextReserveTokens, 1, Number.MAX_SAFE_INTEGER);
+    if (reserveTokens !== undefined) settings.defaultAgentContextReserveTokens = reserveTokens;
+  }
   if (raw.progressPanelMode === "compact" || raw.progressPanelMode === "detailed") {
     settings.progressPanelMode = raw.progressPanelMode;
   }
