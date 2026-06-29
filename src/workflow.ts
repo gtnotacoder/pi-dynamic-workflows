@@ -744,12 +744,13 @@ export async function runWorkflow<T = unknown>(
 
             recordTokens(result);
             const endedAt = new Date().toISOString();
+            const finalUsage = alignAgentUsageTotal(agentUsage, agentTokens);
             options.onAgentJournal?.({
               index: callIndex,
               hash: callHash,
               result,
               tokens: agentTokens,
-              usage: agentUsage,
+              usage: finalUsage,
               model: displayModel,
               startedAt,
               endedAt,
@@ -760,7 +761,7 @@ export async function runWorkflow<T = unknown>(
               phase: assignedPhase,
               result,
               tokens: agentTokens,
-              usage: agentUsage,
+              usage: finalUsage,
               worktree: runCwd,
               model: displayModel,
               startedAt,
@@ -781,13 +782,14 @@ export async function runWorkflow<T = unknown>(
               continue;
             }
 
+            const finalUsage = alignAgentUsageTotal(agentUsage, agentTokens);
             options.onAgentEnd?.({
               agentCallId,
               label,
               phase: assignedPhase,
               result: null,
               tokens: agentTokens,
-              usage: agentUsage,
+              usage: finalUsage,
               worktree: runCwd,
               model: displayModel,
               error: workflowError.message,
@@ -1418,6 +1420,12 @@ function addAgentUsage(current: AgentUsage | undefined, next: AgentUsage): Agent
     cacheRead: (current?.cacheRead ?? 0) + next.cacheRead,
     cacheWrite: (current?.cacheWrite ?? 0) + next.cacheWrite,
   };
+}
+
+function alignAgentUsageTotal(usage: AgentUsage | undefined, tokens: number): AgentUsage | undefined {
+  if (!usage) return undefined;
+  if (tokens <= usage.total) return usage;
+  return { ...usage, total: tokens };
 }
 
 function normalizeConcurrency(value: unknown): number {

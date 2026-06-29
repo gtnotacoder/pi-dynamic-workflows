@@ -456,6 +456,10 @@ return 'done'`);
 
     const run = manager.listRuns().find((candidate) => candidate.runId === runId);
     assert.equal(run?.status, "paused", "paused runs should remain resumable after tracing shutdown");
+    const generation = client.traces[0].spans[0].generations[0];
+    assert.equal(generation.ends.length, 1, "pausing should close the in-flight generation");
+    assert.equal(generation.ends[0].level, "WARNING");
+    assert.equal(metadata(generation.ends[0])?.status, "paused");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

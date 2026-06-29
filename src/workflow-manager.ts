@@ -439,6 +439,7 @@ export class WorkflowManager extends EventEmitter {
       const result = await runWorkflow(script, {
         cwd: this.cwd,
         args,
+        runId: managed.runId,
         agent: this.agent,
         mainModel: this.mainModel,
         signal: managed.controller.signal,

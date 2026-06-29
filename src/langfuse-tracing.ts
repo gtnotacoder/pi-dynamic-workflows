@@ -280,7 +280,7 @@ function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): 
       secretKey: config.secretKey,
       baseUrl: config.baseUrl,
       flushAt: config.flushAt,
-      flushInterval: Math.max(1, Math.ceil(config.flushIntervalMs / 1000)),
+      flushInterval: config.flushIntervalMs,
       release: config.serviceVersion,
       sdkIntegration: WORKFLOW_TRACING_INTEGRATION,
       environment: env.LANGFUSE_TRACING_ENVIRONMENT,
@@ -489,9 +489,13 @@ class WorkflowLangfuseTracer {
   pause(run: ManagedRun | undefined, event: { reason?: string; error?: unknown; resetHint?: string }): void {
     const state = this.ensureRun(run);
     if (!state || !run) return;
+    const message = event.reason ?? "paused";
+    const output = this.payload({ paused: true, reason: event.reason });
+    const endedAt = new Date().toISOString();
+    this.endOpenAgents(run, state, endedAt, message, output, "WARNING", "paused");
     state.root.update({
       level: "WARNING",
-      statusMessage: event.reason ?? "paused",
+      statusMessage: message,
       metadata: cleanObject({
         ...this.runMetadata(run, state),
         status: "paused",
@@ -585,21 +589,23 @@ class WorkflowLangfuseTracer {
     endedAt: string,
     message: string | undefined,
     output: unknown,
+    level: "ERROR" | "WARNING" = "ERROR",
+    status = "failed",
   ): void {
     for (const agent of state.agents) {
       if (agent.ended) continue;
       agent.generation.end?.({
         endTime: endedAt,
         output,
-        level: "ERROR",
+        level,
         statusMessage: message,
         metadata: cleanObject({
           ...this.runMetadata(run, state),
           agentCallId: agent.callId,
           label: agent.label,
           phase: agent.phase,
-          status: "failed",
-          error: message,
+          status,
+          error: level === "ERROR" ? message : undefined,
         }),
       });
       agent.ended = true;
