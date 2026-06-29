@@ -14,6 +14,9 @@ export const PI_TELEMETRY_SUBAGENT_DETAIL_KEYS = [
   "PI_TELEMETRY_SUBAGENT_NAME",
   "PI_TELEMETRY_SUBAGENT_AGENT",
 ] as const;
+export const HINDSIGHT_API_URL_KEY = "HINDSIGHT_API_URL" as const;
+export const LANGFUSE_CREDENTIAL_ENV_KEYS = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"] as const;
+export const LANGFUSE_ENDPOINT_ENV_KEYS = ["LANGFUSE_BASE_URL", "LANGFUSE_BASEURL", "LANGFUSE_HOST"] as const;
 
 const PI_TELEMETRY_SCRUB_KEYS = [
   ...PI_TELEMETRY_ENV_KEYS,
@@ -33,6 +36,30 @@ export interface TelemetryRuntime {
   isProcessAncestor?: (ancestorPid: number, descendantPid: number) => boolean;
   /** Explicit launch-path allowlist for a known telemetry subagent. */
   isIntendedSubagent?: boolean;
+}
+
+export type HindsightApiUrlAction = "absent" | "preserved" | "set" | "removed-blank";
+
+export interface SupervisorTelemetryEnvDecision {
+  piTelemetry: PiTelemetryEnvDecision;
+  hindsightApiUrlAction: HindsightApiUrlAction;
+  langfuse: {
+    publicKeyPresent: boolean;
+    secretKeyPresent: boolean;
+    endpointConfigured: boolean;
+    includePayloads: boolean;
+  };
+}
+
+export interface SupervisorTelemetryEnvOptions {
+  /** Optional non-empty URL to inject for supervised sessions. Empty values are treated as absent. */
+  hindsightApiUrl?: string | null;
+  /**
+   * Runtime for the child Pi process whose env is being prepared. Omit this when
+   * preparing env before spawn; inherited PI_TELEMETRY_* is then scrubbed
+   * conservatively because the future child PID/parentage cannot be proven yet.
+   */
+  childRuntime?: TelemetryRuntime;
 }
 
 export interface PiTelemetryEnvDecision {
@@ -176,6 +203,72 @@ export function scrubStalePiTelemetryEnv(
   }
 
   return { ...initial, scrubbed: true };
+}
+
+/**
+ * Normalize telemetry-related env before launching a supervised tmux/workflow Pi session.
+ *
+ * Policy:
+ * - never pass `HINDSIGHT_API_URL=` as a blank override; delete it so Hindsight can
+ *   use normal config discovery, or inject an explicit non-empty URL;
+ * - scrub inherited PI_TELEMETRY_* before spawn unless an explicit childRuntime proves
+ *   the env belongs to that child;
+ * - report only boolean Langfuse presence so runbooks can diagnose setup without
+ *   printing secrets.
+ */
+export function prepareSupervisorTelemetryEnv(
+  env: Record<string, string | undefined> = process.env,
+  options: SupervisorTelemetryEnvOptions = {},
+): SupervisorTelemetryEnvDecision {
+  const hindsightApiUrlAction = normalizeHindsightApiUrlEnv(env, options.hindsightApiUrl);
+  const piTelemetry = options.childRuntime
+    ? scrubStalePiTelemetryEnv(env, options.childRuntime)
+    : scrubPiTelemetryEnvForUnknownSupervisorChild(env);
+  return {
+    piTelemetry,
+    hindsightApiUrlAction,
+    langfuse: summarizeLangfuseEnv(env),
+  };
+}
+
+export function normalizeHindsightApiUrlEnv(
+  env: Record<string, string | undefined> = process.env,
+  overrideUrl?: string | null,
+): HindsightApiUrlAction {
+  const override = overrideUrl?.trim();
+  if (override) {
+    env[HINDSIGHT_API_URL_KEY] = override;
+    return "set";
+  }
+
+  const current = env[HINDSIGHT_API_URL_KEY];
+  if (current === undefined) return "absent";
+  if (current.trim()) return "preserved";
+  delete env[HINDSIGHT_API_URL_KEY];
+  return "removed-blank";
+}
+
+function scrubPiTelemetryEnvForUnknownSupervisorChild(env: Record<string, string | undefined>): PiTelemetryEnvDecision {
+  const initial = classifyPiTelemetryEnv(env, {
+    pid: 0,
+    ppid: 0,
+    isProcessLive: () => true,
+    isProcessAncestor: () => false,
+  });
+  if (!initial.hasTelemetryEnv) return initial;
+  for (const key of PI_TELEMETRY_SCRUB_KEYS) {
+    delete env[key];
+  }
+  return { ...initial, telemetryProcessRole: "main", preserve: false, scrubbed: true };
+}
+
+function summarizeLangfuseEnv(env: Record<string, string | undefined>): SupervisorTelemetryEnvDecision["langfuse"] {
+  return {
+    publicKeyPresent: nonEmpty(env.LANGFUSE_PUBLIC_KEY),
+    secretKeyPresent: nonEmpty(env.LANGFUSE_SECRET_KEY),
+    endpointConfigured: LANGFUSE_ENDPOINT_ENV_KEYS.some((key) => nonEmpty(env[key])),
+    includePayloads: ["1", "true", "yes", "on"].includes(env.LANGFUSE_INCLUDE_PAYLOADS?.trim().toLowerCase() ?? ""),
+  };
 }
 
 function decision(
