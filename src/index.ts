@@ -181,8 +181,13 @@ export { createStructuredOutputTool } from "./structured-output.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
 export {
   classifyPiTelemetryEnv,
+  HINDSIGHT_API_URL_KEY,
+  type HindsightApiUrlAction,
   isProcessAncestor,
   isProcessLive,
+  LANGFUSE_CREDENTIAL_ENV_KEYS,
+  LANGFUSE_ENDPOINT_ENV_KEYS,
+  normalizeHindsightApiUrlEnv,
   PI_TELEMETRY_ENV_KEYS,
   PI_TELEMETRY_PROCESS_ROLE_KEY,
   PI_TELEMETRY_SUBAGENT_DETAIL_KEYS,
@@ -190,6 +195,9 @@ export {
   type PiTelemetryEnvDecision,
   type PiTelemetryEnvKey,
   parseTelemetryOwnerPid,
+  prepareSupervisorTelemetryEnv,
+  type SupervisorTelemetryEnvDecision,
+  type SupervisorTelemetryEnvOptions,
   scrubStalePiTelemetryEnv,
   shouldPreservePiTelemetryEnv,
   type TelemetryProcessRole,

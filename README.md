@@ -40,6 +40,11 @@ Optional Langfuse workflow tracing is enabled when `LANGFUSE_PUBLIC_KEY` and
 policy spans from the runtime API (`emitCompactionTelemetry`) and the local
 autocompactor JSONL bridge (`~/.autocompactor/pi/stats/events.jsonl`). Payloads
 and absolute run paths stay redacted unless `LANGFUSE_INCLUDE_PAYLOADS=true`.
+For tmux/supervisor-launched sessions, see
+[Supervisor telemetry/env policy](./docs/supervisor-telemetry-env.md): never pass
+a blank `HINDSIGHT_API_URL=`, load Langfuse secrets via a secret-managed env file,
+and use the exported `prepareSupervisorTelemetryEnv()` helper for secret-safe
+launch diagnostics.
 
 ---
 
