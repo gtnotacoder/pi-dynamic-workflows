@@ -59,6 +59,7 @@
   ],
   "pi": {
     "extensions": [
+      "extensions/telemetry-scrub.ts",
       "extensions/workflow.ts"
     ]
   },
