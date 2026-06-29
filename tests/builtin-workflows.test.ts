@@ -24,6 +24,8 @@ test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
   assert.match(body, /compactFeedback\(/);
   assert.match(body, /stateWriteQueue/, "sidecar writes should be serialized");
   assert.match(body, /subagent was aborted/, "best-effort sidecar writes must rethrow subagent aborts");
+  assert.match(body, /writeFailedRunHandoff/, "failed runs should write repair handoff artifacts");
+  assert.match(body, /FINISH_ONLY/, "finish mode should skip full reruns after manual repair");
   assert.match(body, /PROTOTYPE_LANE/);
   assert.match(body, /PROTOTYPE_DRY_RUN/);
   assert.match(body, /prototypeSafetyCheck/);
@@ -146,6 +148,102 @@ test("generateIssueDeliveryWorkflow does not truncate normal delivery plans over
   assert.equal(payload.stepsCompleted?.length, 101);
   assert.equal(labels.filter((label) => label.startsWith("issue-worker:")).length, 101);
   assert.equal(labels.includes("issue-pr-delivery"), true);
+});
+
+test("generateIssueDeliveryWorkflow finish mode skips full rerun and delivers repaired work", async () => {
+  const labels: string[] = [];
+  const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
+    cwd: "/tmp/repaired-worktree",
+    args: { task: "finish issue #46", finish: true },
+    persistLogs: false,
+    agent: {
+      async run(prompt: string, options: { label?: string }): Promise<unknown> {
+        labels.push(options.label ?? "");
+        assert.match(prompt, /Do NOT rerun Scout, Thinker, Worker, or Verifier/);
+        return "https://github.com/example/repo/pull/46";
+      },
+    },
+    stageCheck: async () => ({ ok: true, checks: [], summary: "Stage checks passed (test)." }),
+    finalizationCheck: async () => ({
+      status: "completed",
+      reason: "done",
+      nextAction: "merge",
+      toRunStatus: { status: "completed", reason: "done", nextAction: "merge" },
+    }),
+  });
+
+  const payload = result.result as { finish?: boolean; pr?: string; success?: boolean };
+  assert.equal(payload.finish, true);
+  assert.equal(payload.success, true);
+  assert.match(payload.pr ?? "", /pull\/46/);
+  assert.deepEqual(labels, ["issue-finish-delivery"]);
+});
+
+test("generateIssueDeliveryWorkflow writes one aggregate handoff before failing unrepaired runs", async () => {
+  const labels: string[] = [];
+  const prompts: string[] = [];
+
+  await assert.rejects(
+    runWorkflow(generateIssueDeliveryWorkflow(), {
+      cwd: "/tmp/failed-before-pr",
+      args: { task: "issue #46 failing checks" },
+      persistLogs: false,
+      agent: {
+        async run(prompt: string, options: { label?: string }): Promise<unknown> {
+          labels.push(options.label ?? "");
+          prompts.push(prompt);
+          if (options.label === "issue-thinker") {
+            return {
+              summary: "two independent steps",
+              steps: [
+                { id: "step-1", file: "src/a.ts", instructions: "change a", expectedOutput: "a" },
+                { id: "step-2", file: "src/b.ts", instructions: "change b", expectedOutput: "b" },
+              ],
+            };
+          }
+          return "ok";
+        },
+      },
+      stageCheck: async () => ({ ok: false, checks: [], summary: "tsc failed" }),
+    }),
+    /handoff\.md/,
+  );
+
+  assert.equal(labels.filter((label) => label === "issue-handoff").length, 1, "handoff writer should run once");
+  assert.ok(
+    prompts.some(
+      (prompt) =>
+        prompt.includes("# Issue Delivery failed-run handoff") &&
+        prompt.includes("step-1") &&
+        prompt.includes("step-2") &&
+        prompt.includes("tsc failed"),
+    ),
+    "handoff prompt should aggregate all failed steps and final local-check findings",
+  );
+});
+
+test("generateIssueDeliveryWorkflow surfaces a failed handoff writer", async () => {
+  await assert.rejects(
+    runWorkflow(generateIssueDeliveryWorkflow(), {
+      cwd: "/tmp/failed-handoff-writer",
+      args: { task: "issue #46 failing handoff writer" },
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { label?: string }): Promise<unknown> {
+          if (options.label === "issue-thinker") {
+            return {
+              summary: "one step",
+              steps: [{ id: "step-1", file: "src/a.ts", instructions: "change a", expectedOutput: "a" }],
+            };
+          }
+          if (options.label === "issue-handoff") return null;
+          return "ok";
+        },
+      },
+      stageCheck: async () => ({ ok: false, checks: [], summary: "tsc failed" }),
+    }),
+    /Handoff file write failed/,
+  );
 });
 
 test("generateIssueDeliveryWorkflow prototype mode refuses unsafe shared checkout before agents run", async () => {

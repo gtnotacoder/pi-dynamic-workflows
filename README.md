@@ -174,7 +174,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
-| `/issue-delivery` | `[--mode <name>] [--prototype] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. |
+| `/issue-delivery` | `[--mode <name>] [--prototype] [--finish] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. `--finish` skips planning/worker steps and ships an already-repaired failed run. |
 | `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
@@ -186,14 +186,15 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
 ### Issue Delivery workflow
 
-`/issue-delivery [--mode <name>] [--prototype] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
+`/issue-delivery [--mode <name>] [--prototype] [--finish] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
 
 ```text
 /issue-delivery implement issue #42
 /issue-delivery --mode focused --prototype fix the failing parser regression and open a draft PR
+/issue-delivery --finish issue #42
 ```
 
-The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is the dogfood harness lane for small repo-local experiments while developing the workflow package itself; `--dry-run` also implies this prototype lane. Prototype mode defaults to `dryRun=true`: it performs the safety check, read-only Scout/Thinker planning, host local checks, and bounded prototype review rounds, then stops before Worker edits, git push, and PR creation. To allow bounded local edits but still stop before PR delivery, run `--prototype --dry-run=false` from an isolated linked worktree. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
+The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is the dogfood harness lane for small repo-local experiments while developing the workflow package itself; `--dry-run` also implies this prototype lane. Prototype mode defaults to `dryRun=true`: it performs the safety check, read-only Scout/Thinker planning, host local checks, and bounded prototype review rounds, then stops before Worker edits, git push, and PR creation. To allow bounded local edits but still stop before PR delivery, run `--prototype --dry-run=false` from an isolated linked worktree. If a normal run fails before PR creation but leaves useful product changes, it writes `.issue-delivery/handoff.md`; after manual repair, run `--finish` in the same worktree to run checks, commit/push/open the PR, and execute the finalization gate without redoing Scout/Thinker/Worker. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
 
 High-level flow:
 
@@ -229,7 +230,8 @@ Components:
 | **Verifier** | Performs strict semantic LLM review with schema output `{ passed, feedback }`, only after host checks pass. |
 | **Feedback Compactor** | Converts failed stage checks or verifier feedback into a bounded, redacted Correction Delta (`maxTokens: 512`) for the next Worker attempt. |
 | **State writer** | Writes transient diagnostic progress to `.issue-delivery/status.json` so long runs have inspectable local state. Legacy `.fugu/` scratch state is still ignored during migration. This is scratch state, not intended for commits. |
-| **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. |
+| **Failed-run handoff** | When LocalChecks/Verifier exhaust repair attempts before PR delivery, writes `.issue-delivery/handoff.md` with the final findings, completed steps, transient files to remove/ignore, and `--finish` instructions. |
+| **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. `--finish` enters this checks → PR delivery → finalization lane directly after a human repairs a failed run. |
 
 DAG example produced by the Thinker:
 
@@ -262,6 +264,7 @@ Prototype guardrails:
 Operational notes:
 
 - Start from a clean git working tree when possible; Issue Delivery will create its own branch during normal PR delivery.
+- If a run fails before PR creation with useful dirty worktree changes, inspect `.issue-delivery/handoff.md`, keep intended product changes, remove/ignore transient `.issue-delivery/`, `.fugu/`, and `.fastcontext/` files, then rerun `/issue-delivery --finish ...` from the repaired worktree.
 - `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
 - Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
 - Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.

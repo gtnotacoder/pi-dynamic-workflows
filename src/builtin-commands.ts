@@ -96,6 +96,9 @@ function toCamelFlagName(name: string): string {
 const ISSUE_DELIVERY_BOOLEAN_FLAGS = new Set([
   "prototype",
   "dryRun",
+  "finish",
+  "finishOnly",
+  "resumeFinish",
   "worktreeRequired",
   "allowSharedCheckout",
   "allowDirty",
@@ -140,6 +143,11 @@ function buildIssueDeliveryArgs(rest: string): Record<string, unknown> & { task:
     "maxReviewRounds",
     "dry-run",
     "dryRun",
+    "finish",
+    "finish-only",
+    "finishOnly",
+    "resume-finish",
+    "resumeFinish",
     "worktree-required",
     "worktreeRequired",
     "allow-shared-checkout",
@@ -299,14 +307,17 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         const { mode, rest } = extractModeFlag(args);
         const workflowArgs = buildIssueDeliveryArgs(rest);
         if (!workflowArgs.task) {
-          return ctx.ui.notify(`Usage: /${commandName} [--mode <name>] [--prototype] <task or issue>`, "warning");
+          return ctx.ui.notify(
+            `Usage: /${commandName} [--mode <name>] [--prototype] [--finish] <task or issue>`,
+            "warning",
+          );
         }
         if (deprecated) {
           ctx.ui.notify("/fugu is deprecated; use /issue-delivery for new runs.", "warning");
         }
-        const prototypeText = workflowArgs.prototype ? " (prototype lane)" : "";
+        const runModeText = workflowArgs.finish ? " (finish path)" : workflowArgs.prototype ? " (prototype lane)" : "";
         ctx.ui.notify(
-          `Issue Delivery running${prototypeText} — thinking, working, verifying, then shipping a draft PR…`,
+          `Issue Delivery running${runModeText} — thinking, working, verifying, then shipping a draft PR…`,
           "info",
         );
         try {
