@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
+  type ContextUsage,
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
@@ -419,6 +420,23 @@ export function buildAgentContextWindowStats(
   };
 }
 
+export function buildContextWindowStatsForSession(
+  usage: Pick<AgentUsage, "input" | "total">,
+  contextUsage: ContextUsage | undefined,
+  options: { runtimeContextWindow?: number; reserve?: number; maxContextTokens?: number } = {},
+): AgentContextWindowStats {
+  const currentContextTokens = positiveIntegerField(contextUsage?.tokens);
+  const contextTokens = currentContextTokens ?? (usage.input > 0 ? usage.input : usage.total);
+  return buildAgentContextWindowStats(
+    { input: contextTokens, total: contextTokens },
+    {
+      runtimeContextWindow: positiveIntegerField(contextUsage?.contextWindow) ?? options.runtimeContextWindow,
+      reserve: options.reserve,
+      maxContextTokens: options.maxContextTokens,
+    },
+  );
+}
+
 function buildContextWindowWarning(input: {
   contextTokens: number;
   effectiveWindow?: number;
@@ -617,9 +635,10 @@ export class WorkflowAgent {
           total: tokens.total,
           cost,
         };
+        const contextUsage = session.getContextUsage();
         return {
           usage,
-          contextWindow: buildAgentContextWindowStats(usage, {
+          contextWindow: buildContextWindowStatsForSession(usage, contextUsage, {
             runtimeContextWindow: positiveIntegerField(activeModel?.contextWindow),
             reserve: positiveIntegerField(options.contextReserveTokens) ?? positiveIntegerField(activeModel?.maxTokens),
             maxContextTokens: positiveIntegerField(options.maxContextTokens),

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
-import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
+import {
+  buildContextWindowStatsForSession,
+  listAvailableModelSpecs,
+  resolveAgentModelSpec,
+  WorkflowAgent,
+} from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
 import { runWorkflow } from "../src/workflow.js";
@@ -80,6 +85,18 @@ test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier 
 
 test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
   assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
+});
+
+test("buildContextWindowStatsForSession uses current context tokens instead of cumulative usage", () => {
+  const stats = buildContextWindowStatsForSession(
+    { input: 150, total: 150 },
+    { tokens: 80, contextWindow: 200, percent: 40 },
+    { maxContextTokens: 100 },
+  );
+
+  assert.equal(stats.contextTokens, 80);
+  assert.equal(stats.runtimeContextWindow, 200);
+  assert.equal(stats.exceededMaxContextTokens, false);
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {
