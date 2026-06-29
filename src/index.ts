@@ -149,6 +149,8 @@ export {
   classifyPiTelemetryEnv,
   isProcessLive,
   PI_TELEMETRY_ENV_KEYS,
+  PI_TELEMETRY_PROCESS_ROLE_KEY,
+  PI_TELEMETRY_SUBAGENT_ROLE,
   type PiTelemetryEnvDecision,
   type PiTelemetryEnvKey,
   parseTelemetryOwnerPid,

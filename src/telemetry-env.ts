@@ -4,6 +4,11 @@ export const PI_TELEMETRY_ENV_KEYS = [
   "PI_TELEMETRY_TRACE_ID",
 ] as const;
 
+export const PI_TELEMETRY_PROCESS_ROLE_KEY = "PI_TELEMETRY_PROCESS_ROLE" as const;
+export const PI_TELEMETRY_SUBAGENT_ROLE = "subagent" as const;
+
+const PI_TELEMETRY_SCRUB_KEYS = [...PI_TELEMETRY_ENV_KEYS, PI_TELEMETRY_PROCESS_ROLE_KEY] as const;
+
 export type PiTelemetryEnvKey = (typeof PI_TELEMETRY_ENV_KEYS)[number];
 export type TelemetryProcessRole = "main" | "subagent";
 
@@ -12,6 +17,8 @@ export interface TelemetryRuntime {
   ppid: number;
   /** Inject in tests to avoid relying on real process state. */
   isProcessLive?: (pid: number) => boolean;
+  /** Explicit launch-path allowlist for a known telemetry subagent. */
+  isIntendedSubagent?: boolean;
 }
 
 export interface PiTelemetryEnvDecision {
@@ -20,6 +27,7 @@ export interface PiTelemetryEnvDecision {
   parentPid: number;
   ownerPid?: number;
   hasTelemetryEnv: boolean;
+  hasSubagentMarker: boolean;
   preserve: boolean;
   scrubbed: boolean;
   reason:
@@ -29,6 +37,7 @@ export interface PiTelemetryEnvDecision {
     | "owner-not-live"
     | "missing-session-or-trace"
     | "owner-is-not-parent"
+    | "missing-subagent-marker"
     | "valid-direct-child";
 }
 
@@ -58,36 +67,41 @@ export function classifyPiTelemetryEnv(
   const ppid = runtime?.ppid ?? (typeof process.ppid === "number" ? process.ppid : 0);
   const checkLive = runtime?.isProcessLive ?? isProcessLive;
   const hasTelemetryEnv = PI_TELEMETRY_ENV_KEYS.some((key) => env[key] != null && env[key] !== "");
+  const hasSubagentMarker = isExplicitTelemetrySubagent(env, runtime);
 
   if (!hasTelemetryEnv) {
-    return decision("absent", pid, ppid, undefined, false, false, false);
+    return decision("absent", pid, ppid, undefined, false, hasSubagentMarker, false, false);
   }
 
   const ownerPid = parseTelemetryOwnerPid(env.PI_TELEMETRY_OWNER_PID);
   if (ownerPid === undefined) {
-    return decision("invalid-owner-pid", pid, ppid, undefined, true, false, false);
+    return decision("invalid-owner-pid", pid, ppid, undefined, true, hasSubagentMarker, false, false);
   }
 
   if (ownerPid === pid) {
-    return decision("owner-is-current-process", pid, ppid, ownerPid, true, false, false);
+    return decision("owner-is-current-process", pid, ppid, ownerPid, true, hasSubagentMarker, false, false);
   }
 
   if (!checkLive(ownerPid)) {
-    return decision("owner-not-live", pid, ppid, ownerPid, true, false, false);
+    return decision("owner-not-live", pid, ppid, ownerPid, true, hasSubagentMarker, false, false);
   }
 
   if (!nonEmpty(env.PI_TELEMETRY_SESSION_ID) || !nonEmpty(env.PI_TELEMETRY_TRACE_ID)) {
-    return decision("missing-session-or-trace", pid, ppid, ownerPid, true, false, false);
+    return decision("missing-session-or-trace", pid, ppid, ownerPid, true, hasSubagentMarker, false, false);
   }
 
   if (ownerPid !== ppid) {
-    return decision("owner-is-not-parent", pid, ppid, ownerPid, true, false, false);
+    return decision("owner-is-not-parent", pid, ppid, ownerPid, true, hasSubagentMarker, false, false);
   }
 
-  return decision("valid-direct-child", pid, ppid, ownerPid, true, true, false);
+  if (!hasSubagentMarker) {
+    return decision("missing-subagent-marker", pid, ppid, ownerPid, true, false, false, false);
+  }
+
+  return decision("valid-direct-child", pid, ppid, ownerPid, true, true, true, false);
 }
 
-/** Return true only when inherited telemetry describes this process as a valid direct child/subagent. */
+/** Return true only when inherited telemetry describes an explicitly marked direct-child/subagent launch. */
 export function shouldPreservePiTelemetryEnv(
   env: Record<string, string | undefined> = process.env,
   runtime?: TelemetryRuntime,
@@ -99,8 +113,9 @@ export function shouldPreservePiTelemetryEnv(
  * Delete stale, partial, or unrelated Pi telemetry env vars before telemetry extensions load.
  *
  * Top-level Pi processes launched by supervisors can inherit old PI_TELEMETRY_* values.
- * Preserve them only for a coherent direct-child/subagent launch; otherwise scrub all
- * telemetry linkage keys so the process starts a fresh top-level trace.
+ * Preserve them only for a coherent direct-child launch that is also explicitly
+ * marked as an intended telemetry subagent; otherwise scrub all telemetry linkage
+ * keys so the process starts a fresh top-level trace.
  */
 export function scrubStalePiTelemetryEnv(
   env: Record<string, string | undefined> = process.env,
@@ -109,7 +124,7 @@ export function scrubStalePiTelemetryEnv(
   const initial = classifyPiTelemetryEnv(env, runtime);
   if (!initial.hasTelemetryEnv || initial.preserve) return initial;
 
-  for (const key of PI_TELEMETRY_ENV_KEYS) {
+  for (const key of PI_TELEMETRY_SCRUB_KEYS) {
     delete env[key];
   }
 
@@ -122,6 +137,7 @@ function decision(
   parentPid: number,
   ownerPid: number | undefined,
   hasTelemetryEnv: boolean,
+  hasSubagentMarker: boolean,
   preserve: boolean,
   scrubbed: boolean,
 ): PiTelemetryEnvDecision {
@@ -131,10 +147,19 @@ function decision(
     parentPid,
     ownerPid,
     hasTelemetryEnv,
+    hasSubagentMarker,
     preserve,
     scrubbed,
     reason,
   };
+}
+
+function isExplicitTelemetrySubagent(
+  env: Record<string, string | undefined>,
+  runtime: TelemetryRuntime | undefined,
+): boolean {
+  if (runtime?.isIntendedSubagent === true) return true;
+  return env[PI_TELEMETRY_PROCESS_ROLE_KEY]?.trim().toLowerCase() === PI_TELEMETRY_SUBAGENT_ROLE;
 }
 
 function nonEmpty(value: string | undefined): boolean {

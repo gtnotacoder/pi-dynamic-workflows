@@ -1,4 +1,3 @@
-import telemetryExtension from "@amaster.ai/pi-telemetry";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   buildContextModeRegistry,
@@ -21,10 +20,11 @@ import {
 } from "../src/index.js";
 
 export default function extension(pi: ExtensionAPI) {
-  // Issue #19: scrub stale inherited Pi telemetry linkage before the telemetry
-  // extension classifies this process as main vs subagent at load time.
+  // Issue #19: scrub stale inherited Pi telemetry linkage before any later
+  // telemetry listener observes this process. Do not register telemetry here:
+  // @amaster.ai/pi-telemetry may also be installed as a standalone package,
+  // and double-registering it would duplicate every lifecycle export.
   scrubStalePiTelemetryEnv();
-  telemetryExtension(pi);
 
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
