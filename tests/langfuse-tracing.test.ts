@@ -87,6 +87,7 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
       cwd,
       defaultAgentTimeoutMs: null,
       defaultWorkflowTimeoutMs: null,
+      mainModel: "main/model",
       agent: {
         async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
           options.onModelResolved?.("test/model");
@@ -102,7 +103,9 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
       env: {
         LANGFUSE_PUBLIC_KEY: "pk-test",
         LANGFUSE_SECRET_KEY: "sk-test",
+        PI_TELEMETRY_OWNER_PID: String(process.ppid),
         PI_TELEMETRY_SESSION_ID: "session-env",
+        PI_TELEMETRY_TRACE_ID: "parent-trace-env",
       },
       client: client as never,
       onError: (message) => errors.push(message),
@@ -112,7 +115,7 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
     assert.equal(handle.enabled, true);
     await manager.runSync(
       `export const meta = { name: 'lf_env', description: 'Langfuse env test' }
-       await agent('hello', { label: 'reviewer' })
+       await agent('hello', { label: 'reviewer', tier: 'small', contextMode: 'legacy', maxContextTokens: 10000 })
        return 'done'`,
       { pr: 28 },
       { workflowTimeoutMs: null },
@@ -135,6 +138,32 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
     assert.equal(client.traces[0].body.id, expectedTraceId);
 
     const traceMetadata = metadata(client.traces[0].body);
+    assert.equal(traceMetadata?.packageName, "pi-dynamic-workflows-oc-style");
+    assert.equal(traceMetadata?.traceParentStatus, "valid");
+    assert.equal(traceMetadata?.traceParentReason, "valid-direct-child");
+    assert.equal(traceMetadata?.telemetryProcessRole, "subagent");
+    assert.equal(traceMetadata?.parentPiTraceId, "parent-trace-env");
+    assert.equal(
+      (traceMetadata?.harness as { packageName?: string } | undefined)?.packageName,
+      "pi-dynamic-workflows-oc-style",
+    );
+
+    const generationEndMetadata = metadata(client.traces[0].spans[0].generations[0].ends[0]);
+    const agentConfig = generationEndMetadata?.agentConfig as
+      | {
+          tier?: string;
+          modelSource?: string;
+          contextMode?: string;
+          promptTokensEstimate?: number;
+          context?: { inheritMainRules?: boolean };
+        }
+      | undefined;
+    assert.equal(agentConfig?.tier, "small");
+    assert.equal(agentConfig?.modelSource, "tier");
+    assert.equal(agentConfig?.contextMode, "legacy");
+    assert.equal(agentConfig?.context?.inheritMainRules, true);
+    assert.equal(generationEndMetadata?.promptTokensEstimate, agentConfig?.promptTokensEstimate);
+
     // Assert that by default includePayloads=false, and absolute paths are redacted (omitted)
     assert.equal(traceMetadata?.transcriptDir, undefined);
     assert.equal(traceMetadata?.runStatePath, undefined);
