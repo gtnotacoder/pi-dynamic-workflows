@@ -5,6 +5,7 @@ import {
   classifyPiTelemetryEnv,
   PI_TELEMETRY_ENV_KEYS,
   PI_TELEMETRY_PROCESS_ROLE_KEY,
+  PI_TELEMETRY_SUBAGENT_DETAIL_KEYS,
   PI_TELEMETRY_SUBAGENT_ROLE,
   parseTelemetryOwnerPid,
   scrubStalePiTelemetryEnv,
@@ -30,7 +31,11 @@ function runtime(overrides: Partial<TelemetryRuntime> = {}): TelemetryRuntime {
 }
 
 function presentTelemetryKeys(env: Record<string, string | undefined>): string[] {
-  return PI_TELEMETRY_ENV_KEYS.filter((key) => env[key] != null && env[key] !== "");
+  return PI_TELEMETRY_ENV_KEYS.filter((key) => env[key] !== undefined && env[key] !== "");
+}
+
+function presentSubagentDetailKeys(env: Record<string, string | undefined>): string[] {
+  return PI_TELEMETRY_SUBAGENT_DETAIL_KEYS.filter((key) => env[key] !== undefined && env[key] !== "");
 }
 
 describe("parseTelemetryOwnerPid", () => {
@@ -62,7 +67,12 @@ describe("classifyPiTelemetryEnv", () => {
   });
 
   it("preserves the existing direct-child telemetry contract without requiring a marker", () => {
-    const env = telemetryEnv({ PI_TELEMETRY_OWNER_PID: "2000" });
+    const env = telemetryEnv({
+      PI_TELEMETRY_OWNER_PID: "2000",
+      PI_SUBAGENT_CHILD_AGENT: "child-agent",
+      PI_TELEMETRY_SUBAGENT_NAME: "child-name",
+      PI_TELEMETRY_SUBAGENT_AGENT: "child-kind",
+    });
     const rt = runtime({ pid: 1000, ppid: 2000 });
     const decision = scrubStalePiTelemetryEnv(env, rt);
 
@@ -74,6 +84,7 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(decision.preserve, true);
     assert.equal(decision.scrubbed, false);
     assert.deepEqual(presentTelemetryKeys(env), [...PI_TELEMETRY_ENV_KEYS]);
+    assert.deepEqual(presentSubagentDetailKeys(env), [...PI_TELEMETRY_SUBAGENT_DETAIL_KEYS]);
   });
 
   it("preserves direct-child telemetry when an explicit subagent marker is present", () => {
@@ -183,6 +194,37 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(decision.hasSubagentMarker, true);
     assert.equal(decision.scrubbed, true);
     assert.equal(env[PI_TELEMETRY_PROCESS_ROLE_KEY], undefined);
+  });
+
+  it("scrubs subagent detail-only telemetry environments", () => {
+    const env: Record<string, string | undefined> = {
+      PI_SUBAGENT_CHILD_AGENT: "stale-child",
+      PI_TELEMETRY_SUBAGENT_NAME: "stale-name",
+      PI_TELEMETRY_SUBAGENT_AGENT: "stale-agent",
+    };
+    const decision = scrubStalePiTelemetryEnv(env, runtime());
+
+    assert.equal(decision.telemetryProcessRole, "main");
+    assert.equal(decision.reason, "invalid-owner-pid");
+    assert.equal(decision.hasTelemetryEnv, true);
+    assert.equal(decision.hasSubagentMarker, false);
+    assert.equal(decision.scrubbed, true);
+    assert.deepEqual(presentSubagentDetailKeys(env), []);
+  });
+
+  it("scrubs inherited subagent detail variables with stale telemetry", () => {
+    const env = telemetryEnv({
+      PI_SUBAGENT_CHILD_AGENT: "stale-child",
+      PI_TELEMETRY_SUBAGENT_NAME: "stale-name",
+      PI_TELEMETRY_SUBAGENT_AGENT: "stale-agent",
+    });
+    const decision = scrubStalePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000, isProcessLive: () => true }));
+
+    assert.equal(decision.telemetryProcessRole, "main");
+    assert.equal(decision.reason, "owner-is-not-parent");
+    assert.equal(decision.scrubbed, true);
+    assert.deepEqual(presentTelemetryKeys(env), []);
+    assert.deepEqual(presentSubagentDetailKeys(env), []);
   });
 
   it("scrubs dead owner telemetry even when ownerPid equals parentPid", () => {

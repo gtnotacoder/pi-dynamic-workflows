@@ -29,6 +29,12 @@ npm test          # full gate: biome check . && build && unit tests
 # then restart pi
 ```
 
+If you also install `@amaster.ai/pi-telemetry`, list this package before it in
+Pi settings. `pi-dynamic-workflows-oc-style` ships an early
+`extensions/telemetry-scrub.ts` package extension that clears stale inherited
+`PI_TELEMETRY_*` values before telemetry snapshots `process.env`; loading
+telemetry first is unsupported because the stale values are already captured.
+
 ---
 
 ## The `workflow` tool

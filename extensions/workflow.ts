@@ -20,10 +20,11 @@ import {
 } from "../src/index.js";
 
 export default function extension(pi: ExtensionAPI) {
-  // Issue #19: scrub stale inherited Pi telemetry linkage before any later
-  // telemetry listener observes this process. Do not register telemetry here:
-  // @amaster.ai/pi-telemetry may also be installed as a standalone package,
-  // and double-registering it would duplicate every lifecycle export.
+  // Issue #19: packaged installs run extensions/telemetry-scrub.ts first; keep
+  // this compatibility fallback for direct `-e extensions/workflow.ts` usage.
+  // If @amaster.ai/pi-telemetry is installed separately, this package must be
+  // listed before it so stale env is scrubbed before telemetry snapshots it.
+  // Do not register telemetry here: double-registering would duplicate exports.
   scrubStalePiTelemetryEnv();
 
   // Single manager/storage shared by the workflow tool and the /workflows command,

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 export const PI_TELEMETRY_ENV_KEYS = [
@@ -8,8 +9,17 @@ export const PI_TELEMETRY_ENV_KEYS = [
 
 export const PI_TELEMETRY_PROCESS_ROLE_KEY = "PI_TELEMETRY_PROCESS_ROLE" as const;
 export const PI_TELEMETRY_SUBAGENT_ROLE = "subagent" as const;
+export const PI_TELEMETRY_SUBAGENT_DETAIL_KEYS = [
+  "PI_SUBAGENT_CHILD_AGENT",
+  "PI_TELEMETRY_SUBAGENT_NAME",
+  "PI_TELEMETRY_SUBAGENT_AGENT",
+] as const;
 
-const PI_TELEMETRY_SCRUB_KEYS = [...PI_TELEMETRY_ENV_KEYS, PI_TELEMETRY_PROCESS_ROLE_KEY] as const;
+const PI_TELEMETRY_SCRUB_KEYS = [
+  ...PI_TELEMETRY_ENV_KEYS,
+  PI_TELEMETRY_PROCESS_ROLE_KEY,
+  ...PI_TELEMETRY_SUBAGENT_DETAIL_KEYS,
+] as const;
 
 export type PiTelemetryEnvKey = (typeof PI_TELEMETRY_ENV_KEYS)[number];
 export type TelemetryProcessRole = "main" | "subagent";
@@ -69,8 +79,8 @@ export function isProcessLive(pid: number): boolean {
  *
  * This lets marked telemetry children launched through wrappers preserve the
  * parent trace without trusting a marker inherited from an unrelated live Pi
- * process. On platforms without `/proc`, this returns false and direct-child
- * compatibility still works through `ownerPid === ppid`.
+ * process. On platforms without `/proc`, this falls back to `ps` when
+ * available; direct-child compatibility still works through `ownerPid === ppid`.
  */
 export function isProcessAncestor(ancestorPid: number, descendantPid: number): boolean {
   const seen = new Set<number>();
@@ -93,9 +103,10 @@ export function classifyPiTelemetryEnv(
   const ppid = runtime?.ppid ?? (typeof process.ppid === "number" ? process.ppid : 0);
   const checkLive = runtime?.isProcessLive ?? isProcessLive;
   const checkAncestor = runtime?.isProcessAncestor ?? isProcessAncestor;
-  const hasTelemetryLinkage = PI_TELEMETRY_ENV_KEYS.some((key) => env[key] != null && env[key] !== "");
+  const hasTelemetryLinkage = PI_TELEMETRY_ENV_KEYS.some((key) => env[key] !== undefined && env[key] !== "");
   const hasSubagentMarker = isExplicitTelemetrySubagent(env, runtime);
-  const hasTelemetryEnv = hasTelemetryLinkage || hasSubagentMarker;
+  const hasSubagentDetails = PI_TELEMETRY_SUBAGENT_DETAIL_KEYS.some((key) => env[key] !== undefined && env[key] !== "");
+  const hasTelemetryEnv = hasTelemetryLinkage || hasSubagentMarker || hasSubagentDetails;
 
   if (!hasTelemetryEnv) {
     return decision("absent", pid, ppid, undefined, false, hasSubagentMarker, false, false);
@@ -143,6 +154,9 @@ export function shouldPreservePiTelemetryEnv(
 
 /**
  * Delete stale, partial, or unrelated Pi telemetry env vars before telemetry extensions load.
+ *
+ * If @amaster.ai/pi-telemetry is installed separately, this package must be
+ * loaded first; that extension snapshots PI_TELEMETRY_* during its factory.
  *
  * Top-level Pi processes launched by supervisors can inherit old PI_TELEMETRY_* values.
  * Preserve them only for a coherent legacy direct-child launch, a marked owner
@@ -200,6 +214,10 @@ function nonEmpty(value: string | undefined): boolean {
 }
 
 function readParentPid(pid: number): number | undefined {
+  return readParentPidFromProc(pid) ?? readParentPidFromPs(pid);
+}
+
+function readParentPidFromProc(pid: number): number | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const closeParen = stat.lastIndexOf(")");
@@ -209,6 +227,21 @@ function readParentPid(pid: number): number | undefined {
       .trim()
       .split(/\s+/);
     return parseTelemetryOwnerPid(fields[1]);
+  } catch {
+    return undefined;
+  }
+}
+
+function readParentPidFromPs(pid: number): number | undefined {
+  if (process.platform === "win32") return undefined;
+
+  try {
+    const output = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    });
+    return parseTelemetryOwnerPid(output.trim());
   } catch {
     return undefined;
   }
