@@ -3,6 +3,12 @@ import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
+function toolNames(tools: unknown): string[] {
+  return Array.isArray(tools)
+    ? tools.map((tool) => String((tool as { name?: unknown }).name ?? "")).filter(Boolean)
+    : [];
+}
+
 test("registerBuiltinWorkflows registers deep-research, adversarial-review, code-review, issue-delivery, and fugu commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
@@ -175,10 +181,10 @@ test("/issue-delivery boolean flags do not consume task words and issue context 
   assert.deepEqual(seen[2], { finish: true, task: "issue #46" });
 });
 
-test("/adversarial-review uses WorkflowManager background path when provided", async () => {
+test("/adversarial-review uses WorkflowManager background path with read-only tools when provided", async () => {
   let started = false;
   const manager = {
-    startInBackground: (_script: string, args: unknown, exec: unknown) => {
+    startInBackground: (_script: string, args: unknown, exec: { contextMode?: string; tools?: unknown }) => {
       started = true;
       assert.deepEqual(args, {
         task: "check this",
@@ -187,7 +193,11 @@ test("/adversarial-review uses WorkflowManager background path when provided", a
         evidence: false,
         evidenceComponents: [],
       });
-      assert.deepEqual(exec, { contextMode: undefined });
+      assert.equal(exec.contextMode, undefined);
+      const names = toolNames(exec.tools);
+      assert.ok(names.length > 0, "adversarial review should receive explicit read-only tools");
+      assert.equal(names.includes("edit"), false, "adversarial review must not expose edit");
+      assert.equal(names.includes("write"), false, "adversarial review must not expose write");
       return { runId: "adv-run", promise: new Promise(() => {}) };
     },
     getRun: (_runId: string) => ({ transcriptDir: "/tmp/adv-run/subagents" }),
@@ -219,6 +229,9 @@ test("/adversarial-review evidence flag enables no-key evidence tools", async ()
       assert.equal(exec.contextMode, undefined);
       assert.ok(Array.isArray(exec.tools), "evidence mode should inject tools into the managed run");
       assert.ok(exec.tools.length >= 1, "tool set should not be empty");
+      const names = toolNames(exec.tools);
+      assert.equal(names.includes("edit"), false, "evidence review must not expose edit");
+      assert.equal(names.includes("write"), false, "evidence review must not expose write");
       return { runId: "adv-evidence-run", promise: new Promise(() => {}) };
     },
     getRun: (_runId: string) => ({ transcriptDir: "/tmp/adv-evidence-run/subagents" }),

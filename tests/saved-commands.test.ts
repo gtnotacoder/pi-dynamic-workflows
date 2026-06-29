@@ -29,6 +29,22 @@ function parseInlineArgsReport(content: string | undefined): { _?: string; _raw?
   }
 }
 
+function toolNames(tools: unknown): string[] {
+  return Array.isArray(tools)
+    ? tools.map((tool) => String((tool as { name?: unknown }).name ?? "")).filter(Boolean)
+    : [];
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("parseCommandArgs", () => {
   it("parses key=value pairs", async () => {
     const { parseCommandArgs } = await load();
@@ -324,6 +340,71 @@ describe("registerSavedWorkflow", () => {
     assert.equal(sent.length, 1, "manager path should immediately announce the background run");
     assert.equal(sent[0].customType, "workflow:run-via-manager:started");
     assert.match(sent[0].content ?? "", /Run ID: test-run/);
+  });
+
+  it("runs saved review workflows with read-only tools and keeps one-shot panes non-interactive until completion", async () => {
+    const { registerSavedWorkflow } = await load();
+    const run = deferred<{ result: { report: string } }>();
+    let capturedExec: { tools?: unknown } | undefined;
+    const manager = {
+      startInBackground: (_script: string, _args: unknown, exec?: { tools?: unknown }) => {
+        capturedExec = exec;
+        return { runId: "review-run", promise: run.promise };
+      },
+      getRun: (_runId: string) => ({ transcriptDir: "/tmp/subagents" }),
+    };
+
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "pr_adversarial_review",
+      description: "Read-only adversarial PR review",
+      script: "export...",
+    });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    let settled = false;
+    const handlerPromise = Promise.resolve(commands[0].handler("prNumber=52", ctx)).then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(sent.length, 1, "review command should still announce the background run");
+    assert.equal(settled, false, "review command should await completion instead of returning to an interactive pane");
+    const names = toolNames(capturedExec?.tools);
+    assert.ok(names.length > 0, "review workflow should receive an explicit read-only tool set");
+    assert.equal(names.includes("edit"), false, "read-only review workflow must not expose edit");
+    assert.equal(names.includes("write"), false, "read-only review workflow must not expose write");
+
+    run.resolve({ result: { report: "done" } });
+    await handlerPromise;
+    assert.equal(settled, true);
+  });
+
+  it("keeps explicit repair saved workflows on the mutating tool policy and returns immediately", async () => {
+    const { registerSavedWorkflow } = await load();
+    let capturedExec: { tools?: unknown } | undefined;
+    const manager = {
+      startInBackground: (_script: string, _args: unknown, exec?: { tools?: unknown }) => {
+        capturedExec = exec;
+        return { runId: "repair-run", promise: Promise.resolve({ result: { report: "done" } }) };
+      },
+      getRun: (_runId: string) => ({ transcriptDir: "/tmp/subagents" }),
+    };
+
+    const { pi, commands } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "surgical_pr_repair",
+      description: "Repair review findings",
+      script: "export...",
+    });
+    registerSavedWorkflow(pi, "/cwd", wf, manager as never);
+
+    const { ctx } = makeNotifyCtx();
+    await commands[0].handler("prNumber=52", ctx);
+
+    const names = toolNames(capturedExec?.tools);
+    assert.ok(names.includes("edit") || names.includes("write"), "repair workflows should retain mutating tools");
   });
 
   it("falls back to runWorkflow (inline) when no manager is provided", async () => {
