@@ -61,20 +61,22 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(decision.parentPid, 2000);
   });
 
-  it("scrubs direct-child telemetry when no explicit subagent marker is present", () => {
+  it("preserves the existing direct-child telemetry contract without requiring a marker", () => {
     const env = telemetryEnv({ PI_TELEMETRY_OWNER_PID: "2000" });
-    const decision = scrubStalePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000 }));
+    const rt = runtime({ pid: 1000, ppid: 2000 });
+    const decision = scrubStalePiTelemetryEnv(env, rt);
 
-    assert.equal(shouldPreservePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000 })), false);
-    assert.equal(decision.telemetryProcessRole, "main");
-    assert.equal(decision.reason, "missing-subagent-marker");
+    assert.equal(shouldPreservePiTelemetryEnv(env, rt), true);
+    assert.equal(decision.telemetryProcessRole, "subagent");
+    assert.equal(decision.reason, "valid-direct-child");
     assert.equal(decision.ownerPid, 2000);
     assert.equal(decision.hasSubagentMarker, false);
-    assert.equal(decision.scrubbed, true);
-    assert.deepEqual(presentTelemetryKeys(env), []);
+    assert.equal(decision.preserve, true);
+    assert.equal(decision.scrubbed, false);
+    assert.deepEqual(presentTelemetryKeys(env), [...PI_TELEMETRY_ENV_KEYS]);
   });
 
-  it("preserves direct-child telemetry only when an explicit subagent marker is present", () => {
+  it("preserves direct-child telemetry when an explicit subagent marker is present", () => {
     const env = telemetryEnv({
       PI_TELEMETRY_OWNER_PID: "2000",
       [PI_TELEMETRY_PROCESS_ROLE_KEY]: PI_TELEMETRY_SUBAGENT_ROLE,
@@ -95,12 +97,31 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(env[PI_TELEMETRY_PROCESS_ROLE_KEY], PI_TELEMETRY_SUBAGENT_ROLE);
   });
 
-  it("also accepts an explicit runtime launch-path allowlist for intended subagents", () => {
-    const env = telemetryEnv({ PI_TELEMETRY_OWNER_PID: "2000" });
-    const decision = scrubStalePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000, isIntendedSubagent: true }));
+  it("preserves marked descendants launched through shell or supervisor wrappers", () => {
+    const env = telemetryEnv({
+      PI_TELEMETRY_OWNER_PID: "9999",
+      [PI_TELEMETRY_PROCESS_ROLE_KEY]: PI_TELEMETRY_SUBAGENT_ROLE,
+    });
+    const decision = scrubStalePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000, isProcessLive: () => true }));
 
     assert.equal(decision.telemetryProcessRole, "subagent");
-    assert.equal(decision.reason, "valid-direct-child");
+    assert.equal(decision.reason, "valid-marked-descendant");
+    assert.equal(decision.ownerPid, 9999);
+    assert.equal(decision.hasSubagentMarker, true);
+    assert.equal(decision.preserve, true);
+    assert.equal(decision.scrubbed, false);
+    assert.deepEqual(presentTelemetryKeys(env), [...PI_TELEMETRY_ENV_KEYS]);
+  });
+
+  it("also accepts an explicit runtime launch-path allowlist for intended subagents", () => {
+    const env = telemetryEnv({ PI_TELEMETRY_OWNER_PID: "9999" });
+    const decision = scrubStalePiTelemetryEnv(
+      env,
+      runtime({ pid: 1000, ppid: 2000, isIntendedSubagent: true, isProcessLive: () => true }),
+    );
+
+    assert.equal(decision.telemetryProcessRole, "subagent");
+    assert.equal(decision.reason, "valid-marked-descendant");
     assert.equal(decision.hasSubagentMarker, true);
     assert.equal(decision.preserve, true);
     assert.equal(decision.scrubbed, false);
@@ -113,8 +134,23 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(decision.telemetryProcessRole, "main");
     assert.equal(decision.reason, "owner-is-not-parent");
     assert.equal(decision.ownerPid, 9999);
+    assert.equal(decision.hasSubagentMarker, false);
     assert.equal(decision.scrubbed, true);
     assert.deepEqual(presentTelemetryKeys(env), []);
+  });
+
+  it("scrubs marker-only telemetry environments", () => {
+    const env: Record<string, string | undefined> = {
+      [PI_TELEMETRY_PROCESS_ROLE_KEY]: PI_TELEMETRY_SUBAGENT_ROLE,
+    };
+    const decision = scrubStalePiTelemetryEnv(env, runtime());
+
+    assert.equal(decision.telemetryProcessRole, "main");
+    assert.equal(decision.reason, "invalid-owner-pid");
+    assert.equal(decision.hasTelemetryEnv, true);
+    assert.equal(decision.hasSubagentMarker, true);
+    assert.equal(decision.scrubbed, true);
+    assert.equal(env[PI_TELEMETRY_PROCESS_ROLE_KEY], undefined);
   });
 
   it("scrubs dead owner telemetry even when ownerPid equals parentPid", () => {
