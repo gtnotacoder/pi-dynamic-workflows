@@ -147,6 +147,7 @@ export { createStructuredOutputTool } from "./structured-output.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
 export {
   classifyPiTelemetryEnv,
+  isProcessAncestor,
   isProcessLive,
   PI_TELEMETRY_ENV_KEYS,
   PI_TELEMETRY_PROCESS_ROLE_KEY,

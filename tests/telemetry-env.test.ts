@@ -102,7 +102,15 @@ describe("classifyPiTelemetryEnv", () => {
       PI_TELEMETRY_OWNER_PID: "9999",
       [PI_TELEMETRY_PROCESS_ROLE_KEY]: PI_TELEMETRY_SUBAGENT_ROLE,
     });
-    const decision = scrubStalePiTelemetryEnv(env, runtime({ pid: 1000, ppid: 2000, isProcessLive: () => true }));
+    const decision = scrubStalePiTelemetryEnv(
+      env,
+      runtime({
+        pid: 1000,
+        ppid: 2000,
+        isProcessLive: () => true,
+        isProcessAncestor: (ancestorPid, descendantPid) => ancestorPid === 9999 && descendantPid === 2000,
+      }),
+    );
 
     assert.equal(decision.telemetryProcessRole, "subagent");
     assert.equal(decision.reason, "valid-marked-descendant");
@@ -111,6 +119,30 @@ describe("classifyPiTelemetryEnv", () => {
     assert.equal(decision.preserve, true);
     assert.equal(decision.scrubbed, false);
     assert.deepEqual(presentTelemetryKeys(env), [...PI_TELEMETRY_ENV_KEYS]);
+  });
+
+  it("scrubs inherited markers when the live owner is not in the process ancestry", () => {
+    const env = telemetryEnv({
+      PI_TELEMETRY_OWNER_PID: "9999",
+      [PI_TELEMETRY_PROCESS_ROLE_KEY]: PI_TELEMETRY_SUBAGENT_ROLE,
+    });
+    const decision = scrubStalePiTelemetryEnv(
+      env,
+      runtime({
+        pid: 1000,
+        ppid: 2000,
+        isProcessLive: () => true,
+        isProcessAncestor: () => false,
+      }),
+    );
+
+    assert.equal(decision.telemetryProcessRole, "main");
+    assert.equal(decision.reason, "owner-is-not-ancestor");
+    assert.equal(decision.ownerPid, 9999);
+    assert.equal(decision.hasSubagentMarker, true);
+    assert.equal(decision.scrubbed, true);
+    assert.deepEqual(presentTelemetryKeys(env), []);
+    assert.equal(env[PI_TELEMETRY_PROCESS_ROLE_KEY], undefined);
   });
 
   it("also accepts an explicit runtime launch-path allowlist for intended subagents", () => {

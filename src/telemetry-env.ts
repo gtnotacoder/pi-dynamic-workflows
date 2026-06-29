@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 export const PI_TELEMETRY_ENV_KEYS = [
   "PI_TELEMETRY_OWNER_PID",
   "PI_TELEMETRY_SESSION_ID",
@@ -17,6 +19,8 @@ export interface TelemetryRuntime {
   ppid: number;
   /** Inject in tests to avoid relying on real process state. */
   isProcessLive?: (pid: number) => boolean;
+  /** Inject in tests or launchers that know a wrapper/supervisor ancestry. */
+  isProcessAncestor?: (ancestorPid: number, descendantPid: number) => boolean;
   /** Explicit launch-path allowlist for a known telemetry subagent. */
   isIntendedSubagent?: boolean;
 }
@@ -37,6 +41,7 @@ export interface PiTelemetryEnvDecision {
     | "owner-not-live"
     | "missing-session-or-trace"
     | "owner-is-not-parent"
+    | "owner-is-not-ancestor"
     | "valid-direct-child"
     | "valid-marked-descendant";
 }
@@ -59,6 +64,27 @@ export function isProcessLive(pid: number): boolean {
   }
 }
 
+/**
+ * Return true when `ancestorPid` is in `descendantPid`'s OS parent chain.
+ *
+ * This lets marked telemetry children launched through wrappers preserve the
+ * parent trace without trusting a marker inherited from an unrelated live Pi
+ * process. On platforms without `/proc`, this returns false and direct-child
+ * compatibility still works through `ownerPid === ppid`.
+ */
+export function isProcessAncestor(ancestorPid: number, descendantPid: number): boolean {
+  const seen = new Set<number>();
+  let current: number | undefined = descendantPid;
+
+  while (current !== undefined && current > 1 && !seen.has(current)) {
+    if (current === ancestorPid) return true;
+    seen.add(current);
+    current = readParentPid(current);
+  }
+
+  return false;
+}
+
 export function classifyPiTelemetryEnv(
   env: Record<string, string | undefined> = process.env,
   runtime?: TelemetryRuntime,
@@ -66,6 +92,7 @@ export function classifyPiTelemetryEnv(
   const pid = runtime?.pid ?? process.pid;
   const ppid = runtime?.ppid ?? (typeof process.ppid === "number" ? process.ppid : 0);
   const checkLive = runtime?.isProcessLive ?? isProcessLive;
+  const checkAncestor = runtime?.isProcessAncestor ?? isProcessAncestor;
   const hasTelemetryLinkage = PI_TELEMETRY_ENV_KEYS.some((key) => env[key] != null && env[key] !== "");
   const hasSubagentMarker = isExplicitTelemetrySubagent(env, runtime);
   const hasTelemetryEnv = hasTelemetryLinkage || hasSubagentMarker;
@@ -95,11 +122,15 @@ export function classifyPiTelemetryEnv(
     return decision("valid-direct-child", pid, ppid, ownerPid, true, hasSubagentMarker, true, false);
   }
 
-  if (hasSubagentMarker) {
+  if (!hasSubagentMarker) {
+    return decision("owner-is-not-parent", pid, ppid, ownerPid, true, false, false, false);
+  }
+
+  if (runtime?.isIntendedSubagent === true || checkAncestor(ownerPid, ppid)) {
     return decision("valid-marked-descendant", pid, ppid, ownerPid, true, true, true, false);
   }
 
-  return decision("owner-is-not-parent", pid, ppid, ownerPid, true, false, false, false);
+  return decision("owner-is-not-ancestor", pid, ppid, ownerPid, true, true, false, false);
 }
 
 /** Return true only when inherited telemetry describes a compatible direct-child or marked subagent launch. */
@@ -114,9 +145,10 @@ export function shouldPreservePiTelemetryEnv(
  * Delete stale, partial, or unrelated Pi telemetry env vars before telemetry extensions load.
  *
  * Top-level Pi processes launched by supervisors can inherit old PI_TELEMETRY_* values.
- * Preserve them only for a coherent legacy direct-child launch or for a live
- * owner process with an explicit intended-subagent marker; otherwise scrub all
- * telemetry linkage keys so the process starts a fresh top-level trace.
+ * Preserve them only for a coherent legacy direct-child launch, a marked owner
+ * in the current process ancestry, or an injected fresh launch-path allowlist;
+ * otherwise scrub all telemetry linkage keys so the process starts a fresh
+ * top-level trace.
  */
 export function scrubStalePiTelemetryEnv(
   env: Record<string, string | undefined> = process.env,
@@ -165,6 +197,21 @@ function isExplicitTelemetrySubagent(
 
 function nonEmpty(value: string | undefined): boolean {
   return Boolean(value?.trim());
+}
+
+function readParentPid(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen === -1) return undefined;
+    const fields = stat
+      .slice(closeParen + 2)
+      .trim()
+      .split(/\s+/);
+    return parseTelemetryOwnerPid(fields[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
