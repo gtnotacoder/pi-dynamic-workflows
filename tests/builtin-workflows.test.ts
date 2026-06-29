@@ -22,6 +22,8 @@ test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
   assert.match(body, /fastcontext-scout/);
   assert.match(body, /stageCheck\(/);
   assert.match(body, /compactFeedback\(/);
+  assert.match(body, /stateWriteQueue/, "sidecar writes should be serialized");
+  assert.match(body, /subagent was aborted/, "best-effort sidecar writes must rethrow subagent aborts");
   assert.match(body, /PROTOTYPE_LANE/);
   assert.match(body, /PROTOTYPE_DRY_RUN/);
   assert.match(body, /prototypeSafetyCheck/);

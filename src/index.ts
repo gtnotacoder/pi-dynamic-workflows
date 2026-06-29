@@ -43,6 +43,15 @@ export {
   runFinalizationLoop,
 } from "./conductor-finalization.js";
 export {
+  CONDUCTOR_STATE_ENV_PATHS,
+  type ConductorReconciliationDecision,
+  type ConductorReconciliationSignals,
+  type ConductorStateEnvSource,
+  ISSUE_DELIVERY_STATUS_PATH,
+  parseConductorStateEnv,
+  reconcileStaleWorkflowRun,
+} from "./conductor-reconciliation.js";
+export {
   CONDUCTOR_ACTIVE_STATUSES,
   CONDUCTOR_ATTENTION_STATUSES,
   CONDUCTOR_STATUS_ICONS,

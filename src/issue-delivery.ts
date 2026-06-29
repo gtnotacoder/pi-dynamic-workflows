@@ -226,10 +226,55 @@ if (PROTOTYPE_LANE && PROTOTYPE_DRY_RUN) {
 
 // --- Phase 2 & 3: Worker & Verifier DAG Loop ---
 const executionState = {
+  runId,
+  workflowRunId,
   task: TASK_CONTEXT,
   summary: plan.summary,
+  prototype: PROTOTYPE_LANE,
+  plannedStepCount: selectedSteps.length,
   completedSteps: [],
+  allStepsComplete: false,
   logs: []
+}
+
+function summarizeIssueLocalChecks(localChecks) {
+  return {
+    ok: Boolean(localChecks && localChecks.ok),
+    summary: localChecks && localChecks.summary ? localChecks.summary : '',
+    checks: localChecks && Array.isArray(localChecks.checks)
+      ? localChecks.checks.map(c => ({ name: c.name, ok: c.ok, exitCode: c.exitCode, durationMs: c.durationMs }))
+      : []
+  }
+}
+
+let stateWriteQueue = Promise.resolve()
+
+async function writeIssueDeliveryStateNow(label) {
+  try {
+    const writeResult = await agent(
+      'Write the following JSON to the transient file .issue-delivery/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
+      'JSON:\\n' + JSON.stringify(executionState, null, 2),
+      {
+        label,
+        tier: 'small',
+        timeoutMs: 30000,
+        retries: 0
+      }
+    )
+    if (writeResult === null) log('[IssueDelivery:state] best-effort status sidecar write returned no result for ' + label)
+  } catch (error) {
+    const errorText = String(error)
+    const errorCode = error && typeof error === 'object' ? error.code : undefined
+    const lowerErrorText = errorText.toLowerCase()
+    if (errorCode === 'WORKFLOW_ABORTED' || lowerErrorText.includes('workflow aborted') || lowerErrorText.includes('subagent was aborted')) throw error
+    log('[IssueDelivery:state] best-effort status sidecar write failed for ' + label + ': ' + errorText.slice(0, 240))
+  }
+}
+
+async function writeIssueDeliveryState(label) {
+  const nextWrite = stateWriteQueue.catch(() => {}).then(() => writeIssueDeliveryStateNow(label))
+  stateWriteQueue = nextWrite
+  return await nextWrite
 }
 
 const completed = {}
@@ -293,6 +338,8 @@ while (Object.keys(completed).length < selectedSteps.length) {
         log('[IssueDelivery:LocalChecks] Running host-side stageCheck on ' + step.file + ' (zero LLM tokens)...')
 
         const localChecks = await stageCheck({ targetFile: step.file })
+        executionState.localChecks = summarizeIssueLocalChecks(localChecks)
+        await writeIssueDeliveryState('issue-state-local:' + step.id)
         if (!localChecks.ok) {
           const round = {
             index: roundIndex,
@@ -378,16 +425,10 @@ while (Object.keys(completed).length < selectedSteps.length) {
       file: step.file,
       attemptsNeeded: result.attempts
     })
+    executionState.allStepsComplete = executionState.completedSteps.length >= selectedSteps.length
 
     // Write state utilizing our lightweight local check model to keep overhead very low
-    await agent(
-      'Write the following JSON to the transient file .issue-delivery/status.json (create the folder if it doesn\\'t exist). Do not output extra prose:\\n' +
-      'JSON:\\n' + JSON.stringify(executionState, null, 2),
-      {
-        label: 'issue-state',
-        tier: 'small'
-      }
-    )
+    await writeIssueDeliveryState('issue-state:' + step.id)
   }))
 }
 
@@ -433,6 +474,7 @@ const prResult = await agent(
   }
 )
 
+executionState.pr = prResult
 log('[IssueDelivery] Pull Request creation complete! Result:\\n' + prResult)
 
 // --- Finalization / Telemetry gate: verify clean-committed-pushed invariants ---
@@ -443,6 +485,7 @@ log('[IssueDelivery:finalization] Running finalization gate...')
 setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate.', nextAction: 'Check clean-committed-pushed invariants.' })
 
 const finalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+executionState.finalization = finalization
 
 const finalizationStatus = finalization.toRunStatus || {
   status: finalization.status || 'unknown',
@@ -452,6 +495,7 @@ const finalizationStatus = finalization.toRunStatus || {
 }
 
 setSemanticStatus(finalizationStatus)
+await writeIssueDeliveryState('issue-state-final')
 log('[IssueDelivery:finalization] Status: ' + finalizationStatus.status + ' — ' + finalizationStatus.reason)
 
 return {
