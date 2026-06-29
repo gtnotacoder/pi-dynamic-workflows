@@ -43,9 +43,8 @@ function backgroundStartedText(name: string, runId: string, transcriptDir?: stri
   return lines.join("\n");
 }
 
-function adversarialReviewTools(cwd: string, evidenceComponents: string[]): WorkflowRunOptions["tools"] | undefined {
-  if (evidenceComponents.length === 0) return undefined;
-  const tools = [...createCodingTools(cwd)] as unknown as NonNullable<WorkflowRunOptions["tools"]>;
+function adversarialReviewTools(cwd: string, evidenceComponents: string[]): WorkflowRunOptions["tools"] {
+  const tools = [...createReadOnlyTools(cwd)] as unknown as NonNullable<WorkflowRunOptions["tools"]>;
   if (evidenceComponents.includes("web_search")) tools.push(createWebSearchTool());
   if (
     evidenceComponents.includes("web_fetch") ||
@@ -252,7 +251,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           evidence: parsed.evidence,
           evidenceComponents: parsed.evidenceComponents,
         };
-        const tools = parsed.evidence ? adversarialReviewTools(cwd, parsed.evidenceComponents) : undefined;
+        const tools = adversarialReviewTools(cwd, parsed.evidence ? parsed.evidenceComponents : []);
         ctx.ui.notify(
           parsed.evidence
             ? `Reviewing with evidence (${parsed.evidenceComponents.join(", ")}) — investigating, sourcing, then refuting…`
@@ -266,7 +265,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
               workflowArgs,
               {
                 contextMode: mode,
-                ...(tools ? { tools } : {}),
+                tools,
               },
             );
             ctx.ui.setStatus("adversarial-review", `review running (${runId})`);
@@ -282,7 +281,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
             cwd,
             args: workflowArgs,
-            tools: tools ?? createCodingTools(cwd),
+            tools,
             contextMode: mode,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),

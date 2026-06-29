@@ -3,9 +3,14 @@
  * command that runs its script, passing parsed arguments through as `args`.
  */
 
-import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  createCodingTools,
+  createReadOnlyTools,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
@@ -44,6 +49,44 @@ function backgroundStartedText(name: string, runId: string, transcriptDir?: stri
     `The final result will be delivered back into this conversation automatically when it finishes.`,
   );
   return lines.join("\n");
+}
+
+function truthyArg(value: unknown): boolean {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) return false;
+  return ["1", "true", "yes", "y", "on"].includes(String(value).trim().toLowerCase());
+}
+
+function isExplicitRepairRun(wf: SavedWorkflow, args: Record<string, unknown>): boolean {
+  if (/(^|[-_])repair([-_]|$)/i.test(wf.name)) return true;
+  if (truthyArg(args.repair) || truthyArg(args.repairMode) || truthyArg(args.allowMutation)) return true;
+  return (
+    String(args.mode ?? "")
+      .trim()
+      .toLowerCase() === "repair"
+  );
+}
+
+function isReviewWorkflow(wf: SavedWorkflow): boolean {
+  const haystack = `${wf.name}\n${wf.description ?? ""}`;
+  return /(^|[-_\s])(review|adversarial[-_\s]*review|code[-_\s]*review|pr[-_\s]*review)([-_\s]|$)/i.test(haystack);
+}
+
+function savedWorkflowExecutionPolicy(
+  cwd: string,
+  wf: SavedWorkflow,
+  args: Record<string, unknown>,
+): { tools: WorkflowRunOptions["tools"]; awaitCompletion: boolean } {
+  const readOnlyReview = isReviewWorkflow(wf) && !isExplicitRepairRun(wf, args);
+  return {
+    tools: readOnlyReview ? createReadOnlyTools(cwd) : createCodingTools(cwd),
+    // One-shot tmux review panes should not drop back into an interactive Pi
+    // prompt while/after the review workflow is running. Awaiting the managed
+    // promise keeps the command active until installResultDelivery posts the
+    // final result; terminal-launched Pi then exits instead of leaving an
+    // autonomous editing-capable review pane behind.
+    awaitCompletion: readOnlyReview,
+  };
 }
 
 /**
@@ -116,17 +159,19 @@ export function registerSavedWorkflow(
       // normal saved-workflow argument; only `--mode` / `--mode=<name>` is
       // reserved for run-level context.
       const parsedArgs = parseCommandArgs(rest, wf.parameters);
+      const executionPolicy = savedWorkflowExecutionPolicy(cwd, wf, parsedArgs);
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
 
         if (manager) {
-          // Run through the WorkflowManager and RETURN immediately. The manager's
-          // task panel + /workflows command provide live visibility, and
-          // installResultDelivery posts the final result when the background run
-          // completes. Awaiting here would make the slash command feel frozen and
-          // show only a static "running" status.
+          // Run through the WorkflowManager. Most saved workflows return
+          // immediately after the started notification. Read-only review
+          // workflows deliberately keep the slash-command handler alive until the
+          // managed promise settles so one-shot tmux review panes exit or remain
+          // non-interactive instead of returning to an editing-capable Pi prompt.
           const { runId, promise } = manager.startInBackground(wf.script, parsedArgs, {
             contextMode: mode,
+            tools: executionPolicy.tools,
           });
           const key = `wf:${wf.name}`;
           ctx.ui.setStatus(key, `${wf.name}: running (${runId})`);
@@ -137,6 +182,7 @@ export function registerSavedWorkflow(
             content: backgroundStartedText(wf.name, runId, transcriptDir),
             display: true,
           });
+          if (executionPolicy.awaitCompletion) await promise;
           return;
         }
 
@@ -144,7 +190,7 @@ export function registerSavedWorkflow(
         const result = await runWorkflow(wf.script, {
           cwd,
           args: parsedArgs,
-          tools: createCodingTools(cwd),
+          tools: executionPolicy.tools,
           contextMode: mode,
           contextModeRegistry: buildRegistryForCwd(cwd),
           onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
