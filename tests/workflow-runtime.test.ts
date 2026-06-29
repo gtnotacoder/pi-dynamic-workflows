@@ -39,6 +39,10 @@ function fakeAgent(usage: Partial<AgentUsage>, result: unknown = "ok") {
   };
 }
 
+function estimatedTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
 const twoAgentScript = `export const meta = { name: 'usage_demo', description: 'two agents' }
 const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
@@ -420,6 +424,47 @@ test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)",
   assert.ok(Math.abs((result.tokenUsage?.cost ?? 0) - 0.004) < 1e-9, "should be within tolerance");
   assert.equal(result.tokenUsage?.cacheRead, 100, "cacheRead accumulates across agents");
   assert.equal(result.tokenUsage?.cacheWrite, 20, "cacheWrite accumulates across agents");
+});
+
+test("runWorkflow prompt token telemetry includes replace-mode agentType system prompts", async () => {
+  const rolePrompt = "Replace-mode role prompt with enough text to affect the estimate.";
+  let promptTokensEstimate: number | undefined;
+  let systemPromptText: string | undefined;
+
+  await runWorkflow(
+    `export const meta = { name: 'replace_prompt_estimate', description: 'replace prompt estimate' }
+await agent('task body', { label: 'replace-worker', agentType: 'replace-role' })
+return 'done'`,
+    {
+      persistLogs: false,
+      agentRegistry: new Map([
+        [
+          "replace-role",
+          {
+            name: "replace-role",
+            prompt: rolePrompt,
+            systemPromptMode: "replace",
+            source: "project",
+          },
+        ],
+      ]),
+      agent: {
+        async run(_prompt: string, options: { systemPromptText?: string }) {
+          systemPromptText = options.systemPromptText;
+          return "ok";
+        },
+      },
+      onAgentStart: (event) => {
+        promptTokensEstimate = event.agentConfig?.promptTokensEstimate;
+      },
+    },
+  );
+
+  assert.equal(systemPromptText, rolePrompt);
+  assert.ok(
+    (promptTokensEstimate ?? 0) >= estimatedTokens("task body") + estimatedTokens(rolePrompt),
+    "replace-mode system prompt should contribute to promptTokensEstimate",
+  );
 });
 
 test("runWorkflow emits context-window warnings and agent metadata near effective window", async () => {

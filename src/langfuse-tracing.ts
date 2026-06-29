@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 // NOTE: This tracer targets the pinned legacy Langfuse v3 client — see README for the dependency-pin
 // rationale. It will be migrated to the @langfuse/* observation API once the v3 pin is lifted.
 import { Langfuse } from "langfuse";
@@ -8,8 +12,11 @@ import {
   createCompactionEventTail,
   onCompactionTelemetry,
 } from "./compaction-telemetry.js";
+import { DEFAULT_WORKFLOW_TIMEOUT_MS } from "./config.js";
 import { summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
-import type { WorkflowRunResult } from "./workflow.js";
+import { loadModelTierConfig } from "./model-tier-config.js";
+import { classifyPiTelemetryEnv, type PiTelemetryEnvDecision } from "./telemetry-env.js";
+import type { WorkflowAgentTelemetryConfig, WorkflowRunResult } from "./workflow.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 
 interface LangfuseLike {
@@ -44,6 +51,7 @@ interface AgentObservation {
   generation: GenerationLike;
   startedAt?: string;
   ended: boolean;
+  agentConfig?: WorkflowAgentTelemetryConfig;
 }
 
 interface RunTraceState {
@@ -106,6 +114,13 @@ interface ResolvedWorkflowLangfuseConfig {
   serviceName: string;
   serviceVersion?: string;
   includePayloads: boolean;
+  harness: HarnessMetadata;
+}
+
+interface HarnessMetadata {
+  packageName?: string;
+  packageVersion?: string;
+  packageGitSha?: string;
 }
 
 const DEFAULT_LANGFUSE_BASE_URL = "https://cloud.langfuse.com";
@@ -176,6 +191,7 @@ export function installWorkflowLangfuseTracing(
     prompt: string;
     model?: string;
     startedAt?: string;
+    agentConfig?: WorkflowAgentTelemetryConfig;
   }) => {
     const run = manager.getRun(event.runId);
     safe(() => tracer.agentStart(run, event), run);
@@ -188,6 +204,7 @@ export function installWorkflowLangfuseTracing(
     result: unknown;
     tokens?: number;
     model?: string;
+    agentConfig?: WorkflowAgentTelemetryConfig;
     error?: string;
     errorCode?: string;
     recoverable?: boolean;
@@ -268,7 +285,7 @@ export function installWorkflowLangfuseTracing(
 function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): WorkflowLangfuseTracer {
   const env = options.env ?? process.env;
   const rawConfig = options.config;
-  const config = resolveWorkflowLangfuseConfig(rawConfig, env);
+  const config = resolveWorkflowLangfuseConfig(rawConfig, env, options.cwd);
   if (!config.enabled) {
     const reason = workflowLangfuseDisabledReason(rawConfig, env);
     if (reason) options.onError?.(`Langfuse workflow tracing disabled: ${reason}`);
@@ -295,6 +312,7 @@ function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): 
 function resolveWorkflowLangfuseConfig(
   rawConfig: TelemetryConfig | undefined,
   env: Record<string, string | undefined>,
+  cwd?: string,
 ): ResolvedWorkflowLangfuseConfig {
   const config = rawConfig ?? {};
   const langfuse = config.langfuse;
@@ -319,6 +337,7 @@ function resolveWorkflowLangfuseConfig(
     serviceName: config.serviceName ?? WORKFLOW_TRACING_INTEGRATION,
     serviceVersion: config.serviceVersion,
     includePayloads: rawConfig?.includePayloads ?? envBoolean(env.LANGFUSE_INCLUDE_PAYLOADS) ?? false,
+    harness: resolveHarnessMetadata(cwd),
   };
 }
 
@@ -348,7 +367,15 @@ class WorkflowLangfuseTracer {
 
   agentStart(
     run: ManagedRun | undefined,
-    event: { agentCallId?: string; label: string; phase?: string; prompt: string; model?: string; startedAt?: string },
+    event: {
+      agentCallId?: string;
+      label: string;
+      phase?: string;
+      prompt: string;
+      model?: string;
+      startedAt?: string;
+      agentConfig?: WorkflowAgentTelemetryConfig;
+    },
   ): void {
     const state = this.ensureRun(run);
     if (!state || !run) return;
@@ -364,6 +391,7 @@ class WorkflowLangfuseTracer {
         label: event.label,
         phase: event.phase,
         model: event.model,
+        agentConfig: event.agentConfig,
       }),
     });
     state.agents.push({
@@ -373,6 +401,7 @@ class WorkflowLangfuseTracer {
       generation,
       startedAt,
       ended: false,
+      agentConfig: event.agentConfig,
     });
   }
 
@@ -385,6 +414,7 @@ class WorkflowLangfuseTracer {
       result: unknown;
       tokens?: number;
       model?: string;
+      agentConfig?: WorkflowAgentTelemetryConfig;
       error?: string;
       errorCode?: string;
       recoverable?: boolean;
@@ -422,6 +452,9 @@ class WorkflowLangfuseTracer {
         tokens: event.tokens,
         usageSource: usageSummary.source,
         cacheUsageSource: usageSummary.cacheSource,
+        cacheReadPct: usageSummary.cacheReadPct,
+        promptTokensEstimate: event.agentConfig?.promptTokensEstimate ?? agent?.agentConfig?.promptTokensEstimate,
+        agentConfig: cleanObject({ ...(agent?.agentConfig ?? {}), ...(event.agentConfig ?? {}) }),
         errorCode: event.errorCode,
         recoverable: event.recoverable,
         contextWindow: event.contextWindow,
@@ -538,11 +571,26 @@ class WorkflowLangfuseTracer {
 
     const sessionId = event.sessionId ?? this.env.PI_TELEMETRY_SESSION_ID ?? "compaction";
     const traceId = langfuseTraceId(`compaction:${sessionId}:${event.timestamp ?? startTime}:${observationKey}`);
+    const telemetry = summarizeTelemetryParent(this.env);
     const metadata = cleanObject({
       serviceName: this.config.serviceName,
       serviceVersion: this.config.serviceVersion,
       integration: WORKFLOW_TRACING_INTEGRATION,
+      packageName: this.config.harness.packageName,
+      packageVersion: this.config.harness.packageVersion,
+      packageGitSha: this.config.harness.packageGitSha,
+      harness: cleanObject({
+        ...this.config.harness,
+        serviceName: this.config.serviceName,
+        serviceVersion: this.config.serviceVersion,
+        integration: WORKFLOW_TRACING_INTEGRATION,
+      }),
       sessionId,
+      parentPiTraceId: this.env.PI_TELEMETRY_TRACE_ID,
+      traceParentStatus: telemetry.traceParentStatus,
+      traceParentReason: telemetry.reason,
+      telemetryProcessRole: telemetry.telemetryProcessRole,
+      modelTiers: loadModelTierConfig()?.tiers,
       ...compactionMetadata(event, this.config.includePayloads),
     });
     const trace = this.client.trace({
@@ -608,6 +656,7 @@ class WorkflowLangfuseTracer {
           agentCallId: agent.callId,
           label: agent.label,
           phase: agent.phase,
+          agentConfig: agent.agentConfig,
           status,
           error: level === "ERROR" ? message : undefined,
         }),
@@ -651,28 +700,52 @@ class WorkflowLangfuseTracer {
   }
 
   private runMetadata(run: ManagedRun | undefined, state: RunTraceState): Record<string, unknown> {
-    const ownerPidStr = this.env.PI_TELEMETRY_OWNER_PID;
-    const ownerPid = ownerPidStr ? parseInt(ownerPidStr, 10) : undefined;
-    const processPid = process.pid;
-    const telemetryProcessRole = ownerPid && ownerPid !== processPid ? "subagent" : "main";
+    const telemetry = summarizeTelemetryParent(this.env);
     const includePayloads = this.config?.includePayloads ?? false;
 
     return cleanObject({
       serviceName: this.config?.serviceName,
       serviceVersion: this.config?.serviceVersion,
       integration: WORKFLOW_TRACING_INTEGRATION,
+      packageName: this.config?.harness.packageName,
+      packageVersion: this.config?.harness.packageVersion,
+      packageGitSha: this.config?.harness.packageGitSha,
+      harness: cleanObject({
+        ...this.config?.harness,
+        serviceName: this.config?.serviceName,
+        serviceVersion: this.config?.serviceVersion,
+        integration: WORKFLOW_TRACING_INTEGRATION,
+      }),
+      modelTiers: loadModelTierConfig()?.tiers,
       workflowRunId: run?.runId ?? state.runId,
       workflowName: run?.snapshot.name,
       workflowDescription: run?.snapshot.description,
       phases: run?.snapshot.phases,
       background: run?.background,
+      runPolicy: run
+        ? cleanObject({
+            agentMaxContextTokens: run.agentMaxContextTokens,
+            agentContextReserveTokens: run.agentContextReserveTokens,
+            workflowTimeoutMs:
+              run.workflowTimeoutMs === undefined ? DEFAULT_WORKFLOW_TIMEOUT_MS : run.workflowTimeoutMs,
+            workflowTimeoutMsSource:
+              run.workflowTimeoutMs === undefined
+                ? "runtime-default"
+                : run.workflowTimeoutMs === null
+                  ? "disabled"
+                  : "captured",
+          })
+        : undefined,
       sessionId: state.sessionId,
       parentPiTraceId: state.parentTraceId,
+      traceParentStatus: telemetry.traceParentStatus,
+      traceParentReason: telemetry.reason,
       transcriptDir: includePayloads ? run?.transcriptDir : undefined,
       runStatePath: includePayloads ? run?.runStatePath : undefined,
-      telemetryProcessRole,
-      ownerPid,
-      processPid,
+      telemetryProcessRole: telemetry.telemetryProcessRole,
+      ownerPid: telemetry.ownerPid,
+      processPid: telemetry.processPid,
+      parentPid: telemetry.parentPid,
       leanCtx: run ? summarizeLeanCtxFromAgents(run.snapshot.agents) : undefined,
     });
   }
@@ -764,6 +837,7 @@ interface UsageSummary {
     | "provider_zero_usage"
     | "unavailable";
   cacheSource?: string;
+  cacheReadPct?: number;
 }
 
 function usageSummaryFromAgent(
@@ -773,10 +847,12 @@ function usageSummaryFromAgent(
 ): UsageSummary {
   const providerTotal = usage?.total ?? 0;
   const cacheSource = cacheUsageSource(usage, model);
+  const cacheReadPct = usage && usage.input > 0 ? usage.cacheRead / usage.input : undefined;
   if (usage && providerTotal > 0) {
     return {
       source: "provider",
       cacheSource,
+      cacheReadPct,
       usageDetails: {
         input: usage.input,
         output: usage.output,
@@ -793,6 +869,7 @@ function usageSummaryFromAgent(
     return {
       source: usage ? "workflow_estimate_provider_zero_usage" : "workflow_estimate",
       cacheSource,
+      cacheReadPct,
       usageDetails: { total: estimatedTotal },
     };
   }
@@ -800,6 +877,7 @@ function usageSummaryFromAgent(
   return {
     source: usage ? "provider_zero_usage" : "unavailable",
     cacheSource,
+    cacheReadPct,
   };
 }
 
@@ -811,6 +889,77 @@ function cacheUsageSource(usage: AgentUsage | undefined, model: string | undefin
 
 function isGoogleModel(model: string | undefined): boolean {
   return /^(google|google-ai-studio|google-vertex)\//.test(model ?? "") || /\bgemini\b/i.test(model ?? "");
+}
+
+type TraceParentStatus = "valid" | "missing" | "stale" | "none";
+
+function summarizeTelemetryParent(env: Record<string, string | undefined>): PiTelemetryEnvDecision & {
+  traceParentStatus: TraceParentStatus;
+} {
+  const decision = classifyPiTelemetryEnv(env);
+  const hasSession = Boolean(env.PI_TELEMETRY_SESSION_ID?.trim());
+  const hasTrace = Boolean(env.PI_TELEMETRY_TRACE_ID?.trim());
+  const traceParentStatus: TraceParentStatus = !decision.hasTelemetryEnv
+    ? "none"
+    : !hasSession || !hasTrace || decision.reason === "invalid-owner-pid"
+      ? "missing"
+      : decision.preserve
+        ? "valid"
+        : "stale";
+  return { ...decision, traceParentStatus };
+}
+
+function resolveHarnessMetadata(cwd: string | undefined): HarnessMetadata {
+  const moduleRoot = findPackageRoot(dirname(fileURLToPath(import.meta.url)));
+  const cwdRoot = cwd ? findPackageRoot(cwd) : undefined;
+  const root = moduleRoot ?? cwdRoot;
+  const pkg = root ? readPackageMetadata(root) : undefined;
+  return cleanObject({
+    packageName: pkg?.name,
+    packageVersion: pkg?.version,
+    packageGitSha: root ? gitSha(root) : undefined,
+  }) as HarnessMetadata;
+}
+
+function findPackageRoot(start: string): string | undefined {
+  let current = start;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(current, "package.json"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+  return undefined;
+}
+
+function readPackageMetadata(root: string): { name?: string; version?: string } | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      name?: unknown;
+      version?: unknown;
+    };
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : undefined,
+      version: typeof parsed.version === "string" ? parsed.version : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function gitSha(root: string): string | undefined {
+  if (!existsSync(join(root, ".git"))) return undefined;
+  try {
+    const value = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function workflowLangfuseDisabledReason(

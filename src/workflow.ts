@@ -40,6 +40,7 @@ import {
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import { loadModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import {
   checkPrototypeWorktreeSafety,
   type PrototypeSafetyOptions,
@@ -109,6 +110,20 @@ export interface SharedRuntime {
 
 interface WorkflowAgentRunner {
   run(prompt: string, options?: unknown): Promise<unknown>;
+}
+
+export interface WorkflowAgentTelemetryConfig {
+  tier?: string;
+  agentType?: string;
+  requestedModel?: string;
+  modelSource?: "agent" | "agentType" | "tier" | "phase" | "main" | "session-default";
+  contextMode?: string;
+  context?: ContextPrimitives;
+  timeoutMs?: number | null;
+  retries?: number;
+  maxContextTokens?: number;
+  contextReserveTokens?: number;
+  promptTokensEstimate?: number;
 }
 
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
@@ -195,6 +210,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     prompt: string;
     model?: string;
     startedAt?: string;
+    agentConfig?: WorkflowAgentTelemetryConfig;
   }) => void;
   onAgentEnd?: (event: {
     agentCallId?: string;
@@ -206,6 +222,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     contextWindow?: AgentContextWindowStats;
     worktree?: string;
     model?: string;
+    agentConfig?: WorkflowAgentTelemetryConfig;
     error?: string;
     errorCode?: WorkflowErrorCode;
     recoverable?: boolean;
@@ -619,18 +636,41 @@ export async function runWorkflow<T = unknown>(
     // Under "replace" the role prompt becomes the system prompt, so it must NOT
     // also be injected into the task. buildAgentInstructions is told to skip it.
     const roleAsSystemPrompt = ctx.systemPromptMode === "replace";
+    const agentInstructions = buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt);
+    const roleSystemPrompt = roleAsSystemPrompt ? agentDef?.prompt : undefined;
 
     // Model precedence: explicit agentOptions.model > agentType.model > tier > phase model.
     // The "explicit-level" model is opts.model, else the definition's model — either
     // beats tier/phase. When only a tier is set, pass undefined here so the tier (not
     // the phase model) decides inside WorkflowAgent.run().
-    const explicitModel = agentOptions.model ?? agentDef?.model;
-    const modelSpec =
-      explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
+    const explicitAgentModel = agentOptions.model;
+    const agentTypeModel = explicitAgentModel === undefined ? agentDef?.model : undefined;
+    const phaseModel = resolveModelForPhase(assignedPhase, routingConfig);
+    const explicitModel = explicitAgentModel ?? agentTypeModel;
+    const modelTierConfig = loadModelTierConfig();
+    const configuredTierModel =
+      agentOptions.tier && modelTierConfig ? resolveTierModel(agentOptions.tier, modelTierConfig) : undefined;
+    const defaultTierModel =
+      !explicitModel && !agentOptions.tier && !phaseModel && modelTierConfig
+        ? resolveTierModel("medium", modelTierConfig)
+        : undefined;
+    const effectiveTier = agentOptions.tier ?? (defaultTierModel ? "medium" : undefined);
+    const modelSpec = explicitModel ?? (agentOptions.tier ? undefined : phaseModel);
+    const modelSource: WorkflowAgentTelemetryConfig["modelSource"] = explicitAgentModel
+      ? "agent"
+      : agentTypeModel
+        ? "agentType"
+        : agentOptions.tier || defaultTierModel
+          ? "tier"
+          : phaseModel
+            ? "phase"
+            : options.mainModel
+              ? "main"
+              : "session-default";
     // For display in /workflows: the model this agent runs on — its explicit/phase
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
-    let displayModel = modelSpec ?? options.mainModel;
+    let displayModel = modelSpec ?? configuredTierModel ?? defaultTierModel ?? options.mainModel;
 
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
@@ -660,10 +700,22 @@ export async function runWorkflow<T = unknown>(
       { includeContextPolicy: false },
     );
 
+    const estimatedPromptTokens =
+      estimateTokens(prompt) + estimateTokens(agentInstructions) + estimateTokens(roleSystemPrompt);
+    const baseAgentConfig: WorkflowAgentTelemetryConfig = {
+      tier: effectiveTier,
+      agentType: agentOptions.agentType,
+      requestedModel:
+        modelSpec ?? configuredTierModel ?? defaultTierModel ?? (agentOptions.tier ? options.mainModel : undefined),
+      modelSource,
+      contextMode: agentOptions.contextMode ?? agentDef?.contextMode ?? options.contextMode ?? "focused",
+      context: ctx,
+      maxContextTokens: effectiveMaxContextTokens,
+      contextReserveTokens: effectiveContextReserveTokens,
+      promptTokensEstimate: estimatedPromptTokens,
+    };
+
     if (effectiveMaxContextTokens !== undefined) {
-      const estimatedPromptTokens =
-        estimateTokens(prompt) +
-        estimateTokens(buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt));
       if (estimatedPromptTokens > effectiveMaxContextTokens) {
         throw new WorkflowError(
           `agent "${requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount + 1)}" estimated prompt context ${estimatedPromptTokens.toLocaleString()} exceeds maxContextTokens ${effectiveMaxContextTokens.toLocaleString()}`,
@@ -680,6 +732,13 @@ export async function runWorkflow<T = unknown>(
     // push slightly past total, then further agent() calls throw.)
     shared.agentCount++;
     const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
+    const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
+    const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
+    const agentConfig: WorkflowAgentTelemetryConfig = {
+      ...baseAgentConfig,
+      timeoutMs: timeout,
+      retries: retryAttempts,
+    };
 
     // Longest-unchanged-prefix resume: replay a cached result only while the
     // prefix is still intact — this call's index is before the first changed/new
@@ -713,6 +772,7 @@ export async function runWorkflow<T = unknown>(
         prompt,
         model: cachedModel,
         startedAt: cached.startedAt,
+        agentConfig,
       });
       if (cached.history) options.onAgentHistory?.({ label, phase: assignedPhase, history: cached.history });
       const cachedContextWindow =
@@ -732,6 +792,7 @@ export async function runWorkflow<T = unknown>(
           usage: cached.usage,
           contextWindow: cachedContextWindow,
           model: cachedModel,
+          agentConfig,
           error: cachedContextError.message,
           errorCode: cachedContextError.code,
           recoverable: cachedContextError.recoverable,
@@ -749,6 +810,7 @@ export async function runWorkflow<T = unknown>(
         usage: cached.usage,
         contextWindow: cachedContextWindow,
         model: cachedModel,
+        agentConfig,
         startedAt: cached.startedAt,
         endedAt: cached.endedAt,
       });
@@ -759,12 +821,18 @@ export async function runWorkflow<T = unknown>(
     if (!hashMatches || cachedEmptyOutput) state.firstMiss = Math.min(state.firstMiss, callIndex);
 
     return limiter(async () => {
-      const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
-      const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
       const maxAttempts = retryAttempts + 1;
       const startedAt = new Date().toISOString();
 
-      options.onAgentStart?.({ agentCallId, label, phase: assignedPhase, prompt, model: displayModel, startedAt });
+      options.onAgentStart?.({
+        agentCallId,
+        label,
+        phase: assignedPhase,
+        prompt,
+        model: displayModel,
+        startedAt,
+        agentConfig,
+      });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
       let worktree: Worktree | undefined;
@@ -818,7 +886,7 @@ export async function runWorkflow<T = unknown>(
                   label,
                   schema: agentOptions.schema,
                   signal: attemptSignal,
-                  instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
+                  instructions: agentInstructions,
                   model: modelSpec,
                   tier: agentOptions.tier,
                   toolNames: agentOptions.tools ?? agentDef?.tools,
@@ -832,7 +900,7 @@ export async function runWorkflow<T = unknown>(
                   inheritSkills: ctx.inheritSkills,
                   inheritMainRules: ctx.inheritMainRules,
                   // Role prompt → system prompt only under "replace"; otherwise undefined.
-                  systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
+                  systemPromptText: roleSystemPrompt,
                   cwd: runCwd,
                   transcriptDir: options.transcriptDir,
                   onModelResolved: (id: string) => {
@@ -911,6 +979,7 @@ export async function runWorkflow<T = unknown>(
               contextWindow,
               worktree: runCwd,
               model: displayModel,
+              agentConfig,
               startedAt,
               endedAt,
             });
@@ -945,6 +1014,7 @@ export async function runWorkflow<T = unknown>(
                 contextWindow,
                 worktree: runCwd,
                 model: displayModel,
+                agentConfig,
                 error: capError.message,
                 errorCode: capError.code,
                 recoverable: capError.recoverable,
@@ -970,6 +1040,7 @@ export async function runWorkflow<T = unknown>(
               contextWindow,
               worktree: runCwd,
               model: displayModel,
+              agentConfig,
               error: workflowError.message,
               errorCode: workflowError.code,
               recoverable: workflowError.recoverable,
