@@ -12,8 +12,9 @@ import {
   createCompactionEventTail,
   onCompactionTelemetry,
 } from "./compaction-telemetry.js";
+import { DEFAULT_WORKFLOW_TIMEOUT_MS } from "./config.js";
 import { summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
-import { loadModelTierConfig, type ModelTierConfig } from "./model-tier-config.js";
+import { loadModelTierConfig } from "./model-tier-config.js";
 import { classifyPiTelemetryEnv, type PiTelemetryEnvDecision } from "./telemetry-env.js";
 import type { WorkflowAgentTelemetryConfig, WorkflowRunResult } from "./workflow.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
@@ -114,7 +115,6 @@ interface ResolvedWorkflowLangfuseConfig {
   serviceVersion?: string;
   includePayloads: boolean;
   harness: HarnessMetadata;
-  modelTiers?: ModelTierConfig["tiers"];
 }
 
 interface HarnessMetadata {
@@ -338,7 +338,6 @@ function resolveWorkflowLangfuseConfig(
     serviceVersion: config.serviceVersion,
     includePayloads: rawConfig?.includePayloads ?? envBoolean(env.LANGFUSE_INCLUDE_PAYLOADS) ?? false,
     harness: resolveHarnessMetadata(cwd),
-    modelTiers: loadModelTierConfig()?.tiers,
   };
 }
 
@@ -591,6 +590,7 @@ class WorkflowLangfuseTracer {
       traceParentStatus: telemetry.traceParentStatus,
       traceParentReason: telemetry.reason,
       telemetryProcessRole: telemetry.telemetryProcessRole,
+      modelTiers: loadModelTierConfig()?.tiers,
       ...compactionMetadata(event, this.config.includePayloads),
     });
     const trace = this.client.trace({
@@ -716,7 +716,7 @@ class WorkflowLangfuseTracer {
         serviceVersion: this.config?.serviceVersion,
         integration: WORKFLOW_TRACING_INTEGRATION,
       }),
-      modelTiers: this.config?.modelTiers,
+      modelTiers: loadModelTierConfig()?.tiers,
       workflowRunId: run?.runId ?? state.runId,
       workflowName: run?.snapshot.name,
       workflowDescription: run?.snapshot.description,
@@ -726,7 +726,14 @@ class WorkflowLangfuseTracer {
         ? cleanObject({
             agentMaxContextTokens: run.agentMaxContextTokens,
             agentContextReserveTokens: run.agentContextReserveTokens,
-            workflowTimeoutMs: run.workflowTimeoutMs,
+            workflowTimeoutMs:
+              run.workflowTimeoutMs === undefined ? DEFAULT_WORKFLOW_TIMEOUT_MS : run.workflowTimeoutMs,
+            workflowTimeoutMsSource:
+              run.workflowTimeoutMs === undefined
+                ? "runtime-default"
+                : run.workflowTimeoutMs === null
+                  ? "disabled"
+                  : "captured",
           })
         : undefined,
       sessionId: state.sessionId,
@@ -941,6 +948,7 @@ function readPackageMetadata(root: string): { name?: string; version?: string } 
 }
 
 function gitSha(root: string): string | undefined {
+  if (!existsSync(join(root, ".git"))) return undefined;
   try {
     const value = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
       cwd: root,

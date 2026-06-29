@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { emitCompactionTelemetry } from "../src/compaction-telemetry.js";
+import { DEFAULT_WORKFLOW_TIMEOUT_MS } from "../src/config.js";
 import { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "../src/langfuse-tracing.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 
@@ -803,6 +804,33 @@ test("installWorkflowLangfuseTracing attaches compaction events to matching work
     const spanMetadata = metadata(compactionSpan.body);
     assert.equal(spanMetadata?.workflowRunId, runId);
     assert.equal(spanMetadata?.recommended, true);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing records the runtime default workflow timeout policy", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-default-timeout-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({ cwd, defaultAgentTimeoutMs: null });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    await manager.runSync(`export const meta = { name: 'lf_default_timeout', description: 'default timeout' }
+return 'done'`);
+    await handle.close();
+
+    const traceMetadata = metadata(client.traces[0].body);
+    const runPolicy = traceMetadata?.runPolicy as
+      | { workflowTimeoutMs?: number; workflowTimeoutMsSource?: string }
+      | undefined;
+    assert.equal(runPolicy?.workflowTimeoutMs, DEFAULT_WORKFLOW_TIMEOUT_MS);
+    assert.equal(runPolicy?.workflowTimeoutMsSource, "runtime-default");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

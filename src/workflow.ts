@@ -40,6 +40,7 @@ import {
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import { loadModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import {
   checkPrototypeWorktreeSafety,
   type PrototypeSafetyOptions,
@@ -636,6 +637,7 @@ export async function runWorkflow<T = unknown>(
     // also be injected into the task. buildAgentInstructions is told to skip it.
     const roleAsSystemPrompt = ctx.systemPromptMode === "replace";
     const agentInstructions = buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt);
+    const roleSystemPrompt = roleAsSystemPrompt ? agentDef?.prompt : undefined;
 
     // Model precedence: explicit agentOptions.model > agentType.model > tier > phase model.
     // The "explicit-level" model is opts.model, else the definition's model — either
@@ -645,12 +647,20 @@ export async function runWorkflow<T = unknown>(
     const agentTypeModel = explicitAgentModel === undefined ? agentDef?.model : undefined;
     const phaseModel = resolveModelForPhase(assignedPhase, routingConfig);
     const explicitModel = explicitAgentModel ?? agentTypeModel;
+    const modelTierConfig = loadModelTierConfig();
+    const configuredTierModel =
+      agentOptions.tier && modelTierConfig ? resolveTierModel(agentOptions.tier, modelTierConfig) : undefined;
+    const defaultTierModel =
+      !explicitModel && !agentOptions.tier && !phaseModel && modelTierConfig
+        ? resolveTierModel("medium", modelTierConfig)
+        : undefined;
+    const effectiveTier = agentOptions.tier ?? (defaultTierModel ? "medium" : undefined);
     const modelSpec = explicitModel ?? (agentOptions.tier ? undefined : phaseModel);
     const modelSource: WorkflowAgentTelemetryConfig["modelSource"] = explicitAgentModel
       ? "agent"
       : agentTypeModel
         ? "agentType"
-        : agentOptions.tier
+        : agentOptions.tier || defaultTierModel
           ? "tier"
           : phaseModel
             ? "phase"
@@ -660,7 +670,7 @@ export async function runWorkflow<T = unknown>(
     // For display in /workflows: the model this agent runs on — its explicit/phase
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
-    let displayModel = modelSpec ?? options.mainModel;
+    let displayModel = modelSpec ?? configuredTierModel ?? defaultTierModel ?? options.mainModel;
 
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
@@ -690,11 +700,13 @@ export async function runWorkflow<T = unknown>(
       { includeContextPolicy: false },
     );
 
-    const estimatedPromptTokens = estimateTokens(prompt) + estimateTokens(agentInstructions);
+    const estimatedPromptTokens =
+      estimateTokens(prompt) + estimateTokens(agentInstructions) + estimateTokens(roleSystemPrompt);
     const baseAgentConfig: WorkflowAgentTelemetryConfig = {
-      tier: agentOptions.tier,
+      tier: effectiveTier,
       agentType: agentOptions.agentType,
-      requestedModel: modelSpec,
+      requestedModel:
+        modelSpec ?? configuredTierModel ?? defaultTierModel ?? (agentOptions.tier ? options.mainModel : undefined),
       modelSource,
       contextMode: agentOptions.contextMode ?? agentDef?.contextMode ?? options.contextMode ?? "focused",
       context: ctx,
@@ -888,7 +900,7 @@ export async function runWorkflow<T = unknown>(
                   inheritSkills: ctx.inheritSkills,
                   inheritMainRules: ctx.inheritMainRules,
                   // Role prompt → system prompt only under "replace"; otherwise undefined.
-                  systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
+                  systemPromptText: roleSystemPrompt,
                   cwd: runCwd,
                   transcriptDir: options.transcriptDir,
                   onModelResolved: (id: string) => {
