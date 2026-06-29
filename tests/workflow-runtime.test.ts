@@ -421,6 +421,79 @@ test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)",
   assert.equal(result.tokenUsage?.cacheWrite, 20, "cacheWrite accumulates across agents");
 });
 
+test("runWorkflow emits context-window warnings and agent metadata near effective window", async () => {
+  const logs: string[] = [];
+  let end: { contextWindow?: { occupancy?: number; warning?: string } } | undefined;
+  await runWorkflow(
+    `export const meta = { name: 'ctx_warn', description: 'context warning' }
+const a = await agent('first', { label: 'a' })
+return a`,
+    {
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onUsage?: (u: AgentUsage) => void; onContextWindow?: (stats: unknown) => void },
+        ) {
+          options.onUsage?.({ input: 91, output: 1, cacheRead: 0, cacheWrite: 0, total: 92, cost: 0 });
+          options.onContextWindow?.({
+            contextTokens: 91,
+            runtimeContextWindow: 128,
+            reserve: 28,
+            effectiveWindow: 100,
+            occupancy: 0.91,
+            threshold: 0.85,
+            level: "warn",
+            warning: "context window 91% used (91/100 tokens)",
+          });
+          return "ok";
+        },
+      },
+      persistLogs: false,
+      onLog: (message) => logs.push(message),
+      onAgentEnd: (event) => {
+        end = { contextWindow: event.contextWindow };
+      },
+    },
+  );
+
+  assert.equal(Math.round((end?.contextWindow?.occupancy ?? 0) * 100), 91);
+  assert.match(end?.contextWindow?.warning ?? "", /91%/);
+  assert.ok(logs.some((line) => line.includes("[context-window] a")));
+});
+
+test("runWorkflow stops an agent that exceeds maxContextTokens", async () => {
+  let end:
+    | {
+        errorCode?: WorkflowErrorCode;
+        contextWindow?: { exceededMaxContextTokens?: boolean; maxContextTokens?: number };
+      }
+    | undefined;
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'ctx_cap', description: 'context cap' }
+await agent('first', { label: 'a' })
+return 1`,
+        {
+          agent: fakeAgent({ input: 120, output: 1, total: 121, cost: 0 }),
+          agentMaxContextTokens: 100,
+          persistLogs: false,
+          onAgentEnd: (event) => {
+            end = { errorCode: event.errorCode, contextWindow: event.contextWindow };
+          },
+        },
+      ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED &&
+      /configured cap 100/.test(error.message),
+  );
+
+  assert.equal(end?.errorCode, WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED);
+  assert.equal(end?.contextWindow?.exceededMaxContextTokens, true);
+  assert.equal(end?.contextWindow?.maxContextTokens, 100);
+});
+
 test("meta.model is parsed and routes as the default model for agents", async () => {
   let seenModel: string | undefined;
   const recorder = {

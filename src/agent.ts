@@ -241,6 +241,31 @@ export interface AgentUsage {
   cost: number;
 }
 
+export type AgentContextWindowLevel = "ok" | "warn" | "critical" | "over" | "unknown";
+
+export interface AgentContextWindowStats {
+  /** Tokens currently occupying the model context, usually provider input tokens for the completed turn. */
+  contextTokens: number;
+  /** Model/runtime context window, when known. */
+  runtimeContextWindow?: number;
+  /** Reserved response/scratch tokens subtracted from runtimeContextWindow, when known. */
+  reserve?: number;
+  /** Runtime window minus reserve. */
+  effectiveWindow?: number;
+  /** contextTokens / effectiveWindow, when effectiveWindow is known. */
+  occupancy?: number;
+  /** Highest threshold crossed by this measurement. */
+  threshold?: number;
+  /** Human-readable severity for UI/telemetry. */
+  level: AgentContextWindowLevel;
+  /** Optional hard cap supplied by workflow policy. */
+  maxContextTokens?: number;
+  /** True when contextTokens exceeded maxContextTokens. */
+  exceededMaxContextTokens?: boolean;
+  /** Human-readable warning for UI/log/telemetry. */
+  warning?: string;
+}
+
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
   schema?: TSchemaDef;
@@ -274,6 +299,12 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   onModelFallback?: (requestedSpec: string) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
+  /** Called with model-window occupancy stats for this subagent, when measurable. */
+  onContextWindow?: (stats: AgentContextWindowStats) => void;
+  /** Hard cap for provider input/context tokens for this subagent. */
+  maxContextTokens?: number;
+  /** Override the model output/reserve tokens used to compute effective context window. */
+  contextReserveTokens?: number;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
   cwd?: string;
   /**
@@ -330,6 +361,81 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
   ? Static<TSchemaDef>
   : string;
+
+export function buildAgentContextWindowStats(
+  usage: Pick<AgentUsage, "input" | "total">,
+  options: { runtimeContextWindow?: number; reserve?: number; maxContextTokens?: number } = {},
+): AgentContextWindowStats {
+  const contextTokens = usage.input > 0 ? usage.input : usage.total;
+  const runtimeContextWindow = positiveIntegerField(options.runtimeContextWindow);
+  const reserve = positiveIntegerField(options.reserve);
+  const effectiveWindow =
+    runtimeContextWindow !== undefined ? Math.max(1, runtimeContextWindow - (reserve ?? 0)) : undefined;
+  const occupancy = effectiveWindow !== undefined ? contextTokens / effectiveWindow : undefined;
+  const threshold =
+    occupancy === undefined
+      ? undefined
+      : occupancy >= 0.95
+        ? 0.95
+        : occupancy >= 0.85
+          ? 0.85
+          : occupancy >= 0.7
+            ? 0.7
+            : undefined;
+  const exceededMaxContextTokens = options.maxContextTokens !== undefined && contextTokens > options.maxContextTokens;
+  const level: AgentContextWindowLevel = exceededMaxContextTokens
+    ? "over"
+    : occupancy === undefined
+      ? "unknown"
+      : occupancy >= 1
+        ? "over"
+        : occupancy >= 0.95
+          ? "critical"
+          : occupancy >= 0.7
+            ? "warn"
+            : "ok";
+  const warning = buildContextWindowWarning({
+    contextTokens,
+    effectiveWindow,
+    occupancy,
+    threshold,
+    maxContextTokens: options.maxContextTokens,
+    exceededMaxContextTokens,
+  });
+  return {
+    contextTokens,
+    runtimeContextWindow,
+    reserve,
+    effectiveWindow,
+    occupancy,
+    threshold,
+    level,
+    maxContextTokens: options.maxContextTokens,
+    exceededMaxContextTokens,
+    warning,
+  };
+}
+
+function buildContextWindowWarning(input: {
+  contextTokens: number;
+  effectiveWindow?: number;
+  occupancy?: number;
+  threshold?: number;
+  maxContextTokens?: number;
+  exceededMaxContextTokens?: boolean;
+}): string | undefined {
+  if (input.exceededMaxContextTokens && input.maxContextTokens !== undefined) {
+    return `context tokens ${input.contextTokens.toLocaleString()} exceeded configured cap ${input.maxContextTokens.toLocaleString()}`;
+  }
+  if (input.occupancy === undefined || input.threshold === undefined) return undefined;
+  const pct = Math.round(input.occupancy * 100);
+  const effective = input.effectiveWindow ? `/${input.effectiveWindow.toLocaleString()}` : "";
+  return `context window ${pct}% used (${input.contextTokens.toLocaleString()}${effective} tokens)`;
+}
+
+function positiveIntegerField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
 
 export class WorkflowAgent {
   private readonly cwd: string;
@@ -412,6 +518,7 @@ export class WorkflowAgent {
       }
     }
 
+    const activeModel = resolvedModel ?? (this.sessionOptions.model as Partial<Model<any>> | undefined);
     const agentDir = getAgentDir();
 
     // Resolve the context-inheritance posture (run options are the runtime layer;
@@ -542,19 +649,28 @@ export class WorkflowAgent {
         // History is diagnostic only; never let it mask the real result/error.
       }
       // Read real usage before disposing — dispose tears down the session state.
-      if (options.onUsage) {
+      if (options.onUsage || options.onContextWindow) {
         try {
           const { tokens, cost } = session.getSessionStats();
-          options.onUsage({
+          const usage: AgentUsage = {
             input: tokens.input,
             output: tokens.output,
             cacheRead: tokens.cacheRead,
             cacheWrite: tokens.cacheWrite,
             total: tokens.total,
             cost,
-          });
+          };
+          options.onUsage?.(usage);
+          options.onContextWindow?.(
+            buildAgentContextWindowStats(usage, {
+              runtimeContextWindow: positiveIntegerField(activeModel?.contextWindow),
+              reserve:
+                positiveIntegerField(options.contextReserveTokens) ?? positiveIntegerField(activeModel?.maxTokens),
+              maxContextTokens: positiveIntegerField(options.maxContextTokens),
+            }),
+          );
         } catch {
-          // Usage is best-effort; never let stats failure mask the real result/error.
+          // Usage/context stats are best-effort; never let stats failure mask the real result/error.
         }
       }
       session.dispose();

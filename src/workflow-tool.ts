@@ -111,6 +111,18 @@ const workflowToolSchema = Type.Object({
         "Hard total-token budget for the whole run. Once spent reaches it, further agent() calls fail and the run stops. Omit for no limit. Set it when the user asks to cap spend.",
     }),
   ),
+  agentMaxContextTokens: Type.Optional(
+    Type.Number({
+      description:
+        "Hard per-agent provider input/context token cap. When set, agent() rejects prompts/runs that exceed it to prevent repeated huge prompts on smaller-window models.",
+    }),
+  ),
+  agentContextReserveTokens: Type.Optional(
+    Type.Number({
+      description:
+        "Reserve tokens subtracted from each model context window when calculating occupancy warnings. Omit to use the model maxTokens when known.",
+    }),
+  ),
 });
 
 export type WorkflowToolInput = {
@@ -123,6 +135,8 @@ export type WorkflowToolInput = {
   agentTimeoutMs?: number;
   workflowTimeoutMs?: number;
   tokenBudget?: number;
+  agentMaxContextTokens?: number;
+  agentContextReserveTokens?: number;
 };
 
 export interface WorkflowToolOptions {
@@ -144,6 +158,10 @@ export interface WorkflowToolOptions {
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
+  /** Default hard per-agent provider input/context token cap. */
+  defaultAgentMaxContextTokens?: number | null;
+  /** Default reserve subtracted from model context windows for occupancy. */
+  defaultAgentContextReserveTokens?: number | null;
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
@@ -159,6 +177,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       defaultAgentTimeoutMs: defaults.agentTimeoutMs,
       defaultWorkflowTimeoutMs: defaults.workflowTimeoutMs,
       defaultAgentRetries: defaults.agentRetries,
+      defaultAgentMaxContextTokens: defaults.agentMaxContextTokens,
+      defaultAgentContextReserveTokens: defaults.agentContextReserveTokens,
     });
 
   return defineTool({
@@ -178,8 +198,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
       "For workflow, prefer the built-in quality helpers when they fit (each is built on agent()/parallel() and returns plain data): verify(item, {reviewers, threshold, lens}) for adversarial fact-checking; judgePanel(attempts, {judges, rubric}) to score N candidates and return the best; loopUntilDry({round, key, consecutiveEmpty}) to keep finding until rounds stop yielding new items; completenessCheck(args, results) as a final 'what's missing' critic.",
       "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
-      "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; the defaults are unbounded.",
+      "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; likewise do not set agentMaxContextTokens unless asked to cap context size; the defaults are unbounded.",
       "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds or choose a lighter tier.",
+      "For workflow context-window guardrails: pass agentMaxContextTokens for a run-wide hard cap, or per-call agent(..., { maxContextTokens }) for one noisy agent; occupancy warnings are logged/persisted automatically at 70/85/95% of the effective model window.",
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
@@ -225,6 +246,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           agentTimeoutMs: params.agentTimeoutMs,
           workflowTimeoutMs: params.workflowTimeoutMs,
           tokenBudget: params.tokenBudget,
+          agentMaxContextTokens: params.agentMaxContextTokens,
+          agentContextReserveTokens: params.agentContextReserveTokens,
         });
         const transcriptDir = manager.getRun(runId)?.transcriptDir;
         return {
@@ -263,6 +286,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           agentTimeoutMs: params.agentTimeoutMs,
           workflowTimeoutMs: params.workflowTimeoutMs,
           tokenBudget: params.tokenBudget,
+          agentMaxContextTokens: params.agentMaxContextTokens,
+          agentContextReserveTokens: params.agentContextReserveTokens,
           confirm,
           externalSignal: signal,
           onProgress(live) {
@@ -370,6 +395,8 @@ function resolveWorkflowToolDefaults(
   workflowTimeoutMs: number | null | undefined;
   concurrency?: number;
   agentRetries: number;
+  agentMaxContextTokens: number | null;
+  agentContextReserveTokens: number | null;
 } {
   const settings = loadWorkflowSettings({ cwd });
   return {
@@ -383,6 +410,9 @@ function resolveWorkflowToolDefaults(
         : settings.defaultWorkflowTimeoutMs,
     concurrency: options.defaultConcurrency ?? options.concurrency ?? settings.defaultConcurrency,
     agentRetries: options.defaultAgentRetries ?? settings.defaultAgentRetries ?? 0,
+    agentMaxContextTokens: options.defaultAgentMaxContextTokens ?? settings.defaultAgentMaxContextTokens ?? null,
+    agentContextReserveTokens:
+      options.defaultAgentContextReserveTokens ?? settings.defaultAgentContextReserveTokens ?? null,
   };
 }
 

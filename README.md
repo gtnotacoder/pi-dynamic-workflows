@@ -62,6 +62,7 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 
 - **Background by default** — the tool returns immediately with a run id; the result is delivered back into chat when the run finishes. Pass `background: false` to block inline.
 - **Resume-safe** — every `agent()` call is journaled under a stable call sequence, so a run interrupted by a usage-limit checkpoint resumes without re-running finished agents.
+- **Context-window aware** — finished agents record provider input/context tokens, model window, reserve/effective window, and occupancy. Runs log and persist visible warnings at 70/85/95% of the effective window, and `maxContextTokens` can hard-stop oversized agents before repeated huge prompts.
 - **Bounded** — fan-out capped at 4096 items, script source at 512 KB, synchronous `runInContext` setup at 30 s, and async workflow runs by a wall-clock timeout.
 - **Trusted-code execution** — Node `vm` is a determinism/authoring realm, **not** a security sandbox. Do not run unreviewed model-generated or third-party workflow scripts as untrusted input; see [SECURITY.md](./SECURITY.md).
 
@@ -103,6 +104,7 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
+| `maxContextTokens`, `contextReserveTokens` | Per-agent context-window guardrails. `maxContextTokens` is a hard provider input/context cap; `contextReserveTokens` overrides the reserve subtracted from the model window for 70/85/95% occupancy warnings. |
 | `tools`, `disallowedTools` | Per-call coding-tool allow/deny lists by tool name; schema agents still receive `structured_output`. |
 | `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
 | `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
@@ -369,7 +371,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **845/845** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
+**Status:** **1042/1042** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now

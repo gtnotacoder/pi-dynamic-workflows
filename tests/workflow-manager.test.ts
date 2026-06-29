@@ -578,6 +578,60 @@ return { a, b }`;
 );
 
 test(
+  "manager captures and persists run-level context-window policy for resume",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent({ input: 10, output: 1, total: 11 }),
+      defaultAgentMaxContextTokens: 1234,
+      defaultAgentContextReserveTokens: 222,
+    });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.listRuns()[0];
+    assert.equal(run.agentMaxContextTokens, 1234);
+    assert.equal(run.agentContextReserveTokens, 222);
+  }),
+);
+
+test(
+  "runSync persists per-agent context-window stats for /workflows",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onUsage?: (u: AgentUsage) => void; onContextWindow?: (stats: unknown) => void },
+        ): Promise<any> {
+          options.onUsage?.({ input: 90, output: 1, cacheRead: 0, cacheWrite: 0, total: 91, cost: 0 });
+          options.onContextWindow?.({
+            contextTokens: 90,
+            runtimeContextWindow: 128,
+            reserve: 28,
+            effectiveWindow: 100,
+            occupancy: 0.9,
+            threshold: 0.85,
+            level: "warn",
+            warning: "context window 90% used (90/100 tokens)",
+          });
+          return "ok";
+        },
+      },
+    });
+
+    await manager.runSync(oneAgentScript);
+
+    const run = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const agent = run?.agents[0];
+    assert.equal(agent?.contextWindow?.contextTokens, 90);
+    assert.equal(agent?.contextWindow?.effectiveWindow, 100);
+    assert.match(agent?.contextWindow?.warning ?? "", /90%/);
+  }),
+);
+
+test(
   "runSync persists recoverable agent error details for /workflows",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({
