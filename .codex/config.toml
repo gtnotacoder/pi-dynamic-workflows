@@ -1,0 +1,9 @@
+# Repository-local Codex configuration for pi-dynamic-workflows.
+# Keep this file free of secrets and machine-specific credentials.
+# Repo guidance lives in AGENTS.md; custom project agents live under .codex/agents/.
+
+project_doc_max_bytes = 32768
+
+[agents]
+max_threads = 6
+max_depth = 1
