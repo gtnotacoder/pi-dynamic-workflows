@@ -168,9 +168,11 @@ test("/issue-delivery boolean flags do not consume task words and issue context 
   const { ctx } = makeNotifyCtx();
   await issueDeliveryHandler("--dry-run fix parser", ctx);
   await issueDeliveryHandler("--issue #35 fix parser", ctx);
+  await issueDeliveryHandler("--finish issue #46", ctx);
 
   assert.deepEqual(seen[0], { dryRun: true, prototype: true, task: "fix parser" });
   assert.deepEqual(seen[1], { issue: "#35", task: "fix parser" });
+  assert.deepEqual(seen[2], { finish: true, task: "issue #46" });
 });
 
 test("/adversarial-review uses WorkflowManager background path when provided", async () => {

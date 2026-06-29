@@ -130,6 +130,54 @@ function renderPrototypeReport(input) {
   return lines.join('\\n')
 }
 
+function renderFailedRunHandoff(input) {
+  const failures = input.failures && input.failures.length ? input.failures : [input]
+  const lines = ['# Issue Delivery failed-run handoff', '']
+  lines.push('Task: ' + input.task)
+  lines.push('Run id: ' + runId)
+  lines.push('Failed steps: ' + failures.map(f => f.step.id + ' — ' + f.step.file).join(', '))
+  lines.push('')
+  lines.push('## Final findings')
+  for (const failure of failures) {
+    lines.push('')
+    lines.push('### ' + failure.step.id + ' — ' + failure.step.file)
+    lines.push('Attempts: ' + failure.attempts)
+    for (const round of failure.feedbackRounds || []) {
+      lines.push('- Round ' + round.index + ' (' + round.verdict + '): ' + String(round.feedback || '').slice(0, 1000))
+      if (round.localChecks) lines.push('  - Local checks: ' + round.localChecks.summary)
+      if (round.findings) lines.push('  - Findings: ' + JSON.stringify(round.findings).slice(0, 1000))
+    }
+    if (failure.lastDelta) {
+      lines.push('')
+      lines.push('Latest correction delta for ' + failure.step.id + ':')
+      lines.push('~~~json')
+      lines.push(JSON.stringify(failure.lastDelta, null, 2).slice(0, 3000))
+      lines.push('~~~')
+    }
+  }
+  lines.push('')
+  lines.push('## Completed steps before failure')
+  if (input.completedSteps && input.completedSteps.length) {
+    for (const step of input.completedSteps) lines.push('- ' + step.id + ': ' + step.file + ' (attempts: ' + step.attemptsNeeded + ')')
+  } else {
+    lines.push('- None recorded.')
+  }
+  lines.push('')
+  lines.push('## Intended product changes')
+  lines.push('- Keep source/test/docs changes needed for the issue.')
+  lines.push('- Inspect git status and remove only transient workflow scratch files.')
+  lines.push('')
+  lines.push('## Transient files to remove or ignore before commit')
+  for (const path of ['.issue-delivery/status.json', '.issue-delivery/handoff.md', '.fugu/', '.fastcontext/']) lines.push('- ' + path)
+  lines.push('')
+  lines.push('## Finish path after manual repair')
+  lines.push('1. Fix the findings above in this same worktree.')
+  lines.push('2. Run local checks until green.')
+  lines.push('3. Run Issue Delivery in finish mode: /issue-delivery --finish ' + JSON.stringify(input.task))
+  lines.push('4. The finish path runs checks, commits/pushes/opens the PR, and runs the finalization gate without redoing Scout/Thinker/Worker.')
+  return lines.join('\\n')
+}
+
 const RAW_PROTOTYPE = ARG_OBJECT.prototype || false
 const DRY_RUN_REQUESTED = optionBool(ARG_OBJECT.dryRun, false)
 const PROTOTYPE_LANE = optionBool(RAW_PROTOTYPE, false) || DRY_RUN_REQUESTED
@@ -142,9 +190,49 @@ const ALLOW_SHARED_CHECKOUT = optionBool(ARG_OBJECT.allowSharedCheckout, false)
 const ALLOW_DIRTY = optionBool(ARG_OBJECT.allowDirty, false)
 const WORKER_ATTEMPTS = PROTOTYPE_LANE ? MAX_REPAIR_ROUNDS + 1 : 3
 const VERIFIER_TIER = PROTOTYPE_LANE ? 'medium' : 'big'
+const FINISH_ONLY = optionBool(ARG_OBJECT.finish, false) || optionBool(ARG_OBJECT.finishOnly, false) || optionBool(ARG_OBJECT.resumeFinish, false) || String(ARG_OBJECT.mode || '').toLowerCase() === 'finish'
 
-log('[IssueDelivery] Initiating Issue Delivery orchestrator for task: "' + TASK_CONTEXT + '" (prototype=' + PROTOTYPE_LANE + ', dryRun=' + PROTOTYPE_DRY_RUN + ')')
-setSemanticStatus({ status: 'workflow-running', reason: PROTOTYPE_LANE ? 'Issue Delivery prototype mode is checking safety and planning bounded work.' : 'Issue Delivery workflow is planning and applying changes.', nextAction: PROTOTYPE_LANE ? 'Wait for safety, plan, checks, and prototype report.' : 'Wait for scout/worker/verifier stages to finish.' })
+log('[IssueDelivery] Initiating Issue Delivery orchestrator for task: "' + TASK_CONTEXT + '" (prototype=' + PROTOTYPE_LANE + ', dryRun=' + PROTOTYPE_DRY_RUN + ', finish=' + FINISH_ONLY + ')')
+setSemanticStatus({ status: 'workflow-running', reason: FINISH_ONLY ? 'Issue Delivery finish path is validating repaired work before PR delivery.' : (PROTOTYPE_LANE ? 'Issue Delivery prototype mode is checking safety and planning bounded work.' : 'Issue Delivery workflow is planning and applying changes.'), nextAction: FINISH_ONLY ? 'Run local checks, commit/push/open PR, then run finalization.' : (PROTOTYPE_LANE ? 'Wait for safety, plan, checks, and prototype report.' : 'Wait for scout/worker/verifier stages to finish.') })
+
+if (FINISH_ONLY) {
+  phase('LocalChecks')
+  const finishChecks = await stageCheck({ includeDefaultChecks: true })
+  if (!finishChecks.ok) {
+    const report = '# Issue Delivery finish blocked\\n\\nTask: ' + TASK_CONTEXT + '\\n\\nLocal checks: ' + finishChecks.summary + '\\n\\nFix checks in this repaired worktree, then rerun /issue-delivery --finish.'
+    setSemanticStatus({ status: 'needs-human', reason: 'Finish path local checks failed.', nextAction: 'Fix local checks, then rerun /issue-delivery --finish.', details: report })
+    return { success: false, finish: true, stoppedBy: 'local-checks', localChecks: finishChecks, report }
+  }
+
+  phase('Worker')
+  const finishPrResult = await agent(
+    'You are the Issue Delivery finish agent. Do NOT rerun Scout, Thinker, Worker, or Verifier. The human repaired a failed Issue Delivery worktree and host checks are green.\\n\\n' +
+    'Task: "' + TASK_CONTEXT + '"\\n' +
+    'Read .issue-delivery/handoff.md and .issue-delivery/status.json if present. Inspect git status. Commit ONLY intended product changes; do not commit transient paths such as .issue-delivery/, .fugu/, or .fastcontext/. Push a safe branch and open a draft PR. Include Closes #N if the task mentions an issue number. Return the PR URL and branch summary.',
+    {
+      label: 'issue-finish-delivery',
+      tier: 'small'
+    }
+  )
+
+  phase('Telemetry')
+  setSemanticStatus({ status: 'finalizing', reason: 'Running deterministic finalization gate after finish delivery.', nextAction: 'Check clean-committed-pushed invariants.' })
+  const finishFinalization = await checkFinalization(cwd, { baseRef: FINALIZATION_BASE_REF })
+  const finishStatus = finishFinalization.toRunStatus || {
+    status: finishFinalization.status || 'unknown',
+    reason: finishFinalization.reason || 'Finalization gate completed.',
+    nextAction: finishFinalization.nextAction || 'Review details below.',
+    details: finishFinalization.details || ''
+  }
+  setSemanticStatus(finishStatus)
+  return {
+    success: finishStatus.status === 'completed' || finishStatus.status === 'finalizing',
+    finish: true,
+    localChecks: finishChecks,
+    pr: finishPrResult,
+    finalization: finishFinalization
+  }
+}
 
 let prototypeSafety = null
 if (PROTOTYPE_LANE) {
@@ -277,6 +365,54 @@ async function writeIssueDeliveryState(label) {
   return await nextWrite
 }
 
+async function writeFailedRunHandoff(input) {
+  const failures = input.failures && input.failures.length ? input.failures : [input]
+  const failedStepIds = failures.map(f => f.step.id)
+  const handoff = renderFailedRunHandoff(input)
+  executionState.handoff = {
+    path: '.issue-delivery/handoff.md',
+    failedSteps: failedStepIds,
+    reason: 'Issue Delivery stopped after verifier/local-check failures.',
+    writeStatus: 'pending',
+    transientFiles: ['.issue-delivery/status.json', '.issue-delivery/handoff.md', '.fugu/', '.fastcontext/']
+  }
+  await writeIssueDeliveryState('issue-state-handoff-pending')
+
+  let handoffWriteError = ''
+  try {
+    const handoffWriteResult = await agent(
+      'Write the following Markdown to .issue-delivery/handoff.md (create the folder if needed). Do not output extra prose:\\n' +
+      handoff,
+      {
+        label: 'issue-handoff',
+        tier: 'small',
+        timeoutMs: 30000,
+        retries: 0
+      }
+    )
+    if (handoffWriteResult === null) handoffWriteError = 'handoff writer returned no result'
+  } catch (error) {
+    const text = String(error)
+    const lower = text.toLowerCase()
+    if (lower.includes('workflow aborted') || lower.includes('subagent was aborted')) throw error
+    handoffWriteError = text.slice(0, 240)
+    log('[IssueDelivery:handoff] best-effort handoff write failed: ' + handoffWriteError)
+  }
+
+  if (handoffWriteError) {
+    executionState.handoff.writeStatus = 'failed'
+    executionState.handoff.writeError = handoffWriteError
+    setSemanticStatus({ status: 'needs-human', reason: 'Issue Delivery failed before PR creation; handoff artifact write did not complete.', nextAction: 'Run /workflows status ' + runId + ' for the inline handoff, repair the worktree, then run /issue-delivery --finish.', details: handoff })
+    await writeIssueDeliveryState('issue-state-handoff-failed')
+    return { handoff, writeOk: false, error: handoffWriteError }
+  }
+
+  executionState.handoff.writeStatus = 'written'
+  setSemanticStatus({ status: 'needs-human', reason: 'Issue Delivery failed before PR creation; handoff artifact is available for manual repair.', nextAction: 'Open .issue-delivery/handoff.md, repair the worktree, then run /issue-delivery --finish.', details: handoff })
+  await writeIssueDeliveryState('issue-state-handoff-written')
+  return { handoff, writeOk: true }
+}
+
 const completed = {}
 const started = {}
 
@@ -300,6 +436,7 @@ while (Object.keys(completed).length < selectedSteps.length) {
   }
 
   // Execute ready steps concurrently using parallel()
+  const batchFailures = []
   await parallel(readySteps.map(step => async () => {
     log('[IssueDelivery:Orchestrator] Starting Parallel Step: [' + step.id + '] on ' + step.file)
 
@@ -411,7 +548,13 @@ while (Object.keys(completed).length < selectedSteps.length) {
     )
 
     if (!result.ok) {
-      throw new Error('Step ' + step.id + ' failed verification after ' + result.attempts + ' attempts. Aborting.')
+      batchFailures.push({
+        step,
+        attempts: result.attempts,
+        feedbackRounds,
+        lastDelta
+      })
+      return
     } 
 
     completed[step.id] = {
@@ -430,6 +573,17 @@ while (Object.keys(completed).length < selectedSteps.length) {
     // Write state utilizing our lightweight local check model to keep overhead very low
     await writeIssueDeliveryState('issue-state:' + step.id)
   }))
+
+  if (batchFailures.length > 0) {
+    const handoffResult = await writeFailedRunHandoff({
+      task: TASK_CONTEXT,
+      failures: batchFailures,
+      completedSteps: executionState.completedSteps
+    })
+    const failedStepIds = batchFailures.map(f => f.step.id).join(', ')
+    const handoffHint = handoffResult.writeOk ? 'See .issue-delivery/handoff.md for repair and finish instructions.' : 'Handoff file write failed; run /workflows status ' + runId + ' for inline repair and finish instructions.'
+    throw new Error('Step(s) ' + failedStepIds + ' failed verification. ' + handoffHint)
+  }
 }
 
 log('[IssueDelivery] 🎉 All steps executed and verified successfully!')
