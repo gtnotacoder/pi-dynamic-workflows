@@ -596,7 +596,7 @@ test(
 );
 
 test(
-  "resume preserves captured null context policy instead of applying new defaults",
+  "resume treats absent legacy context policy as captured null instead of applying new defaults",
   withTempCwd(async (cwd) => {
     let seenMaxContextTokens: number | undefined;
     let seenReserveTokens: number | undefined;
@@ -632,8 +632,6 @@ test(
       logs: [],
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      agentMaxContextTokens: null,
-      agentContextReserveTokens: null,
     });
 
     assert.equal(await manager.resume(runId), true);

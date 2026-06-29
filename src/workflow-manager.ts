@@ -765,8 +765,11 @@ export class WorkflowManager extends EventEmitter {
       // default the run never opted into.
       workflowTimeoutMs: persisted.workflowTimeoutMs,
       workflowTimeoutMsCaptured: persisted.workflowTimeoutMs !== undefined,
-      agentMaxContextTokens: persisted.agentMaxContextTokens,
-      agentContextReserveTokens: persisted.agentContextReserveTokens,
+      // Older persisted runs predate context caps. Treat absent fields as a
+      // captured opt-out so resuming them does not silently inherit newer manager
+      // defaults and change the original run's policy mid-resume.
+      agentMaxContextTokens: persisted.agentMaxContextTokens ?? null,
+      agentContextReserveTokens: persisted.agentContextReserveTokens ?? null,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
       semanticStatus: persisted.semanticStatus,

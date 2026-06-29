@@ -539,13 +539,13 @@ export async function runWorkflow<T = unknown>(
       });
     }
 
-    const effectiveMaxContextTokens = normalizeOptionalPositiveInteger(
-      agentOptions.maxContextTokens !== undefined ? agentOptions.maxContextTokens : options.agentMaxContextTokens,
+    const effectiveMaxContextTokens = resolveContextPolicyValue(
+      agentOptions.maxContextTokens,
+      options.agentMaxContextTokens,
     );
-    const effectiveContextReserveTokens = normalizeOptionalPositiveInteger(
-      agentOptions.contextReserveTokens !== undefined
-        ? agentOptions.contextReserveTokens
-        : options.agentContextReserveTokens,
+    const effectiveContextReserveTokens = resolveContextPolicyValue(
+      agentOptions.contextReserveTokens,
+      options.agentContextReserveTokens,
     );
 
     const assignedPhase = agentOptions.phase ?? state.currentPhase;
@@ -1581,6 +1581,13 @@ function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): b
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
+function resolveContextPolicyValue(callValue: unknown, runValue: unknown): number | undefined {
+  if (callValue === null) return undefined;
+  const callNormalized = normalizeOptionalPositiveInteger(callValue);
+  if (callNormalized !== undefined) return callNormalized;
+  return normalizeOptionalPositiveInteger(runValue);
 }
 
 function normalizeOptionalPositiveInteger(value: unknown): number | undefined {

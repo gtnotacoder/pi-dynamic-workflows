@@ -494,6 +494,38 @@ return 1`,
   assert.equal(end?.contextWindow?.maxContextTokens, 100);
 });
 
+test("invalid per-agent maxContextTokens falls back to the run-level cap", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'ctx_invalid_agent_cap', description: 'invalid cap fallback' }
+await agent('first', { label: 'a', maxContextTokens: 0 })
+return 1`,
+        {
+          agent: fakeAgent({ input: 120, output: 1, total: 121, cost: 0 }),
+          agentMaxContextTokens: 100,
+          persistLogs: false,
+        },
+      ),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+  );
+});
+
+test("explicit null per-agent maxContextTokens disables the run-level cap", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'ctx_null_agent_cap', description: 'null cap disables' }
+const a = await agent('first', { label: 'a', maxContextTokens: null })
+return a`,
+    {
+      agent: fakeAgent({ input: 120, output: 1, total: 121, cost: 0 }),
+      agentMaxContextTokens: 100,
+      persistLogs: false,
+    },
+  );
+
+  assert.equal(result.result, "ok");
+});
+
 test("runWorkflow enforces maxContextTokens on recoverable empty-output failures", async () => {
   let end:
     | {

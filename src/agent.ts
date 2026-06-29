@@ -607,10 +607,11 @@ export class WorkflowAgent {
       if (usageEmitted) return;
       usageEmitted = true;
       if (!options.onUsage && !options.onContextWindow && options.maxContextTokens === undefined) return;
-      let contextCapError: WorkflowError | undefined;
+      let usage: AgentUsage;
+      let contextWindow: AgentContextWindowStats;
       try {
         const { tokens, cost } = session.getSessionStats();
-        const usage: AgentUsage = {
+        usage = {
           input: tokens.input,
           output: tokens.output,
           cacheRead: tokens.cacheRead,
@@ -618,24 +619,32 @@ export class WorkflowAgent {
           total: tokens.total,
           cost,
         };
-        options.onUsage?.(usage);
-        const contextWindow = buildAgentContextWindowStats(usage, {
+        contextWindow = buildAgentContextWindowStats(usage, {
           runtimeContextWindow: positiveIntegerField(activeModel?.contextWindow),
           reserve: positiveIntegerField(options.contextReserveTokens) ?? positiveIntegerField(activeModel?.maxTokens),
           maxContextTokens: positiveIntegerField(options.maxContextTokens),
         });
-        if (contextWindow.exceededMaxContextTokens) {
-          contextCapError = new WorkflowError(
-            contextWindow.warning ?? "Subagent exceeded maxContextTokens",
-            WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
-            { recoverable: false, agentLabel: options.label, details: contextWindow },
-          );
-        }
-        options.onContextWindow?.(contextWindow);
       } catch {
         // Usage/context stats are best-effort; never let stats failure mask the real result/error.
+        return;
       }
-      if (enforceCap && contextCapError) throw contextCapError;
+      try {
+        options.onUsage?.(usage);
+      } catch {
+        // Usage hooks are diagnostic only; cap enforcement must still run.
+      }
+      try {
+        options.onContextWindow?.(contextWindow);
+      } catch {
+        // Context hooks are diagnostic only; cap enforcement must still run.
+      }
+      if (enforceCap && contextWindow.exceededMaxContextTokens) {
+        throw new WorkflowError(
+          contextWindow.warning ?? "Subagent exceeded maxContextTokens",
+          WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+          { recoverable: false, agentLabel: options.label, details: contextWindow },
+        );
+      }
     };
     const maybeEmitHistory = () => {
       if (!options.onHistory) return;
