@@ -520,8 +520,8 @@ export class WorkflowAgent {
 
     const activeModel =
       resolvedModel ??
-      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined) ??
-      (this.sessionOptions.model as Partial<Model<any>> | undefined);
+      (this.sessionOptions.model as Partial<Model<any>> | undefined) ??
+      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined);
     const agentDir = getAgentDir();
 
     // Resolve the context-inheritance posture (run options are the runtime layer;
@@ -601,7 +601,42 @@ export class WorkflowAgent {
     let removeAbortListener: (() => void) | undefined;
     let removeHistoryListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
+    let usageEmitted = false;
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
+    const emitUsageAndContext = (enforceCap: boolean): void => {
+      if (usageEmitted) return;
+      usageEmitted = true;
+      if (!options.onUsage && !options.onContextWindow && options.maxContextTokens === undefined) return;
+      let contextCapError: WorkflowError | undefined;
+      try {
+        const { tokens, cost } = session.getSessionStats();
+        const usage: AgentUsage = {
+          input: tokens.input,
+          output: tokens.output,
+          cacheRead: tokens.cacheRead,
+          cacheWrite: tokens.cacheWrite,
+          total: tokens.total,
+          cost,
+        };
+        options.onUsage?.(usage);
+        const contextWindow = buildAgentContextWindowStats(usage, {
+          runtimeContextWindow: positiveIntegerField(activeModel?.contextWindow),
+          reserve: positiveIntegerField(options.contextReserveTokens) ?? positiveIntegerField(activeModel?.maxTokens),
+          maxContextTokens: positiveIntegerField(options.maxContextTokens),
+        });
+        if (contextWindow.exceededMaxContextTokens) {
+          contextCapError = new WorkflowError(
+            contextWindow.warning ?? "Subagent exceeded maxContextTokens",
+            WorkflowErrorCode.CONTEXT_WINDOW_EXCEEDED,
+            { recoverable: false, agentLabel: options.label, details: contextWindow },
+          );
+        }
+        options.onContextWindow?.(contextWindow);
+      } catch {
+        // Usage/context stats are best-effort; never let stats failure mask the real result/error.
+      }
+      if (enforceCap && contextCapError) throw contextCapError;
+    };
     const maybeEmitHistory = () => {
       if (!options.onHistory) return;
       const now = Date.now();
@@ -630,9 +665,11 @@ export class WorkflowAgent {
       throwIfProviderLimit(session.messages, options.label);
 
       if (options.schema) {
-        return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
+        const structured = (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
           this.lastAssistantText(m),
         )) as AgentRunResult<TSchemaDef>;
+        emitUsageAndContext(true);
+        return structured;
       }
 
       const text = this.lastAssistantText(session.messages);
@@ -642,7 +679,11 @@ export class WorkflowAgent {
           agentLabel: options.label,
         });
       }
+      emitUsageAndContext(true);
       return text as AgentRunResult<TSchemaDef>;
+    } catch (error) {
+      emitUsageAndContext(false);
+      throw error;
     } finally {
       removeAbortListener?.();
       removeHistoryListener?.();
@@ -650,31 +691,6 @@ export class WorkflowAgent {
         emitHistory();
       } catch {
         // History is diagnostic only; never let it mask the real result/error.
-      }
-      // Read real usage before disposing — dispose tears down the session state.
-      if (options.onUsage || options.onContextWindow) {
-        try {
-          const { tokens, cost } = session.getSessionStats();
-          const usage: AgentUsage = {
-            input: tokens.input,
-            output: tokens.output,
-            cacheRead: tokens.cacheRead,
-            cacheWrite: tokens.cacheWrite,
-            total: tokens.total,
-            cost,
-          };
-          options.onUsage?.(usage);
-          options.onContextWindow?.(
-            buildAgentContextWindowStats(usage, {
-              runtimeContextWindow: positiveIntegerField(activeModel?.contextWindow),
-              reserve:
-                positiveIntegerField(options.contextReserveTokens) ?? positiveIntegerField(activeModel?.maxTokens),
-              maxContextTokens: positiveIntegerField(options.maxContextTokens),
-            }),
-          );
-        } catch {
-          // Usage/context stats are best-effort; never let stats failure mask the real result/error.
-        }
       }
       session.dispose();
     }

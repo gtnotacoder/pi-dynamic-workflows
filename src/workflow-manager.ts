@@ -471,18 +471,16 @@ export class WorkflowManager extends EventEmitter {
           : this.defaultWorkflowTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
     const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
-    const resolvedAgentMaxContextTokens =
-      agentMaxContextTokens === null
-        ? null
-        : (normalizePositiveIntegerOption(agentMaxContextTokens) ??
-          managed.agentMaxContextTokens ??
-          this.defaultAgentMaxContextTokens);
-    const resolvedAgentContextReserveTokens =
-      agentContextReserveTokens === null
-        ? null
-        : (normalizePositiveIntegerOption(agentContextReserveTokens) ??
-          managed.agentContextReserveTokens ??
-          this.defaultAgentContextReserveTokens);
+    const resolvedAgentMaxContextTokens = resolveContextPolicyOption(
+      agentMaxContextTokens,
+      managed.agentMaxContextTokens,
+      this.defaultAgentMaxContextTokens,
+    );
+    const resolvedAgentContextReserveTokens = resolveContextPolicyOption(
+      agentContextReserveTokens,
+      managed.agentContextReserveTokens,
+      this.defaultAgentContextReserveTokens,
+    );
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -898,6 +896,19 @@ function hydrateJournalHistory(journal: JournalEntry[], agents: PersistedRunStat
 
 function isAgentJournalEntry(entry: JournalEntry): boolean {
   return Boolean(entry.label || entry.model || entry.usage || entry.tokens !== undefined);
+}
+
+function resolveContextPolicyOption(
+  execValue: number | null | undefined,
+  managedValue: number | null | undefined,
+  defaultValue: number | null,
+): number | null {
+  if (execValue !== undefined) {
+    if (execValue === null) return null;
+    return normalizePositiveIntegerOption(execValue) ?? (managedValue !== undefined ? managedValue : defaultValue);
+  }
+  if (managedValue !== undefined) return managedValue;
+  return defaultValue;
 }
 
 function normalizePositiveIntegerOption(value: unknown): number | undefined {

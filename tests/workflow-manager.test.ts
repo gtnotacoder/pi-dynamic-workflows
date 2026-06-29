@@ -596,6 +596,58 @@ test(
 );
 
 test(
+  "resume preserves captured null context policy instead of applying new defaults",
+  withTempCwd(async (cwd) => {
+    let seenMaxContextTokens: number | undefined;
+    let seenReserveTokens: number | undefined;
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentMaxContextTokens: 999,
+      defaultAgentContextReserveTokens: 111,
+      agent: {
+        async run(
+          _prompt: string,
+          options: {
+            maxContextTokens?: number;
+            contextReserveTokens?: number;
+            onUsage?: (u: AgentUsage) => void;
+          },
+        ): Promise<any> {
+          seenMaxContextTokens = options.maxContextTokens;
+          seenReserveTokens = options.contextReserveTokens;
+          options.onUsage?.({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0, total: 11, cost: 0 });
+          return "ok";
+        },
+      },
+    });
+    manager.on("error", () => {});
+    const runId = "null-context-policy";
+    manager.getPersistence().save({
+      runId,
+      workflowName: "null_context_policy",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      agentMaxContextTokens: null,
+      agentContextReserveTokens: null,
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.equal(seenMaxContextTokens, undefined, "captured null disables the later default cap");
+    assert.equal(seenReserveTokens, undefined, "captured null disables the later default reserve");
+    const persisted = manager.listRuns().find((run) => run.runId === runId);
+    assert.equal(persisted?.agentMaxContextTokens, null);
+    assert.equal(persisted?.agentContextReserveTokens, null);
+  }),
+);
+
+test(
   "runSync persists per-agent context-window stats for /workflows",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({
