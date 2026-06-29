@@ -321,6 +321,7 @@ export class WorkflowManager extends EventEmitter {
         logs: [],
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
+        runStatePath: managed.runStatePath,
         workflowTimeoutMs: managed.workflowTimeoutMs,
       });
     } catch (err) {
@@ -633,6 +634,7 @@ export class WorkflowManager extends EventEmitter {
         updatedAt: new Date().toISOString(),
         completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
         durationMs: managed.result?.durationMs,
+        runStatePath: managed.runStatePath,
         // Persist the effective run-wide timeout only when set, so resume keeps
         // the original explicit/settings value. Absent on old runs -> runtime constant.
         workflowTimeoutMs: managed.workflowTimeoutMs,

@@ -220,6 +220,13 @@ export {
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
 } from "./workflow-settings.js";
+export { registerWorkflowTelemetryReportCommand } from "./workflow-telemetry-command.js";
+export type { UsageAnomaly, UsageRollup, WorkflowTelemetryReport } from "./workflow-telemetry-report.js";
+export {
+  buildWorkflowTelemetryReport,
+  parseTelemetryWindow,
+  renderWorkflowTelemetryReport,
+} from "./workflow-telemetry-report.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
 export { backgroundStartedText, createWorkflowTool } from "./workflow-tool.js";
 export {
