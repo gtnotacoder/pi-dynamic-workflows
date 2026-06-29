@@ -89,10 +89,108 @@ function extractPrototypeFlag(raw: string): { prototype: boolean; rest: string }
   return { prototype, rest: keep.join(" ") };
 }
 
-function buildIssueDeliveryArgs(rest: string): { task: string; prototype?: boolean } {
+function toCamelFlagName(name: string): string {
+  return name.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+}
+
+const ISSUE_DELIVERY_BOOLEAN_FLAGS = new Set([
+  "prototype",
+  "dryRun",
+  "worktreeRequired",
+  "allowSharedCheckout",
+  "allowDirty",
+]);
+const ISSUE_DELIVERY_NUMBER_FLAGS = new Set(["maxSteps", "maxRepairRounds", "maxReviewRounds"]);
+
+function isBooleanLiteral(value: string | undefined): boolean {
+  return value !== undefined && ["1", "0", "true", "false", "yes", "no", "on", "off"].includes(value.toLowerCase());
+}
+
+function coerceIssueDeliveryFlag(name: string, value: string | boolean): unknown {
+  const normalized = toCamelFlagName(name);
+  if (ISSUE_DELIVERY_BOOLEAN_FLAGS.has(normalized)) {
+    return typeof value === "boolean" ? value : parseBooleanFlag(value);
+  }
+  if (ISSUE_DELIVERY_NUMBER_FLAGS.has(normalized)) {
+    const parsed = Number.parseInt(String(value), 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return value;
+}
+
+function buildIssueDeliveryArgs(rest: string): Record<string, unknown> & { task: string } {
   const parsed = extractPrototypeFlag(rest);
-  const task = parsed.rest.trim();
-  return parsed.prototype ? { task, prototype: true } : { task };
+  const tokens = parsed.rest.trim().split(/\s+/).filter(Boolean);
+  const keep: string[] = [];
+  const options: Record<string, unknown> = parsed.prototype ? { prototype: true } : {};
+  const valueFlags = new Set([
+    "issue",
+    "plan-path",
+    "planPath",
+    "repo",
+    "base-branch",
+    "baseBranch",
+    "base-ref",
+    "baseRef",
+    "max-steps",
+    "maxSteps",
+    "max-repair-rounds",
+    "maxRepairRounds",
+    "max-review-rounds",
+    "maxReviewRounds",
+    "dry-run",
+    "dryRun",
+    "worktree-required",
+    "worktreeRequired",
+    "allow-shared-checkout",
+    "allowSharedCheckout",
+    "allow-dirty",
+    "allowDirty",
+  ]);
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const bare = token.replace(/^--/, "");
+    const equals = bare.indexOf("=");
+    if (equals > 0) {
+      const name = bare.slice(0, equals);
+      if (valueFlags.has(name)) {
+        options[toCamelFlagName(name)] = coerceIssueDeliveryFlag(name, bare.slice(equals + 1));
+        continue;
+      }
+    }
+    if (token.startsWith("--no-")) {
+      const name = token.slice("--no-".length);
+      if (valueFlags.has(name)) {
+        options[toCamelFlagName(name)] = false;
+        continue;
+      }
+    }
+    if (token.startsWith("--") && valueFlags.has(bare)) {
+      const normalized = toCamelFlagName(bare);
+      const next = tokens[i + 1];
+      let value: string | boolean = true;
+      if (ISSUE_DELIVERY_BOOLEAN_FLAGS.has(normalized)) {
+        if (isBooleanLiteral(next)) value = tokens[++i];
+      } else if (next && !next.startsWith("--")) {
+        value = tokens[++i];
+      }
+      options[normalized] = coerceIssueDeliveryFlag(bare, value);
+      continue;
+    }
+    if (equals > 0) {
+      const name = bare.slice(0, equals);
+      if (valueFlags.has(name)) {
+        options[toCamelFlagName(name)] = coerceIssueDeliveryFlag(name, bare.slice(equals + 1));
+        continue;
+      }
+    }
+    keep.push(token);
+  }
+
+  const task = keep.join(" ").trim() || String(options.issue ?? options.planPath ?? "").trim();
+  if (options.dryRun === true) options.prototype = true;
+  return { ...options, task };
 }
 
 export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {

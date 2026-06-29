@@ -5,7 +5,7 @@ import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "../
 import { generateFuguWorkflow } from "../src/fugu.js";
 import { generateIssueDeliveryWorkflow } from "../src/issue-delivery.js";
 import { createWebTools } from "../src/web-tools.js";
-import { parseWorkflowScript } from "../src/workflow.js";
+import { parseWorkflowScript, runWorkflow } from "../src/workflow.js";
 
 // ─── Issue Delivery / Fugu compatibility ──────────────────────────────────────
 
@@ -23,12 +23,159 @@ test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
   assert.match(body, /stageCheck\(/);
   assert.match(body, /compactFeedback\(/);
   assert.match(body, /PROTOTYPE_LANE/);
+  assert.match(body, /PROTOTYPE_DRY_RUN/);
+  assert.match(body, /prototypeSafetyCheck/);
+  assert.match(body, /stoppedBeforeMutation/);
   assert.match(body, /WORKER_ATTEMPTS/);
   assert.doesNotMatch(body, /fugu-checks:/, "host-side stageCheck replaces the old LocalChecks LLM agent");
 });
 
 test("generateFuguWorkflow remains a compatibility alias for issue delivery", () => {
   assert.equal(generateFuguWorkflow(), generateIssueDeliveryWorkflow());
+});
+
+test("generateIssueDeliveryWorkflow prototype dry-run stops before Worker edits and PR delivery", async () => {
+  const labels: string[] = [];
+  const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
+    cwd: "/tmp/prototype-linked-worktree",
+    args: { task: "prototype fix", issue: "#35", dryRun: true, maxReviewRounds: 2, maxSteps: 1 },
+    persistLogs: false,
+    agent: {
+      async run(prompt: string, options: { label?: string; schema?: unknown; toolNames?: string[] }): Promise<unknown> {
+        labels.push(options.label ?? "");
+        if (options.label === "issue-scout" || options.label === "issue-thinker") {
+          assert.ok(options.toolNames?.length, `${options.label} should use a read-only tool allowlist in dry-run`);
+          assert.match(prompt, /Issue: #35/, `${options.label} prompt should preserve parsed issue context`);
+        }
+        if (options.label === "issue-thinker") {
+          return {
+            summary: "bounded prototype plan",
+            steps: [
+              {
+                id: "step-2",
+                file: "src/b.ts",
+                instructions: "change b",
+                expectedOutput: "b",
+                dependencies: ["step-1"],
+              },
+              { id: "step-1", file: "src/a.ts", instructions: "change a", expectedOutput: "a", dependencies: [] },
+            ],
+          };
+        }
+        if (options.label?.startsWith("prototype-review:")) {
+          assert.ok(options.toolNames?.length, "dry-run prototype review should use a read-only tool allowlist");
+          return "plan is ready for execution";
+        }
+        return "code map";
+      },
+    },
+    stageCheck: async () => ({ ok: true, checks: [], summary: "Stage checks passed (test)." }),
+    prototypeSafetyCheck: async (cwd) => ({
+      ok: true,
+      cwd,
+      gitRoot: cwd,
+      primaryWorktree: "/repo/main",
+      isLinkedWorktree: true,
+      dirtyPaths: [],
+      reason: "Running in an isolated linked worktree.",
+      nextAction: "Proceed with bounded prototype execution.",
+    }),
+  });
+
+  const payload = result.result as {
+    prototype?: boolean;
+    dryRun?: boolean;
+    stoppedBeforeMutation?: boolean;
+    report?: string;
+    stepsPlanned?: Array<{ id: string }>;
+  };
+  assert.equal(payload.prototype, true);
+  assert.equal(payload.dryRun, true);
+  assert.equal(payload.stoppedBeforeMutation, true);
+  assert.match(payload.report ?? "", /stopped before Worker edits, git push, and PR creation/i);
+  assert.deepEqual(
+    Array.from(payload.stepsPlanned ?? [], (step) => step.id),
+    ["step-1"],
+  );
+  assert.ok(labels.includes("issue-scout"));
+  assert.ok(labels.includes("issue-thinker"));
+  assert.equal(labels.filter((label) => label.startsWith("prototype-review:")).length, 2);
+  assert.equal(
+    labels.some((label) => label.startsWith("issue-worker:")),
+    false,
+    "dry-run must not run workers",
+  );
+  assert.equal(labels.includes("issue-pr-delivery"), false, "prototype dry-run must not run PR delivery");
+});
+
+test("generateIssueDeliveryWorkflow does not truncate normal delivery plans over 100 steps", async () => {
+  const labels: string[] = [];
+  const steps = Array.from({ length: 101 }, (_unused, index) => ({
+    id: `step-${index + 1}`,
+    file: `src/file-${index + 1}.ts`,
+    instructions: `change ${index + 1}`,
+    expectedOutput: `output ${index + 1}`,
+    dependencies: [],
+  }));
+
+  const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
+    cwd: "/tmp/normal-delivery",
+    args: { task: "normal issue #35" },
+    persistLogs: false,
+    agent: {
+      async run(_prompt: string, options: { label?: string }): Promise<unknown> {
+        labels.push(options.label ?? "");
+        if (options.label === "issue-thinker") return { summary: "large normal plan", steps };
+        if (options.label?.startsWith("issue-verifier:")) return { passed: true, feedback: "ok" };
+        if (options.label === "issue-pr-delivery") return "https://github.com/example/repo/pull/1";
+        return "ok";
+      },
+    },
+    stageCheck: async () => ({ ok: true, checks: [], summary: "Stage checks passed (test)." }),
+    finalizationCheck: async () => ({
+      status: "completed",
+      reason: "done",
+      nextAction: "merge",
+      toRunStatus: { status: "completed", reason: "done", nextAction: "merge" },
+    }),
+  });
+
+  const payload = result.result as { stepsCompleted?: Array<{ id: string }>; finalization?: { status?: string } };
+  assert.equal(payload.stepsCompleted?.length, 101);
+  assert.equal(labels.filter((label) => label.startsWith("issue-worker:")).length, 101);
+  assert.equal(labels.includes("issue-pr-delivery"), true);
+});
+
+test("generateIssueDeliveryWorkflow prototype mode refuses unsafe shared checkout before agents run", async () => {
+  const labels: string[] = [];
+  const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
+    cwd: "/repo/main",
+    args: { task: "prototype issue #35", prototype: true },
+    persistLogs: false,
+    agent: {
+      async run(_prompt: string, options: { label?: string }): Promise<unknown> {
+        labels.push(options.label ?? "");
+        return "should not run";
+      },
+    },
+    prototypeSafetyCheck: async (cwd) => ({
+      ok: false,
+      cwd,
+      gitRoot: cwd,
+      primaryWorktree: cwd,
+      isLinkedWorktree: false,
+      dirtyPaths: [],
+      reason:
+        "Prototype mode requires an isolated linked git worktree; this appears to be the primary/shared checkout.",
+      nextAction: "Create a linked worktree and rerun.",
+    }),
+  });
+
+  const payload = result.result as { success?: boolean; stoppedBy?: string; report?: string };
+  assert.equal(payload.success, false);
+  assert.equal(payload.stoppedBy, "prototype-safety");
+  assert.match(payload.report ?? "", /requires an isolated linked git worktree/);
+  assert.deepEqual(labels, [], "safety refusal must happen before scout/worker agents");
 });
 
 test("generateIssueDeliveryWorkflow rejects broad git staging and enforces scoped delivery safety", () => {

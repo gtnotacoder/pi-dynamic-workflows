@@ -103,6 +103,7 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `schema` | JSON Schema; `agent()` returns the validated object. |
 | `phase` | Override the active phase for this agent. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
+| `tools`, `disallowedTools` | Per-call coding-tool allow/deny lists by tool name; schema agents still receive `structured_output`. |
 | `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
 | `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
 
@@ -184,7 +185,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 /issue-delivery --mode focused --prototype fix the failing parser regression and open a draft PR
 ```
 
-The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is only the ad-hoc harness lane for small repo-local experiments while developing the workflow package itself; it lowers the built-in workflow's retry/review overhead without changing edit/read-only boundaries. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
+The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is the dogfood harness lane for small repo-local experiments while developing the workflow package itself; `--dry-run` also implies this prototype lane. Prototype mode defaults to `dryRun=true`: it performs the safety check, read-only Scout/Thinker planning, host local checks, and bounded prototype review rounds, then stops before Worker edits, git push, and PR creation. To allow bounded local edits but still stop before PR delivery, run `--prototype --dry-run=false` from an isolated linked worktree. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
 
 High-level flow:
 
@@ -243,9 +244,16 @@ Model routing is intentionally portable for NPM: built-in Issue Delivery uses ti
 
 Use `/workflows-models` to map those tiers to your own subscriptions or local models. For example, one machine can route big to GPT-5-class reasoning, medium to GLM/DeepSeek coding, and small to a fast local Qwen verifier without changing the shipped workflow.
 
+Prototype guardrails:
+
+- `--prototype` defaults: `dryRun=true`, `worktreeRequired=true`, `maxSteps=4`, `maxRepairRounds=1`, `maxReviewRounds=1`.
+- Prototype mode refuses the primary/shared checkout by default; use a linked worktree or pass `--worktree-required=false --allow-shared-checkout` deliberately.
+- Prototype dry-runs use read-only pre-report agents, do not run Worker edit agents, do not push, and do not create PRs. The final report includes selected steps, omitted steps, safety status, local checks, review notes, and the recommended next action.
+- Prototype execution (`--dry-run=false`) can edit the isolated worktree, but still stops before git push/PR creation so a human can inspect or promote it.
+
 Operational notes:
 
-- Start from a clean git working tree when possible; Issue Delivery will create its own branch during PR delivery.
+- Start from a clean git working tree when possible; Issue Delivery will create its own branch during normal PR delivery.
 - `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
 - Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
 - Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.
