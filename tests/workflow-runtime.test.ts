@@ -436,6 +436,97 @@ return 1`;
   assert.equal(seenModel, "meta/default-model", "an agent with no model/tier/phase route uses meta.model");
 });
 
+test("runWorkflow forwards provider usage to onAgentEnd and resume replays it", async () => {
+  const usage: AgentUsage = { input: 12, output: 3, cacheRead: 4, cacheWrite: 2, total: 21, cost: 0.001 };
+  const script = `export const meta = { name: 'usage_event', description: 'usage event' }
+const a = await agent('first', { label: 'a' })
+return a`;
+  const liveEvents: Array<{ usage?: AgentUsage; tokens?: number }> = [];
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(script, {
+    agent: fakeAgent(usage, "ok"),
+    persistLogs: false,
+    onAgentEnd: (event) => liveEvents.push({ usage: event.usage, tokens: event.tokens }),
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  assert.deepEqual(liveEvents[0].usage, usage);
+  assert.equal(liveEvents[0].tokens, usage.total);
+  assert.deepEqual(journal[0].usage, usage);
+
+  const replayEvents: Array<{ usage?: AgentUsage; tokens?: number }> = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+    onAgentEnd: (event) => replayEvents.push({ usage: event.usage, tokens: event.tokens }),
+  });
+
+  assert.deepEqual(replayEvents[0].usage, usage, "resume should replay cached usage to observers");
+  assert.equal(replayEvents[0].tokens, usage.total);
+});
+
+test("runWorkflow accumulates retry attempt usage into the final agent event and journal", async () => {
+  let calls = 0;
+  const events: Array<{ usage?: AgentUsage; tokens?: number }> = [];
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(
+    `export const meta = { name: 'retry_usage', description: 'retry usage' }
+const a = await agent('work', { label: 'a' })
+return a`,
+    {
+      agentRetries: 1,
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { onUsage?: (usage: AgentUsage) => void }) {
+          calls++;
+          options.onUsage?.({ input: 10, output: 1, cacheRead: 2, cacheWrite: 0, total: 11, cost: 0.01 });
+          return calls === 1 ? "" : "ok";
+        },
+      },
+      onAgentEnd: (event) => events.push({ usage: event.usage, tokens: event.tokens }),
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.equal(events[0].tokens, 22);
+  assert.deepEqual(events[0].usage, { input: 20, output: 2, cacheRead: 4, cacheWrite: 0, total: 22, cost: 0.02 });
+  assert.deepEqual(journal[0].usage, events[0].usage);
+});
+
+test("runWorkflow preserves estimated retry tokens when later attempts report usage", async () => {
+  let calls = 0;
+  const events: Array<{ usage?: AgentUsage; tokens?: number }> = [];
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(
+    `export const meta = { name: 'retry_estimate_usage', description: 'retry estimate usage' }
+const a = await agent('work', { label: 'a' })
+return a`,
+    {
+      agentRetries: 1,
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { onUsage?: (usage: AgentUsage) => void }) {
+          calls++;
+          if (calls === 2) {
+            options.onUsage?.({ input: 10, output: 1, cacheRead: 2, cacheWrite: 0, total: 11, cost: 0.01 });
+          }
+          return calls === 1 ? "" : "ok";
+        },
+      },
+      onAgentEnd: (event) => events.push({ usage: event.usage, tokens: event.tokens }),
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.ok((events[0].tokens ?? 0) > 11, "tokens include the estimated failed attempt");
+  assert.equal(events[0].usage?.total, events[0].tokens);
+  assert.equal(journal[0].usage?.total, journal[0].tokens);
+});
+
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {
   const result = await runWorkflow(twoAgentScript, {
     agent: fakeAgent({ total: 0 }, "a result string"),

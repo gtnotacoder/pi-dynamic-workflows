@@ -7,6 +7,7 @@ import {
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
+  installWorkflowLangfuseTracing,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
@@ -44,6 +45,11 @@ export default function extension(pi: ExtensionAPI) {
     defaultAgentRetries: settings.defaultAgentRetries,
     contextModeRegistry,
   });
+  let workflowTracing: ReturnType<typeof installWorkflowLangfuseTracing> | undefined;
+  pi.on("session_shutdown", async () => {
+    await workflowTracing?.close();
+    workflowTracing = undefined;
+  });
 
   const workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
@@ -62,6 +68,7 @@ export default function extension(pi: ExtensionAPI) {
   let editorInstalled = false;
 
   pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+    workflowTracing ??= installWorkflowLangfuseTracing(manager, { cwd });
     const active = pi.getActiveTools();
     if (!active.includes(workflowTool.name)) {
       pi.setActiveTools([...active, workflowTool.name]);

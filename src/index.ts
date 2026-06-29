@@ -7,6 +7,16 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
+export type { CompactionEventSummary, CompactionEventTail, CompactionTelemetryEvent } from "./compaction-telemetry.js";
+export {
+  createCompactionEventTail,
+  DEFAULT_AUTOCOMPACTOR_EVENTS_PATH,
+  emitCompactionTelemetry,
+  normalizeCompactionEvent,
+  onCompactionTelemetry,
+  readCompactionEvents,
+  summarizeCompactionEvents,
+} from "./compaction-telemetry.js";
 export {
   type CollectFinalizationOptions,
   checkFinalization,
@@ -106,6 +116,8 @@ export {
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
 export { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
+export type { WorkflowLangfuseTracingHandle, WorkflowLangfuseTracingOptions } from "./langfuse-tracing.js";
+export { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "./langfuse-tracing.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";

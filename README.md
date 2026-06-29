@@ -35,6 +35,12 @@ Pi settings. `pi-dynamic-workflows-oc-style` ships an early
 `PI_TELEMETRY_*` values before telemetry snapshots `process.env`; loading
 telemetry first is unsupported because the stale values are already captured.
 
+Optional Langfuse workflow tracing is enabled when `LANGFUSE_PUBLIC_KEY` and
+`LANGFUSE_SECRET_KEY` are present. It emits workflow traces plus compaction
+policy spans from the runtime API (`emitCompactionTelemetry`) and the local
+autocompactor JSONL bridge (`~/.autocompactor/pi/stats/events.jsonl`). Payloads
+and absolute run paths stay redacted unless `LANGFUSE_INCLUDE_PAYLOADS=true`.
+
 ---
 
 ## The `workflow` tool
