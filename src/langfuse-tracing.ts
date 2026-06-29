@@ -8,6 +8,7 @@ import {
   createCompactionEventTail,
   onCompactionTelemetry,
 } from "./compaction-telemetry.js";
+import { summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
 import type { WorkflowRunResult } from "./workflow.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 
@@ -669,6 +670,7 @@ class WorkflowLangfuseTracer {
       telemetryProcessRole,
       ownerPid,
       processPid,
+      leanCtx: run ? summarizeLeanCtxFromAgents(run.snapshot.agents) : undefined,
     });
   }
 

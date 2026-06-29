@@ -83,6 +83,8 @@ export interface JournalEntry {
   startedAt?: string;
   /** ISO timestamp for the original live agent end. */
   endedAt?: string;
+  /** Compact tool/message history from the original live agent call, replayed on resume. */
+  history?: AgentHistoryEntry[];
 }
 
 /**
@@ -633,6 +635,7 @@ export async function runWorkflow<T = unknown>(
         model: cachedModel,
         startedAt: cached.startedAt,
       });
+      if (cached.history) options.onAgentHistory?.({ label, phase: assignedPhase, history: cached.history });
       options.onAgentEnd?.({
         agentCallId,
         label,
@@ -672,6 +675,7 @@ export async function runWorkflow<T = unknown>(
       let usage: AgentUsage | undefined;
       let agentTokens = 0;
       let agentUsage: AgentUsage | undefined;
+      let compactHistory: AgentHistoryEntry[] | undefined;
       const recordTokens = (result: unknown): void => {
         const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
         if (usage) {
@@ -730,6 +734,7 @@ export async function runWorkflow<T = unknown>(
                     usage = u;
                   },
                   onHistory: (history: AgentHistoryEntry[]) => {
+                    compactHistory = history;
                     options.onAgentHistory?.({ label, phase: assignedPhase, history });
                   },
                 } as any),
@@ -760,6 +765,7 @@ export async function runWorkflow<T = unknown>(
               model: displayModel,
               startedAt,
               endedAt,
+              history: compactHistory,
             });
             options.onAgentEnd?.({
               agentCallId,

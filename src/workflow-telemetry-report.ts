@@ -6,6 +6,7 @@ import {
   summarizeCompactionEvents,
 } from "./compaction-telemetry.js";
 import { workflowLangfuseTraceId } from "./langfuse-tracing.js";
+import { type LeanCtxTelemetrySummary, summarizeLeanCtxFromAgents } from "./lean-ctx-telemetry.js";
 import { createRunPersistence, type PersistedAgentState, type PersistedRunState } from "./run-persistence.js";
 import type { JournalEntry } from "./workflow.js";
 
@@ -58,6 +59,7 @@ export interface WorkflowTelemetryReport {
   byAgentLabel: Record<string, UsageRollup>;
   anomalies: UsageAnomaly[];
   compaction: CompactionEventSummary;
+  leanCtx: LeanCtxTelemetrySummary;
   traceLinks: Array<{ runId: string; workflowName: string; traceId: string; runStatePath?: string }>;
 }
 
@@ -153,6 +155,8 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
   for (const rollup of Object.values(byModel)) finalizeRollup(rollup);
   for (const rollup of Object.values(byAgentLabel)) finalizeRollup(rollup);
 
+  const leanCtx = summarizeLeanCtxFromAgents(leanCtxSourcesFromRuns(runs));
+
   for (const event of compactionEvents) {
     const occupancy = event.occupancy;
     if (occupancy !== undefined && occupancy >= 1) {
@@ -174,6 +178,7 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
     byAgentLabel: sortRollups(byAgentLabel),
     anomalies,
     compaction: summarizeCompactionEvents(compactionEvents),
+    leanCtx,
     traceLinks,
   };
 }
@@ -202,6 +207,16 @@ export function renderWorkflowTelemetryReport(report: WorkflowTelemetryReport): 
   lines.push("");
   lines.push("## By agent label");
   pushRollupTable(lines, report.byAgentLabel, "No agent-label usage in the selected local data.");
+  lines.push("");
+  lines.push("## Lean-ctx cache/compression");
+  lines.push(
+    `Tool calls: ${report.leanCtx.toolCalls}, ctx_*: ${report.leanCtx.ctxToolCalls}, raw shell/read/find/grep: ${report.leanCtx.rawToolCalls}, compression events: ${report.leanCtx.compressionEvents}, saved: ${formatNumber(
+      report.leanCtx.savedTokens,
+    )} tokens (${formatPct(report.leanCtx.savedPct)}), cache/stub hits: ${report.leanCtx.cacheStubHits}`,
+  );
+  if (report.leanCtx.warnings.length) {
+    for (const warning of report.leanCtx.warnings.slice(0, 5)) lines.push(`- warning: ${warning}`);
+  }
   lines.push("");
   lines.push("## High-signal anomalies");
   if (!report.anomalies.length) lines.push("No anomalies detected in the selected local data.");
@@ -283,6 +298,43 @@ function filterCompactionEvents(
   const selectedRunIds = new Set(runs.map((run) => run.runId));
   if (selectedRunIds.size === 0) return [];
   return events.filter((event) => event.workflowRunId !== undefined && selectedRunIds.has(event.workflowRunId));
+}
+
+function leanCtxSourcesFromRuns(runs: PersistedRunState[]): Array<{ history?: JournalEntry["history"] }> {
+  const sources: Array<{ history?: JournalEntry["history"] }> = [];
+  for (const run of runs) {
+    const pairedAgentHistoryKeys = new Set<string>();
+    const unusedAgentJournals = [...(run.journal ?? [])].filter(isAgentJournalEntry).sort((a, b) => a.index - b.index);
+    for (let index = 0; index < run.agents.length; index++) {
+      const agent = run.agents[index];
+      const journal = takeJournalForAgent(unusedAgentJournals, agent, run.agents.slice(index + 1));
+      if (agent.history?.length) pairedAgentHistoryKeys.add(pairedHistoryKey(agent.label, agent.history));
+      sources.push({ history: agent.history ?? journal?.history });
+    }
+    for (const journal of unusedAgentJournals) {
+      if (
+        journal.label &&
+        journal.history?.length &&
+        pairedAgentHistoryKeys.has(pairedHistoryKey(journal.label, journal.history))
+      ) {
+        continue;
+      }
+      if (journal.history) sources.push({ history: journal.history });
+    }
+  }
+  return sources;
+}
+
+function pairedHistoryKey(label: string | undefined, history: JournalEntry["history"]): string {
+  return `${label ?? ""}\0${historyKey(history)}`;
+}
+
+function historyKey(history: JournalEntry["history"]): string {
+  try {
+    return JSON.stringify(history);
+  } catch {
+    return String(history);
+  }
 }
 
 function isAgentJournalEntry(entry: JournalEntry): boolean {

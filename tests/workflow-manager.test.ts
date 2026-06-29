@@ -82,6 +82,14 @@ function withTempCwd(fn: (cwd: string) => Promise<void>) {
   };
 }
 
+function readJsonObject(path: string): Record<string, any> {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, any>;
+  } catch (error) {
+    assert.fail(`expected valid JSON at ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 test(
   "runSync registers the run so /workflows (listRuns) can see it",
   withTempCwd(async (cwd) => {
@@ -277,7 +285,7 @@ test(
 
     const statePath = manager.getRun(runId)?.runStatePath;
     assert.ok(statePath, "run state path is set");
-    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    const raw = readJsonObject(statePath);
     delete raw.workflowTimeoutMs;
     writeFileSync(statePath, JSON.stringify(raw, null, 2));
 
@@ -312,7 +320,7 @@ test(
 
     const statePath = manager.getRun(runId)?.runStatePath;
     assert.ok(statePath, "run state path is set");
-    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, unknown>;
+    const raw = readJsonObject(statePath);
     delete raw.workflowTimeoutMs;
     writeFileSync(statePath, JSON.stringify(raw, null, 2));
 
@@ -361,7 +369,7 @@ test(
     const statePath = manager.getRun(runId)?.runStatePath;
     assert.ok(statePath, "run state path is set");
 
-    const completedState = JSON.parse(readFileSync(statePath, "utf-8")) as Record<string, any>;
+    const completedState = readJsonObject(statePath);
     const journalEntry = completedState.journal?.[0];
     assert.equal(journalEntry?.tokens, 33, "live journal stores original token count");
     assert.equal(journalEntry?.model, "test/model-a", "live journal stores resolved model");
@@ -395,6 +403,64 @@ test(
     assert.equal(replayedAgent?.startedAt, journalEntry.startedAt, "cached replay keeps original start timestamp");
     assert.equal(replayedAgent?.endedAt, journalEntry.endedAt, "cached replay keeps original end timestamp");
     assert.equal(replayed?.tokenUsage?.total, 33, "run aggregate includes cached token usage on resume");
+  }),
+);
+
+test(
+  "cold resume hydrates journal histories by call index, not completion order",
+  withTempCwd(async (cwd) => {
+    const script = `export const meta = { name: 'parallel_history_resume', description: 'parallel history resume' }
+const xs = await parallel([
+  () => agent('first', { label: 'A' }),
+  () => agent('second', { label: 'B' }),
+])
+return xs`;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(prompt: string, options: { onHistory?: (history: unknown[]) => void }): Promise<any> {
+          options.onHistory?.([{ role: "assistant", kind: "toolCall", toolName: "ctx_read", text: prompt }]);
+          return `ok:${prompt}`;
+        },
+      },
+    });
+
+    await manager.runSync(script);
+    const runId = manager.listRuns()[0].runId;
+    const statePath = manager.getRun(runId)?.runStatePath;
+    assert.ok(statePath, "run state path is set");
+    const completedState = readJsonObject(statePath);
+    completedState.status = "paused";
+    delete completedState.completedAt;
+    delete completedState.durationMs;
+    delete completedState.result;
+    completedState.journal = [...(completedState.journal ?? [])]
+      .map((entry: Record<string, unknown>) => {
+        const { history: _history, ...rest } = entry;
+        return rest;
+      })
+      .reverse();
+    writeFileSync(statePath, JSON.stringify(completedState, null, 2));
+
+    const manager2 = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(): Promise<any> {
+          throw new Error("cached agents should not run live during resume replay");
+        },
+      },
+    });
+    manager2.on("error", () => {});
+
+    assert.equal(await manager2.resume(runId), true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const replayed = manager2.listRuns().find((run) => run.runId === runId);
+    assert.equal(replayed?.status, "completed");
+    assert.deepEqual(
+      replayed?.agents.map((agent) => agent.history?.[0]?.text),
+      ["first", "second"],
+    );
   }),
 );
 

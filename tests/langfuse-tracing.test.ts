@@ -194,6 +194,58 @@ test("installWorkflowLangfuseTracing sends Gemini provider usage details to Lang
   }
 });
 
+test("installWorkflowLangfuseTracing includes lean-ctx summary in workflow metadata", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-lean-ctx-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onModelResolved?: (model: string) => void; onHistory?: (history: unknown[]) => void },
+        ) {
+          options.onModelResolved?.("test/model");
+          options.onHistory?.([
+            { role: "assistant", kind: "toolCall", toolName: "ctx_read", text: "{}" },
+            {
+              role: "tool",
+              kind: "toolResult",
+              toolName: "ctx_read",
+              text: "source=lean-ctx-bridge\nCompressed 1,000 → 100 tok",
+            },
+          ]);
+          return "agent-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    await manager.runSync(
+      `export const meta = { name: 'lf_lean_ctx', description: 'lean ctx metadata test' }
+       await agent('hello', { label: 'ctx-worker' })
+       return 'done'`,
+      undefined,
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    const generationMetadata = metadata(client.traces[0].spans[0].generations[0].ends[0]);
+    const leanCtx = generationMetadata?.leanCtx as { ctxToolCalls?: number; savedTokens?: number } | undefined;
+    assert.equal(leanCtx?.ctxToolCalls, 1);
+    assert.equal(leanCtx?.savedTokens, 900);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("installWorkflowLangfuseTracing includes transcriptDir and runStatePath when includePayloads is true", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-payloads-"));
   try {
