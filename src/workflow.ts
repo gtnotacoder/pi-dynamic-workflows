@@ -590,7 +590,7 @@ export async function runWorkflow<T = unknown>(
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
-    const agentCallId = String(callIndex);
+    const agentCallId = `${runId}:${callIndex}`;
     const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef), ctx);
 
     // Reserve the agent slot synchronously — atomic with the limit/budget gate
@@ -666,7 +666,9 @@ export async function runWorkflow<T = unknown>(
       // estimate when the provider reports no usage (total === 0). Usage is reset
       // per retry attempt so a failed attempt does not double-count the next one.
       let usage: AgentUsage | undefined;
-      const recordTokens = (result: unknown): number => {
+      let agentTokens = 0;
+      let agentUsage: AgentUsage | undefined;
+      const recordTokens = (result: unknown): void => {
         const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
         if (usage) {
           shared.tokenUsage.input += usage.input;
@@ -674,10 +676,11 @@ export async function runWorkflow<T = unknown>(
           shared.tokenUsage.cost += usage.cost;
           shared.tokenUsage.cacheRead += usage.cacheRead;
           shared.tokenUsage.cacheWrite += usage.cacheWrite;
+          agentUsage = addAgentUsage(agentUsage, usage);
         }
         shared.tokenUsage.total += tokens;
         shared.spent += tokens;
-        return tokens;
+        agentTokens += tokens;
       };
 
       try {
@@ -739,14 +742,14 @@ export async function runWorkflow<T = unknown>(
               });
             }
 
-            const tokens = recordTokens(result);
+            recordTokens(result);
             const endedAt = new Date().toISOString();
             options.onAgentJournal?.({
               index: callIndex,
               hash: callHash,
               result,
-              tokens,
-              usage,
+              tokens: agentTokens,
+              usage: agentUsage,
               model: displayModel,
               startedAt,
               endedAt,
@@ -756,8 +759,8 @@ export async function runWorkflow<T = unknown>(
               label,
               phase: assignedPhase,
               result,
-              tokens,
-              usage,
+              tokens: agentTokens,
+              usage: agentUsage,
               worktree: runCwd,
               model: displayModel,
               startedAt,
@@ -769,7 +772,7 @@ export async function runWorkflow<T = unknown>(
 
             const workflowError = wrapError(error, { agentLabel: label });
             logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
-            const tokens = recordTokens(null);
+            recordTokens(null);
 
             if (workflowError.recoverable && attempt < maxAttempts) {
               log(
@@ -783,8 +786,8 @@ export async function runWorkflow<T = unknown>(
               label,
               phase: assignedPhase,
               result: null,
-              tokens,
-              usage,
+              tokens: agentTokens,
+              usage: agentUsage,
               worktree: runCwd,
               model: displayModel,
               error: workflowError.message,
@@ -1404,6 +1407,17 @@ function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): b
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
+function addAgentUsage(current: AgentUsage | undefined, next: AgentUsage): AgentUsage {
+  return {
+    input: (current?.input ?? 0) + next.input,
+    output: (current?.output ?? 0) + next.output,
+    total: (current?.total ?? 0) + next.total,
+    cost: (current?.cost ?? 0) + next.cost,
+    cacheRead: (current?.cacheRead ?? 0) + next.cacheRead,
+    cacheWrite: (current?.cacheWrite ?? 0) + next.cacheWrite,
+  };
 }
 
 function normalizeConcurrency(value: unknown): number {

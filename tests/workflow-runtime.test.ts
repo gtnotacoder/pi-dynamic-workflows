@@ -467,6 +467,35 @@ return a`;
   assert.equal(replayEvents[0].tokens, usage.total);
 });
 
+test("runWorkflow accumulates retry attempt usage into the final agent event and journal", async () => {
+  let calls = 0;
+  const events: Array<{ usage?: AgentUsage; tokens?: number }> = [];
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(
+    `export const meta = { name: 'retry_usage', description: 'retry usage' }
+const a = await agent('work', { label: 'a' })
+return a`,
+    {
+      agentRetries: 1,
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { onUsage?: (usage: AgentUsage) => void }) {
+          calls++;
+          options.onUsage?.({ input: 10, output: 1, cacheRead: 2, cacheWrite: 0, total: 11, cost: 0.01 });
+          return calls === 1 ? "" : "ok";
+        },
+      },
+      onAgentEnd: (event) => events.push({ usage: event.usage, tokens: event.tokens }),
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.equal(events[0].tokens, 22);
+  assert.deepEqual(events[0].usage, { input: 20, output: 2, cacheRead: 4, cacheWrite: 0, total: 22, cost: 0.02 });
+  assert.deepEqual(journal[0].usage, events[0].usage);
+});
+
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {
   const result = await runWorkflow(twoAgentScript, {
     agent: fakeAgent({ total: 0 }, "a result string"),

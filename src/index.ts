@@ -7,8 +7,9 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
-export type { CompactionEventSummary, CompactionTelemetryEvent } from "./compaction-telemetry.js";
+export type { CompactionEventSummary, CompactionEventTail, CompactionTelemetryEvent } from "./compaction-telemetry.js";
 export {
+  createCompactionEventTail,
   DEFAULT_AUTOCOMPACTOR_EVENTS_PATH,
   emitCompactionTelemetry,
   normalizeCompactionEvent,

@@ -550,6 +550,30 @@ test("installWorkflowLangfuseTracing exports standalone compaction telemetry eve
   }
 });
 
+test("installWorkflowLangfuseTracing gives repeated timestamp-less compaction events unique traces", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-unique-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({ cwd, defaultWorkflowTimeoutMs: null });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test", PI_TELEMETRY_SESSION_ID: "session-1" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    emitCompactionTelemetry({ type: "monitor_eval", session_id: "session-1", recommended: true });
+    emitCompactionTelemetry({ type: "monitor_eval", session_id: "session-1", recommended: true });
+    await handle.close();
+
+    assert.equal(client.traces.length, 2);
+    assert.notEqual(client.traces[0].body.id, client.traces[1].body.id);
+    assert.notEqual(client.traces[0].spans[0].body.id, client.traces[1].spans[0].body.id);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("installWorkflowLangfuseTracing redacts JSONL bridge source paths by default", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-redact-"));
   try {

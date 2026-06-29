@@ -207,6 +207,7 @@ export function installWorkflowLangfuseTracing(
   };
   const onError = (event: { runId: string; error: unknown }) => {
     const run = manager.getRun(event.runId);
+    if (run?.status === "paused") return;
     safe(() => tracer.fail(run, event.error), run);
   };
   const onPaused = (event: { runId: string; reason?: string; error?: unknown; resetHint?: string }) => {
@@ -223,9 +224,10 @@ export function installWorkflowLangfuseTracing(
   manager.on("paused", onPaused);
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const waitForActiveRuns = async (timeoutMs: number) => {
+  const hasRunningRuns = () => manager.listRuns().some((run) => run.status === "running");
+  const waitForRunningRuns = async (timeoutMs: number) => {
     const deadline = Date.now() + timeoutMs;
-    while (manager.hasActiveRuns() && Date.now() < deadline) {
+    while (hasRunningRuns() && Date.now() < deadline) {
       await sleep(25);
     }
   };
@@ -234,8 +236,8 @@ export function installWorkflowLangfuseTracing(
     enabled: true,
     flush: () => tracer.flush(),
     close: async () => {
-      await waitForActiveRuns(shutdownGraceMs);
-      if (manager.hasActiveRuns()) {
+      await waitForRunningRuns(shutdownGraceMs);
+      if (hasRunningRuns()) {
         for (const run of manager.listRuns()) {
           if (run.status === "running") {
             const activeRun = manager.getRun(run.runId);
@@ -243,7 +245,7 @@ export function installWorkflowLangfuseTracing(
             manager.stop(run.runId);
           }
         }
-        await waitForActiveRuns(Math.min(1_000, shutdownGraceMs));
+        await waitForRunningRuns(Math.min(1_000, shutdownGraceMs));
       }
 
       manager.off("phase", onPhase);
@@ -307,7 +309,9 @@ function resolveWorkflowLangfuseConfig(
       DEFAULT_LANGFUSE_BASE_URL,
     flushAt: positiveInteger(langfuse?.flushAt ?? envNumber(env.LANGFUSE_FLUSH_AT), DEFAULT_FLUSH_AT),
     flushIntervalMs: positiveInteger(
-      langfuse?.flushIntervalMs ?? envNumber(env.LANGFUSE_FLUSH_INTERVAL_MS),
+      langfuse?.flushIntervalMs ??
+        envNumber(env.LANGFUSE_FLUSH_INTERVAL_MS) ??
+        envSecondsToMs(env.LANGFUSE_FLUSH_INTERVAL),
       DEFAULT_FLUSH_INTERVAL_MS,
     ),
     serviceName: config.serviceName ?? WORKFLOW_TRACING_INTEGRATION,
@@ -319,6 +323,7 @@ function resolveWorkflowLangfuseConfig(
 class WorkflowLangfuseTracer {
   readonly enabled: boolean;
   private readonly runs = new Map<string, RunTraceState>();
+  private compactionSequence = 0;
 
   constructor(
     private readonly client: LangfuseLike | undefined,
@@ -504,6 +509,7 @@ class WorkflowLangfuseTracer {
     const startTime = event.timestamp ?? new Date().toISOString();
     const statusMessage = compactionStatusMessage(event);
     const level = compactionLevel(event);
+    const observationKey = this.compactionObservationKey(event, startTime);
 
     if (state) {
       const metadata = cleanObject({
@@ -511,7 +517,7 @@ class WorkflowLangfuseTracer {
         ...compactionMetadata(event, this.config.includePayloads),
       });
       const span = state.root.span({
-        id: observationId(state.traceId, `compaction:${stableHex(JSON.stringify(event), 16)}`),
+        id: observationId(state.traceId, `compaction:${observationKey}`),
         name: `pi compaction: ${event.type}`,
         startTime,
         level,
@@ -523,9 +529,7 @@ class WorkflowLangfuseTracer {
     }
 
     const sessionId = event.sessionId ?? this.env.PI_TELEMETRY_SESSION_ID ?? "compaction";
-    const traceId = langfuseTraceId(
-      `compaction:${sessionId}:${event.timestamp ?? ""}:${stableHex(JSON.stringify(event), 16)}`,
-    );
+    const traceId = langfuseTraceId(`compaction:${sessionId}:${event.timestamp ?? startTime}:${observationKey}`);
     const metadata = cleanObject({
       serviceName: this.config.serviceName,
       serviceVersion: this.config.serviceVersion,
@@ -543,7 +547,7 @@ class WorkflowLangfuseTracer {
       metadata,
     });
     const span = trace.span({
-      id: observationId(traceId, `compaction:${stableHex(JSON.stringify(event), 16)}`),
+      id: observationId(traceId, `compaction:${observationKey}`),
       name: `pi compaction: ${event.type}`,
       startTime,
       level,
@@ -566,6 +570,13 @@ class WorkflowLangfuseTracer {
   report(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     this.onError?.(`Langfuse workflow tracing failed: ${message}`);
+  }
+
+  private compactionObservationKey(event: CompactionTelemetryEvent, startTime: string): string {
+    const stablePart = stableHex(JSON.stringify(event), 16);
+    if (event.timestamp) return stablePart;
+    this.compactionSequence++;
+    return `${stablePart}:${startTime}:${this.compactionSequence}`;
   }
 
   private endOpenAgents(
@@ -819,6 +830,7 @@ function hasLangfuseEnv(env: Record<string, string | undefined>): boolean {
       env.LANGFUSE_HOST,
       env.LANGFUSE_ENABLED,
       env.LANGFUSE_INCLUDE_PAYLOADS,
+      env.LANGFUSE_FLUSH_INTERVAL,
     ),
   );
 }
@@ -844,6 +856,11 @@ function envNumber(value: string | undefined): number | undefined {
   if (!trimmed) return undefined;
   const n = Number(trimmed);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function envSecondsToMs(value: string | undefined): number | undefined {
+  const seconds = envNumber(value);
+  return seconds === undefined ? undefined : Math.round(seconds * 1000);
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
