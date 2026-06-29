@@ -802,6 +802,10 @@ function compactionMetadata(event: CompactionTelemetryEvent, includePayloads = f
     currentTokens: event.currentTokens,
     digestTokens: event.digestTokens,
     compactor: event.compactor,
+    compactionPolicy: event.compactionPolicy,
+    compactionPolicyReason: event.compactionPolicyReason,
+    compactionCacheValue: event.compactionCacheValue,
+    compactionKeepRecentTokens: event.compactionKeepRecentTokens,
     error: event.error,
     source: compactionSource(event.source, includePayloads),
   });
@@ -810,7 +814,12 @@ function compactionMetadata(event: CompactionTelemetryEvent, includePayloads = f
 function compactionSource(source: string | undefined, includePayloads: boolean): string | undefined {
   if (!source) return undefined;
   if (includePayloads) return source;
+  if (isProviderModelSource(source)) return source;
   return source.includes("/") || source.includes("\\") ? "jsonl_bridge" : source;
+}
+
+function isProviderModelSource(source: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+$/.test(source);
 }
 
 function compactionLevel(event: CompactionTelemetryEvent): "DEFAULT" | "WARNING" | "ERROR" {

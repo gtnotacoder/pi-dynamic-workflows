@@ -13,6 +13,7 @@ import {
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
+import type { WorkflowCompactionPolicyName } from "./compaction-policy.js";
 import {
   type CollectFinalizationOptions,
   checkFinalization as defaultCheckFinalization,
@@ -124,6 +125,7 @@ export interface WorkflowAgentTelemetryConfig {
   maxContextTokens?: number;
   contextReserveTokens?: number;
   promptTokensEstimate?: number;
+  compactionPolicy?: WorkflowCompactionPolicyName | null;
 }
 
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
@@ -145,6 +147,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   agentMaxContextTokens?: number | null;
   /** Default reserve subtracted from model context windows for occupancy. */
   agentContextReserveTokens?: number | null;
+  /** Default per-agent compaction posture. "auto" makes local/no-cache models compact earlier. */
+  compactionPolicy?: WorkflowCompactionPolicyName | null;
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
   maxAgents?: number;
@@ -322,6 +326,8 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   maxContextTokens?: number | null;
   /** Override the reserve subtracted from model context windows for occupancy. */
   contextReserveTokens?: number | null;
+  /** Per-agent compaction posture. Overrides the run-level compactionPolicy. */
+  compactionPolicy?: WorkflowCompactionPolicyName | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
   retries?: number;
 }
@@ -680,11 +686,18 @@ export async function runWorkflow<T = unknown>(
       maxContextTokens: effectiveMaxContextTokens,
       contextReserveTokens: effectiveContextReserveTokens,
     };
+    const effectiveCompactionPolicy = Object.hasOwn(agentOptions, "compactionPolicy")
+      ? agentOptions.compactionPolicy
+      : options.compactionPolicy;
+    const hashAgentOptions: AgentOptions = {
+      ...agentOptions,
+      compactionPolicy: effectiveCompactionPolicy,
+    };
     const callHash = hashAgentCall(
       prompt,
       modelSpec,
       assignedPhase,
-      agentOptions,
+      hashAgentOptions,
       effectiveContextPolicy,
       agentDefinitionKey(agentDef),
       ctx,
@@ -693,7 +706,7 @@ export async function runWorkflow<T = unknown>(
       prompt,
       modelSpec,
       assignedPhase,
-      agentOptions,
+      hashAgentOptions,
       effectiveContextPolicy,
       agentDefinitionKey(agentDef),
       ctx,
@@ -713,6 +726,7 @@ export async function runWorkflow<T = unknown>(
       maxContextTokens: effectiveMaxContextTokens,
       contextReserveTokens: effectiveContextReserveTokens,
       promptTokensEstimate: estimatedPromptTokens,
+      compactionPolicy: effectiveCompactionPolicy ?? "auto",
     };
 
     if (effectiveMaxContextTokens !== undefined) {
@@ -921,6 +935,9 @@ export async function runWorkflow<T = unknown>(
                   },
                   maxContextTokens: effectiveMaxContextTokens,
                   contextReserveTokens: effectiveContextReserveTokens,
+                  compactionPolicy: effectiveCompactionPolicy,
+                  workflowRunId: runId,
+                  phase: assignedPhase,
                   onHistory: (history: AgentHistoryEntry[]) => {
                     compactHistory = history;
                     options.onAgentHistory?.({ label, phase: assignedPhase, history });
@@ -1636,6 +1653,9 @@ function hashAgentCall(
     agentDef: agentDefKey,
     schema: options.schema ?? null,
   };
+  if (options.compactionPolicy !== undefined && options.compactionPolicy !== null) {
+    identityValue.compactionPolicy = options.compactionPolicy;
+  }
   if (hashOptions.includeContextPolicy !== false) {
     identityValue.contextPolicy = {
       maxContextTokens: effectiveContextPolicy.maxContextTokens ?? null,

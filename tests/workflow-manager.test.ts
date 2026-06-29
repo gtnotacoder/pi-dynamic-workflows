@@ -596,6 +596,44 @@ test(
 );
 
 test(
+  "manager captures and resumes run-level compaction policy",
+  withTempCwd(async (cwd) => {
+    let seenCompactionPolicy: unknown;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(_prompt: string, options: { compactionPolicy?: unknown; onUsage?: (u: AgentUsage) => void }) {
+          seenCompactionPolicy = options.compactionPolicy;
+          options.onUsage?.({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0, total: 11, cost: 0 });
+          return "ok";
+        },
+      },
+    });
+    manager.on("error", () => {});
+    const runId = "compaction-policy-resume";
+    manager.getPersistence().save({
+      runId,
+      workflowName: "compaction_policy_resume",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      compactionPolicy: "cache-preserving",
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.equal(seenCompactionPolicy, "cache-preserving");
+    const persisted = manager.listRuns().find((run) => run.runId === runId);
+    assert.equal(persisted?.compactionPolicy, "cache-preserving");
+  }),
+);
+
+test(
   "resume treats absent legacy context policy as captured null instead of applying new defaults",
   withTempCwd(async (cwd) => {
     let seenMaxContextTokens: number | undefined;

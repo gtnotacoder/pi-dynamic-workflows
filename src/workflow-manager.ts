@@ -81,6 +81,8 @@ export interface ManagedRun {
   agentMaxContextTokens?: number | null;
   /** Effective run-level context reserve override captured at start/resume. */
   agentContextReserveTokens?: number | null;
+  /** Effective run-level compaction policy captured at start/resume. */
+  compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
   /** Optional conductor-level semantic status, layered on top of the engine
    *  `status` above. Older runs may omit this. */
   semanticStatus?: ConductorRunStatus;
@@ -106,6 +108,8 @@ export interface ExecOptions {
   agentMaxContextTokens?: number | null;
   /** Default reserve subtracted from model context windows for occupancy. */
   agentContextReserveTokens?: number | null;
+  /** Default per-agent compaction posture for this execution. */
+  compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
   /** Max concurrent agents for this execution. */
   concurrency?: number;
   /** Retry attempts after recoverable agent failures for this execution. */
@@ -334,6 +338,7 @@ export class WorkflowManager extends EventEmitter {
       workflowTimeoutMsCaptured: true,
       agentMaxContextTokens: this.resolveStartAgentMaxContextTokens(exec),
       agentContextReserveTokens: this.resolveStartAgentContextReserveTokens(exec),
+      compactionPolicy: exec.compactionPolicy,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
@@ -360,6 +365,7 @@ export class WorkflowManager extends EventEmitter {
         workflowTimeoutMs: managed.workflowTimeoutMs,
         agentMaxContextTokens: managed.agentMaxContextTokens,
         agentContextReserveTokens: managed.agentContextReserveTokens,
+        compactionPolicy: managed.compactionPolicy,
       });
     } catch (err) {
       this.releaseRunLease(managed);
@@ -390,6 +396,7 @@ export class WorkflowManager extends EventEmitter {
     managed.workflowTimeoutMsCaptured = true;
     managed.agentMaxContextTokens = this.resolveStartAgentMaxContextTokens(exec);
     managed.agentContextReserveTokens = this.resolveStartAgentContextReserveTokens(exec);
+    managed.compactionPolicy = exec.compactionPolicy;
     const lease = this.persistence.acquireRunLease(managed.runId);
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -445,6 +452,7 @@ export class WorkflowManager extends EventEmitter {
       tokenBudget,
       agentMaxContextTokens,
       agentContextReserveTokens,
+      compactionPolicy,
       concurrency,
       agentRetries,
       tools,
@@ -481,6 +489,7 @@ export class WorkflowManager extends EventEmitter {
       managed.agentContextReserveTokens,
       this.defaultAgentContextReserveTokens,
     );
+    const resolvedCompactionPolicy = compactionPolicy !== undefined ? compactionPolicy : managed.compactionPolicy;
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -505,6 +514,7 @@ export class WorkflowManager extends EventEmitter {
         tokenBudget,
         agentMaxContextTokens: resolvedAgentMaxContextTokens,
         agentContextReserveTokens: resolvedAgentContextReserveTokens,
+        compactionPolicy: resolvedCompactionPolicy,
         confirm,
         contextMode,
         loadSavedWorkflow: this.loadSavedWorkflow,
@@ -694,6 +704,7 @@ export class WorkflowManager extends EventEmitter {
         workflowTimeoutMs: managed.workflowTimeoutMs,
         agentMaxContextTokens: managed.agentMaxContextTokens,
         agentContextReserveTokens: managed.agentContextReserveTokens,
+        compactionPolicy: managed.compactionPolicy,
         semanticStatus: managed.semanticStatus,
       });
     } catch (err) {
@@ -770,6 +781,7 @@ export class WorkflowManager extends EventEmitter {
       // defaults and change the original run's policy mid-resume.
       agentMaxContextTokens: persisted.agentMaxContextTokens ?? null,
       agentContextReserveTokens: persisted.agentContextReserveTokens ?? null,
+      compactionPolicy: persisted.compactionPolicy,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
       semanticStatus: persisted.semanticStatus,

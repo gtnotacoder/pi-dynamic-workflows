@@ -105,6 +105,7 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `phase` | Override the active phase for this agent. |
 | `timeoutMs`, `retries` | Per-agent timeout / retry count. |
 | `maxContextTokens`, `contextReserveTokens` | Per-agent context-window guardrails. `maxContextTokens` is a hard provider input/context cap; `contextReserveTokens` overrides the reserve subtracted from the model window for 70/85/95% occupancy warnings. |
+| `compactionPolicy` | Per-agent compaction posture: `auto` (default), `default`, `aggressive-local`, `cache-preserving`, or `off`. `auto` applies aggressive earlier compaction to local/no-cache models and leaves cacheable remote models on the default policy. |
 | `tools`, `disallowedTools` | Per-call coding-tool allow/deny lists by tool name; schema agents still receive `structured_output`. |
 | `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
 | `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |

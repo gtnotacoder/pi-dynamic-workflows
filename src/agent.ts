@@ -20,6 +20,12 @@ import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import {
+  resolveWorkflowCompactionPolicy,
+  type WorkflowCompactionPolicyDecision,
+  type WorkflowCompactionPolicyName,
+} from "./compaction-policy.js";
+import { emitCompactionTelemetry } from "./compaction-telemetry.js";
+import {
   DEFAULT_CONTEXT_MODE,
   needsResourceLoader,
   resolveContextMode,
@@ -305,6 +311,11 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   onHistory?: (history: AgentHistoryEntry[]) => void;
   /** Called with model-window occupancy stats for this subagent, when measurable. */
   onContextWindow?: (stats: AgentContextWindowStats) => void;
+  /** Per-subagent compaction policy. "auto" makes local/no-cache models compact earlier. */
+  compactionPolicy?: WorkflowCompactionPolicyName | null;
+  /** Workflow run id/phase used to scope compaction telemetry emitted by this subagent. */
+  workflowRunId?: string;
+  phase?: string;
   /** Hard cap for provider input/context tokens for this subagent. */
   maxContextTokens?: number;
   /** Override the model output/reserve tokens used to compute effective context window. */
@@ -458,6 +469,38 @@ function positiveIntegerField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
+function emitCompactionPolicyTelemetry(
+  decision: WorkflowCompactionPolicyDecision,
+  input: {
+    label?: string;
+    phase?: string;
+    workflowRunId?: string;
+    modelSpec?: string;
+    model?: Partial<Model<any>>;
+    baseSettings: { reserveTokens: number; keepRecentTokens: number };
+  },
+): void {
+  const configuredWindow = positiveIntegerField(input.model?.contextWindow);
+  const reserve = decision.settings?.reserveTokens ?? input.baseSettings.reserveTokens;
+  emitCompactionTelemetry({
+    type: "workflow_compaction_policy",
+    workflowRunId: input.workflowRunId,
+    phase: input.phase,
+    trigger: "agent_start",
+    configuredWindow,
+    runtimeContextWindow: configuredWindow,
+    reserve,
+    effectiveWindow: configuredWindow ? Math.max(1, configuredWindow - reserve) : undefined,
+    compactionKeepRecentTokens: decision.settings?.keepRecentTokens ?? input.baseSettings.keepRecentTokens,
+    compactionPolicy: decision.policy,
+    compactionPolicyReason: decision.reason,
+    compactionCacheValue: decision.cacheValue,
+    compactor: "pi-sdk-auto",
+    suppressedByCacheHot: false,
+    source: [input.model?.provider, input.model?.id].filter(Boolean).join("/") || input.modelSpec || undefined,
+  });
+}
+
 export class WorkflowAgent {
   private readonly cwd: string;
   private readonly baseTools: ToolDefinition[];
@@ -500,6 +543,13 @@ export class WorkflowAgent {
     return registry.getAvailable().find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
+  private resolveSettingsDefaultModel(settingsManager: SettingsManager): Model<any> | undefined {
+    const provider = settingsManager.getDefaultProvider();
+    const modelId = settingsManager.getDefaultModel();
+    if (provider && modelId) return this.getRegistry().find(provider, modelId);
+    return modelId ? this.resolveModel(modelId) : undefined;
+  }
+
   async run<TSchemaDef extends TSchema | undefined = undefined>(
     prompt: string,
     options: AgentRunOptions<TSchemaDef> = {},
@@ -539,11 +589,35 @@ export class WorkflowAgent {
       }
     }
 
+    const agentDir = getAgentDir();
+    // Single SettingsManager shared by the session and (when built) the loader, so
+    // the subagent inherits the user's default provider/model exactly as today.
+    const settingsManager = SettingsManager.create(this.cwd, agentDir);
+    const settingsDefaultModel = this.resolveSettingsDefaultModel(settingsManager);
     const activeModel =
       resolvedModel ??
       (this.sessionOptions.model as Partial<Model<any>> | undefined) ??
-      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined);
-    const agentDir = getAgentDir();
+      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined) ??
+      settingsDefaultModel;
+    const baseCompactionSettings = settingsManager.getCompactionSettings();
+    const resolvedModelSpec = resolvedModel ? modelSpec : undefined;
+    const compactionPolicy = resolveWorkflowCompactionPolicy({
+      requested: options.compactionPolicy,
+      modelSpec: resolvedModelSpec,
+      model: activeModel,
+      contextWindow: positiveIntegerField(activeModel?.contextWindow),
+    });
+    if (compactionPolicy.settings) {
+      settingsManager.applyOverrides({ compaction: compactionPolicy.settings });
+    }
+    emitCompactionPolicyTelemetry(compactionPolicy, {
+      label: options.label,
+      phase: options.phase,
+      workflowRunId: options.workflowRunId,
+      modelSpec: resolvedModelSpec,
+      model: activeModel,
+      baseSettings: baseCompactionSettings,
+    });
 
     // Resolve the context-inheritance posture (run options are the runtime layer;
     // any frontmatter layer was already folded in by the workflow layer, which
@@ -560,9 +634,6 @@ export class WorkflowAgent {
     if (unknownMode) {
       console.warn(`[workflow] unknown contextMode "${unknownMode}"; using "${DEFAULT_CONTEXT_MODE}"`);
     }
-    // Single SettingsManager shared by the session and (when built) the loader, so
-    // the subagent inherits the user's default provider/model exactly as today.
-    const settingsManager = SettingsManager.create(this.cwd, agentDir);
     let resourceLoader: ResourceLoader | undefined;
     if (needsResourceLoader(ctx)) {
       // Enforcement mapping lives in resourceLoaderFlags (pure + unit-tested):
@@ -620,7 +691,7 @@ export class WorkflowAgent {
     });
 
     let removeAbortListener: (() => void) | undefined;
-    let removeHistoryListener: (() => void) | undefined;
+    let removeSessionListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
     let usageEmitted = false;
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
@@ -689,9 +760,41 @@ export class WorkflowAgent {
         options.signal.addEventListener("abort", onAbort, { once: true });
         removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
       }
-      if (options.onHistory) {
-        removeHistoryListener = session.subscribe(() => maybeEmitHistory());
-      }
+      removeSessionListener = session.subscribe((event: { type: string; [key: string]: unknown }) => {
+        maybeEmitHistory();
+        if (event.type === "compaction_start") {
+          emitCompactionTelemetry({
+            type: "precompact",
+            workflowRunId: options.workflowRunId,
+            phase: options.phase,
+            trigger: event.reason as string | undefined,
+            configuredWindow: positiveIntegerField(activeModel?.contextWindow),
+            reserve: compactionPolicy.settings?.reserveTokens ?? baseCompactionSettings.reserveTokens,
+            compactionKeepRecentTokens:
+              compactionPolicy.settings?.keepRecentTokens ?? baseCompactionSettings.keepRecentTokens,
+            compactionPolicy: compactionPolicy.policy,
+            compactionPolicyReason: compactionPolicy.reason,
+            compactionCacheValue: compactionPolicy.cacheValue,
+            recommended: compactionPolicy.policy === "aggressive-local",
+            suppressedByCacheHot: false,
+            compactor: "pi-sdk-auto",
+          });
+        } else if (event.type === "compaction_end") {
+          const result = event.result as { tokensBefore?: number } | undefined;
+          emitCompactionTelemetry({
+            type: "compaction_result",
+            workflowRunId: options.workflowRunId,
+            phase: options.phase,
+            trigger: event.reason as string | undefined,
+            beforeTokens: result?.tokensBefore,
+            compactionPolicy: compactionPolicy.policy,
+            compactionPolicyReason: compactionPolicy.reason,
+            compactionCacheValue: compactionPolicy.cacheValue,
+            compactor: "pi-sdk-auto",
+            error: typeof event.errorMessage === "string" ? event.errorMessage : undefined,
+          });
+        }
+      });
 
       await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
@@ -728,7 +831,7 @@ export class WorkflowAgent {
       throw error;
     } finally {
       removeAbortListener?.();
-      removeHistoryListener?.();
+      removeSessionListener?.();
       try {
         emitHistory();
       } catch {

@@ -37,6 +37,10 @@ export interface CompactionTelemetryEvent {
   currentTokens?: number;
   digestTokens?: number;
   compactor?: string;
+  compactionPolicy?: string;
+  compactionPolicyReason?: string;
+  compactionCacheValue?: string;
+  compactionKeepRecentTokens?: number;
   error?: string;
   source?: string;
   rawType?: string;
@@ -133,8 +137,13 @@ export function normalizeCompactionEvent(raw: unknown, source = "unknown"): Comp
       numberField(value.current_tokens) ?? numberField(value.currentTokens) ?? numberField(value.post_tokens),
     digestTokens: numberField(value.digest_tokens) ?? numberField(value.digestTokens),
     compactor: stringField(value.compactor),
+    compactionPolicy: stringField(value.compaction_policy) ?? stringField(value.compactionPolicy),
+    compactionPolicyReason: stringField(value.compaction_policy_reason) ?? stringField(value.compactionPolicyReason),
+    compactionCacheValue: stringField(value.compaction_cache_value) ?? stringField(value.compactionCacheValue),
+    compactionKeepRecentTokens:
+      numberField(value.compaction_keep_recent_tokens) ?? numberField(value.compactionKeepRecentTokens),
     error: stringField(value.error),
-    source,
+    source: stringField(value.source) ?? source,
     rawType,
   };
   return compactObject(event as unknown as Record<string, unknown>) as unknown as CompactionTelemetryEvent;
