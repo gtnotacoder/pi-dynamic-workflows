@@ -37,6 +37,7 @@ interface GenerationLike {
 }
 
 interface AgentObservation {
+  callId?: string;
   label: string;
   phase?: string;
   generation: GenerationLike;
@@ -128,19 +129,19 @@ export function installWorkflowLangfuseTracing(
 
   const shutdownGraceMs = Math.max(0, options.shutdownGraceMs ?? 10_000);
 
-  const resolveCompactionRun = (event: CompactionTelemetryEvent, fallback?: ManagedRun) =>
-    event.workflowRunId ? manager.getRun(event.workflowRunId) : fallback;
+  const resolveCompactionRun = (event: CompactionTelemetryEvent) =>
+    event.workflowRunId ? manager.getRun(event.workflowRunId) : undefined;
 
-  const drainCompactionTail = (fallback?: ManagedRun) => {
+  const drainCompactionTail = () => {
     for (const event of compactionTail?.read() ?? []) {
-      tracer.compactionEvent(resolveCompactionRun(event, fallback), event);
+      tracer.compactionEvent(resolveCompactionRun(event), event);
     }
   };
 
-  const safe = (op: () => void | Promise<void>, fallbackRun?: ManagedRun) => {
+  const safe = (op: () => void | Promise<void>, _fallbackRun?: ManagedRun) => {
     try {
       const result = op();
-      drainCompactionTail(fallbackRun);
+      drainCompactionTail();
       if (result && typeof (result as Promise<void>).catch === "function") {
         void (result as Promise<void>).catch((error) => tracer.report(error));
       }
@@ -168,6 +169,7 @@ export function installWorkflowLangfuseTracing(
   };
   const onAgentStart = (event: {
     runId: string;
+    agentCallId?: string;
     label: string;
     phase?: string;
     prompt: string;
@@ -179,6 +181,7 @@ export function installWorkflowLangfuseTracing(
   };
   const onAgentEnd = (event: {
     runId: string;
+    agentCallId?: string;
     label: string;
     phase?: string;
     result: unknown;
@@ -234,7 +237,9 @@ export function installWorkflowLangfuseTracing(
       await waitForActiveRuns(shutdownGraceMs);
       if (manager.hasActiveRuns()) {
         for (const run of manager.listRuns()) {
-          if (run.status === "running" || run.status === "paused") {
+          if (run.status === "running") {
+            const activeRun = manager.getRun(run.runId);
+            if (activeRun) tracer.fail(activeRun, new Error("workflow stopped during Langfuse tracing shutdown"));
             manager.stop(run.runId);
           }
         }
@@ -273,7 +278,7 @@ function createWorkflowLangfuseTracer(options: WorkflowLangfuseTracingOptions): 
       secretKey: config.secretKey,
       baseUrl: config.baseUrl,
       flushAt: config.flushAt,
-      flushInterval: config.flushIntervalMs,
+      flushInterval: Math.max(1, Math.ceil(config.flushIntervalMs / 1000)),
       release: config.serviceVersion,
       sdkIntegration: WORKFLOW_TRACING_INTEGRATION,
       environment: env.LANGFUSE_TRACING_ENVIRONMENT,
@@ -336,13 +341,13 @@ class WorkflowLangfuseTracer {
 
   agentStart(
     run: ManagedRun | undefined,
-    event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string },
+    event: { agentCallId?: string; label: string; phase?: string; prompt: string; model?: string; startedAt?: string },
   ): void {
     const state = this.ensureRun(run);
     if (!state || !run) return;
     const startedAt = event.startedAt ?? new Date().toISOString();
     const generation = state.root.generation({
-      id: observationId(state.traceId, `agent:${run.runId}:${state.agents.length}:${event.label}`),
+      id: observationId(state.traceId, `agent:${run.runId}:${event.agentCallId ?? state.agents.length}:${event.label}`),
       name: `workflow agent: ${event.label}`,
       startTime: startedAt,
       model: event.model,
@@ -354,12 +359,20 @@ class WorkflowLangfuseTracer {
         model: event.model,
       }),
     });
-    state.agents.push({ label: event.label, phase: event.phase, generation, startedAt, ended: false });
+    state.agents.push({
+      callId: event.agentCallId,
+      label: event.label,
+      phase: event.phase,
+      generation,
+      startedAt,
+      ended: false,
+    });
   }
 
   agentEnd(
     run: ManagedRun | undefined,
     event: {
+      agentCallId?: string;
       label: string;
       phase?: string;
       result: unknown;
@@ -374,7 +387,7 @@ class WorkflowLangfuseTracer {
   ): void {
     const state = this.ensureRun(run);
     if (!state || !run) return;
-    const agent = findOpenAgent(state, event.label);
+    const agent = findOpenAgent(state, event.label, event.agentCallId);
     const generation =
       agent?.generation ??
       state.root.generation({
@@ -383,22 +396,24 @@ class WorkflowLangfuseTracer {
         startTime: agent?.startedAt ?? new Date().toISOString(),
       });
     const endedAt = event.endedAt ?? new Date().toISOString();
-    const usageDetails = usageDetailsFromAgent(event.usage, event.tokens);
-    const costDetails = costDetailsFromAgent(event.usage);
+    const usageSummary = usageSummaryFromAgent(event.usage, event.tokens, event.model);
     generation.end?.({
       endTime: endedAt,
       model: event.model,
       output: this.payload(event.error ? { error: event.error } : { result: event.result }),
       level: event.error ? "ERROR" : "DEFAULT",
       statusMessage: event.error,
-      usageDetails,
-      costDetails,
+      usageDetails: usageSummary.usageDetails,
+      costDetails: usageSummary.costDetails,
       metadata: cleanObject({
         ...this.runMetadata(run, state),
+        agentCallId: event.agentCallId,
         label: event.label,
         phase: event.phase ?? agent?.phase,
         model: event.model,
         tokens: event.tokens,
+        usageSource: usageSummary.source,
+        cacheUsageSource: usageSummary.cacheSource,
         errorCode: event.errorCode,
         recoverable: event.recoverable,
       }),
@@ -453,8 +468,10 @@ class WorkflowLangfuseTracer {
     if (!state || !run) return;
     const message = errorMessage(error);
     const output = this.payload({ error: message });
+    const endedAt = new Date().toISOString();
+    this.endOpenAgents(run, state, endedAt, message, output);
     state.root.end?.({
-      endTime: new Date().toISOString(),
+      endTime: endedAt,
       output,
       level: "ERROR",
       statusMessage: message,
@@ -489,7 +506,10 @@ class WorkflowLangfuseTracer {
     const level = compactionLevel(event);
 
     if (state) {
-      const metadata = cleanObject({ ...this.runMetadata(run, state), ...compactionMetadata(event) });
+      const metadata = cleanObject({
+        ...this.runMetadata(run, state),
+        ...compactionMetadata(event, this.config.includePayloads),
+      });
       const span = state.root.span({
         id: observationId(state.traceId, `compaction:${stableHex(JSON.stringify(event), 16)}`),
         name: `pi compaction: ${event.type}`,
@@ -511,7 +531,7 @@ class WorkflowLangfuseTracer {
       serviceVersion: this.config.serviceVersion,
       integration: WORKFLOW_TRACING_INTEGRATION,
       sessionId,
-      ...compactionMetadata(event),
+      ...compactionMetadata(event, this.config.includePayloads),
     });
     const trace = this.client.trace({
       id: traceId,
@@ -546,6 +566,33 @@ class WorkflowLangfuseTracer {
   report(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     this.onError?.(`Langfuse workflow tracing failed: ${message}`);
+  }
+
+  private endOpenAgents(
+    run: ManagedRun,
+    state: RunTraceState,
+    endedAt: string,
+    message: string | undefined,
+    output: unknown,
+  ): void {
+    for (const agent of state.agents) {
+      if (agent.ended) continue;
+      agent.generation.end?.({
+        endTime: endedAt,
+        output,
+        level: "ERROR",
+        statusMessage: message,
+        metadata: cleanObject({
+          ...this.runMetadata(run, state),
+          agentCallId: agent.callId,
+          label: agent.label,
+          phase: agent.phase,
+          status: "failed",
+          error: message,
+        }),
+      });
+      agent.ended = true;
+    }
   }
 
   private ensureRun(run: ManagedRun | undefined): RunTraceState | undefined {
@@ -614,7 +661,11 @@ class WorkflowLangfuseTracer {
   }
 }
 
-function findOpenAgent(state: RunTraceState, label: string): AgentObservation | undefined {
+function findOpenAgent(state: RunTraceState, label: string, callId: string | undefined): AgentObservation | undefined {
+  if (callId !== undefined) {
+    const byCallId = state.agents.find((candidate) => candidate.callId === callId && !candidate.ended);
+    if (byCallId) return byCallId;
+  }
   for (let index = state.agents.length - 1; index >= 0; index--) {
     const candidate = state.agents[index];
     if (candidate.label === label && !candidate.ended) return candidate;
@@ -622,7 +673,7 @@ function findOpenAgent(state: RunTraceState, label: string): AgentObservation | 
   return undefined;
 }
 
-function compactionMetadata(event: CompactionTelemetryEvent): Record<string, unknown> {
+function compactionMetadata(event: CompactionTelemetryEvent, includePayloads = false): Record<string, unknown> {
   return cleanObject({
     telemetryKind: "compaction",
     compactionType: event.type,
@@ -657,8 +708,14 @@ function compactionMetadata(event: CompactionTelemetryEvent): Record<string, unk
     digestTokens: event.digestTokens,
     compactor: event.compactor,
     error: event.error,
-    source: event.source,
+    source: compactionSource(event.source, includePayloads),
   });
+}
+
+function compactionSource(source: string | undefined, includePayloads: boolean): string | undefined {
+  if (!source) return undefined;
+  if (includePayloads) return source;
+  return source.includes("/") || source.includes("\\") ? "jsonl_bridge" : source;
 }
 
 function compactionLevel(event: CompactionTelemetryEvent): "DEFAULT" | "WARNING" | "ERROR" {
@@ -675,23 +732,63 @@ function compactionStatusMessage(event: CompactionTelemetryEvent): string | unde
   return undefined;
 }
 
-function usageDetailsFromAgent(
-  usage: AgentUsage | undefined,
-  tokens: number | undefined,
-): Record<string, number> | undefined {
-  const details = cleanObject({
-    input: usage?.input,
-    output: usage?.output,
-    cache_read: usage?.cacheRead,
-    cache_write: usage?.cacheWrite,
-    total: usage?.total ?? tokens,
-  }) as Record<string, number>;
-  return Object.keys(details).length > 0 ? details : undefined;
+interface UsageSummary {
+  usageDetails?: Record<string, number>;
+  costDetails?: Record<string, number>;
+  source:
+    | "provider"
+    | "workflow_estimate"
+    | "workflow_estimate_provider_zero_usage"
+    | "provider_zero_usage"
+    | "unavailable";
+  cacheSource?: string;
 }
 
-function costDetailsFromAgent(usage: AgentUsage | undefined): Record<string, number> | undefined {
-  if (!usage || usage.cost <= 0) return undefined;
-  return { total: usage.cost };
+function usageSummaryFromAgent(
+  usage: AgentUsage | undefined,
+  tokens: number | undefined,
+  model: string | undefined,
+): UsageSummary {
+  const providerTotal = usage?.total ?? 0;
+  const cacheSource = cacheUsageSource(usage, model);
+  if (usage && providerTotal > 0) {
+    return {
+      source: "provider",
+      cacheSource,
+      usageDetails: {
+        input: usage.input,
+        output: usage.output,
+        cache_read: usage.cacheRead,
+        cache_write: usage.cacheWrite,
+        total: usage.total,
+      },
+      costDetails: usage.cost > 0 ? { total: usage.cost } : undefined,
+    };
+  }
+
+  const estimatedTotal = typeof tokens === "number" && tokens > 0 ? tokens : undefined;
+  if (estimatedTotal !== undefined) {
+    return {
+      source: usage ? "workflow_estimate_provider_zero_usage" : "workflow_estimate",
+      cacheSource,
+      usageDetails: { total: estimatedTotal },
+    };
+  }
+
+  return {
+    source: usage ? "provider_zero_usage" : "unavailable",
+    cacheSource,
+  };
+}
+
+function cacheUsageSource(usage: AgentUsage | undefined, model: string | undefined): string | undefined {
+  if (!usage) return undefined;
+  if (usage.cacheRead > 0 || usage.cacheWrite > 0) return "provider_cache_fields";
+  return isGoogleModel(model) ? "google_usage_metadata_no_cache_fields_or_zero" : "provider_no_cache_fields_or_zero";
+}
+
+function isGoogleModel(model: string | undefined): boolean {
+  return /^(google|google-ai-studio|google-vertex)\//.test(model ?? "") || /\bgemini\b/i.test(model ?? "");
 }
 
 function workflowLangfuseDisabledReason(

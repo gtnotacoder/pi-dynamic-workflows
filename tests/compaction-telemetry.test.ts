@@ -119,6 +119,22 @@ test("createCompactionEventTail incremental offsets survive multibyte UTF-8", ()
   assert.equal(secondEvents[0].phase, `final ${emoji}`);
 });
 
+test("createCompactionEventTail preserves partial trailing JSONL until newline arrives", () => {
+  const dir = mkdtempSync(join(tmpdir(), "compaction-tail-partial-"));
+  const filePath = join(dir, "events.jsonl");
+  const line = JSON.stringify({ type: "monitor_eval", session_id: "s-partial", ts: "2026-06-27T03:00:00Z" });
+  writeFileSync(filePath, "");
+  const tail = createCompactionEventTail({ filePath, startAtEnd: false });
+
+  appendFileSync(filePath, line.slice(0, -2));
+  assert.equal(tail.read().length, 0, "partial line should not be parsed or dropped");
+  appendFileSync(filePath, `${line.slice(-2)}\n`);
+
+  const events = tail.read();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sessionId, "s-partial");
+});
+
 test("summarizeCompactionEvents captures suppression and over-window counts", () => {
   const summary = summarizeCompactionEvents([
     { type: "monitor_eval", recommended: true, occupancy: 1.1, suppressedByCacheHot: true },

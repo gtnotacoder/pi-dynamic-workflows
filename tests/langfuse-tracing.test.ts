@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { AgentUsage } from "../src/agent.js";
 import { emitCompactionTelemetry } from "../src/compaction-telemetry.js";
 import { installWorkflowLangfuseTracing, workflowLangfuseTraceId } from "../src/langfuse-tracing.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
@@ -137,6 +138,57 @@ test("installWorkflowLangfuseTracing enables workflow traces from LANGFUSE env c
     // Assert that by default includePayloads=false, and absolute paths are redacted (omitted)
     assert.equal(traceMetadata?.transcriptDir, undefined);
     assert.equal(traceMetadata?.runStatePath, undefined);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing sends Gemini provider usage details to Langfuse", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-gemini-usage-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(
+          _prompt: string,
+          options: { onModelResolved?: (model: string) => void; onUsage?: (usage: AgentUsage) => void },
+        ) {
+          options.onModelResolved?.("google-ai-studio/gemini-3.5-flash");
+          options.onUsage?.({ input: 1200, output: 300, cacheRead: 0, cacheWrite: 0, total: 1500, cost: 0 });
+          return "gemini-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    await manager.runSync(
+      `export const meta = { name: 'lf_gemini_usage', description: 'Gemini usage details test' }
+       await agent('hello', { label: 'gemini-worker' })
+       return 'done'`,
+      undefined,
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    const end = client.traces[0].spans[0].generations[0].ends[0];
+    assert.deepEqual(end.usageDetails, {
+      input: 1200,
+      output: 300,
+      cache_read: 0,
+      cache_write: 0,
+      total: 1500,
+    });
+    const generationMetadata = metadata(end);
+    assert.equal(generationMetadata?.usageSource, "provider");
+    assert.equal(generationMetadata?.cacheUsageSource, "google_usage_metadata_no_cache_fields_or_zero");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -363,6 +415,98 @@ return 'done'`);
     assert.equal(client.shutdowns, 1, "should shutdown");
     const run = manager.listRuns()[0];
     assert.equal(run.status, "aborted", "the run should have been force-stopped (aborted)");
+    const generation = client.traces[0].spans[0].generations[0];
+    assert.equal(generation.ends.length, 1, "the in-flight generation should be ended on abort");
+    assert.equal(generation.ends[0].level, "ERROR");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("close does not abort paused runs during tracing shutdown", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-paused-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          await new Promise(() => {}); // never finishes until paused/stopped
+          return "agent-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+      shutdownGraceMs: 20,
+    });
+
+    const { runId } = manager.startInBackground(`export const meta = { name: 'lf_paused', description: 'paused' }
+await agent('hello', { label: 'paused-agent' })
+return 'done'`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(manager.pause(runId), true);
+    await handle.close();
+
+    const run = manager.listRuns().find((candidate) => candidate.runId === runId);
+    assert.equal(run?.status, "paused", "paused runs should remain resumable after tracing shutdown");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing keeps duplicate-label generations matched by call id", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-duplicate-labels-"));
+  try {
+    const client = new FakeLangfuseClient();
+    let releaseSecond!: () => void;
+    const secondCanFinish = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          if (prompt === "second") await secondCanFinish;
+          return prompt;
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: { includePayloads: true },
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    const run = manager.runSync(
+      `export const meta = { name: 'lf_duplicate_labels', description: 'duplicate labels' }
+const xs = await parallel([
+  () => agent('first', { label: 'worker' }),
+  () => agent('second', { label: 'worker' }),
+])
+return xs`,
+      undefined,
+      { workflowTimeoutMs: null, concurrency: 2 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseSecond();
+    await run;
+    await handle.close();
+
+    const generations = client.traces[0].spans[0].generations;
+    assert.equal(generations.length, 2);
+    assert.deepEqual(generations[0].ends[0].output, { result: "first" });
+    assert.deepEqual(generations[1].ends[0].output, { result: "second" });
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -401,6 +545,75 @@ test("installWorkflowLangfuseTracing exports standalone compaction telemetry eve
     const spanMetadata = metadata(client.traces[0].spans[0].body);
     assert.equal(spanMetadata?.contextTokens, 230_017);
     assert.equal(spanMetadata?.suppressedByCacheHot, true);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing redacts JSONL bridge source paths by default", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-redact-"));
+  try {
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({ cwd, defaultWorkflowTimeoutMs: null });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: false,
+    });
+
+    emitCompactionTelemetry({ type: "monitor_eval", session_id: "session-redacted" }, join(cwd, "events.jsonl"));
+    await handle.close();
+
+    const spanMetadata = metadata(client.traces[0].spans[0].body);
+    assert.equal(spanMetadata?.source, "jsonl_bridge");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("installWorkflowLangfuseTracing keeps unscoped JSONL events standalone", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "workflow-langfuse-compaction-unscoped-"));
+  try {
+    const eventsPath = join(cwd, "events.jsonl");
+    const client = new FakeLangfuseClient();
+    const manager = new WorkflowManager({
+      cwd,
+      defaultAgentTimeoutMs: null,
+      defaultWorkflowTimeoutMs: null,
+      agent: {
+        async run(_prompt: string, options: { onModelResolved?: (model: string) => void }) {
+          options.onModelResolved?.("test/model");
+          return "agent-output";
+        },
+      } as never,
+    });
+    const handle = installWorkflowLangfuseTracing(manager, {
+      config: {},
+      env: { LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" },
+      client: client as never,
+      compactionEventsPath: eventsPath,
+      compactionPollIntervalMs: false,
+    });
+
+    appendFileSync(eventsPath, `${JSON.stringify({ type: "monitor_eval", session_id: "session-file" })}\n`);
+    await manager.runSync(
+      `export const meta = { name: 'lf_unscoped_jsonl', description: 'unscoped jsonl' }
+       await agent('hello', { label: 'worker' })
+       return 'done'`,
+      undefined,
+      { workflowTimeoutMs: null },
+    );
+    await handle.close();
+
+    const workflowTrace = client.traces.find((trace) => trace.body.name === "pi workflow: lf_unscoped_jsonl");
+    const compactionTrace = client.traces.find((trace) => trace.body.name === "pi compaction: monitor_eval");
+    assert.ok(workflowTrace, "workflow trace should exist");
+    assert.ok(compactionTrace, "unscoped JSONL event should be a standalone compaction trace");
+    assert.equal(
+      workflowTrace.spans[0].spans.some((span) => span.body.name === "pi compaction: monitor_eval"),
+      false,
+    );
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

@@ -207,6 +207,7 @@ export function createCompactionEventTail(
 ): CompactionEventTail {
   const filePath = options.filePath ?? DEFAULT_AUTOCOMPACTOR_EVENTS_PATH;
   let offset = 0;
+  let carry = "";
   try {
     offset = options.startAtEnd === false ? 0 : statSync(filePath).size;
   } catch {
@@ -219,7 +220,10 @@ export function createCompactionEventTail(
       let text = "";
       try {
         const stat = statSync(filePath);
-        if (stat.size < offset) offset = 0;
+        if (stat.size < offset) {
+          offset = 0;
+          carry = "";
+        }
         if (stat.size === offset) return [];
         const buf = readByteRange(filePath, offset, stat.size);
         text = buf.toString("utf8");
@@ -227,8 +231,16 @@ export function createCompactionEventTail(
       } catch {
         return [];
       }
+      const combined = carry + text;
+      const lastNewline = combined.lastIndexOf("\n");
+      if (lastNewline < 0) {
+        carry = combined;
+        return [];
+      }
+      carry = combined.slice(lastNewline + 1);
+      const completeText = combined.slice(0, lastNewline + 1);
       const events: CompactionTelemetryEvent[] = [];
-      for (const line of text.split(/\r?\n/)) {
+      for (const line of completeText.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed.startsWith("{")) continue;
         try {

@@ -171,12 +171,21 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string }) => void;
+  onAgentStart?: (event: {
+    agentCallId?: string;
+    label: string;
+    phase?: string;
+    prompt: string;
+    model?: string;
+    startedAt?: string;
+  }) => void;
   onAgentEnd?: (event: {
+    agentCallId?: string;
     label: string;
     phase?: string;
     result: unknown;
     tokens?: number;
+    usage?: AgentUsage;
     worktree?: string;
     model?: string;
     error?: string;
@@ -581,6 +590,7 @@ export async function runWorkflow<T = unknown>(
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
+    const agentCallId = String(callIndex);
     const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef), ctx);
 
     // Reserve the agent slot synchronously — atomic with the limit/budget gate
@@ -612,6 +622,7 @@ export async function runWorkflow<T = unknown>(
         shared.tokenUsage.total += cached.tokens;
       }
       options.onAgentStart?.({
+        agentCallId,
         label,
         phase: assignedPhase,
         prompt,
@@ -619,10 +630,12 @@ export async function runWorkflow<T = unknown>(
         startedAt: cached.startedAt,
       });
       options.onAgentEnd?.({
+        agentCallId,
         label,
         phase: assignedPhase,
         result: cached.result,
         tokens: cached.tokens,
+        usage: cached.usage,
         model: cachedModel,
         startedAt: cached.startedAt,
         endedAt: cached.endedAt,
@@ -639,7 +652,7 @@ export async function runWorkflow<T = unknown>(
       const maxAttempts = retryAttempts + 1;
       const startedAt = new Date().toISOString();
 
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel, startedAt });
+      options.onAgentStart?.({ agentCallId, label, phase: assignedPhase, prompt, model: displayModel, startedAt });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
       let worktree: Worktree | undefined;
@@ -739,10 +752,12 @@ export async function runWorkflow<T = unknown>(
               endedAt,
             });
             options.onAgentEnd?.({
+              agentCallId,
               label,
               phase: assignedPhase,
               result,
               tokens,
+              usage,
               worktree: runCwd,
               model: displayModel,
               startedAt,
@@ -764,10 +779,12 @@ export async function runWorkflow<T = unknown>(
             }
 
             options.onAgentEnd?.({
+              agentCallId,
               label,
               phase: assignedPhase,
               result: null,
               tokens,
+              usage,
               worktree: runCwd,
               model: displayModel,
               error: workflowError.message,
