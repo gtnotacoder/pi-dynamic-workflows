@@ -1399,6 +1399,8 @@ export async function runWorkflow<T = unknown>(
     renderCorrectionDelta,
     renderStageCheckFeedback,
     args: options.args,
+    runId,
+    workflowRunId: runId,
     cwd: options.cwd ?? process.cwd(),
     process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
     budget,

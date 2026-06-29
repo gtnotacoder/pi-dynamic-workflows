@@ -80,7 +80,7 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `pipeline(items, ...stages)` | Each item flows through stages sequentially; different items run concurrently. Stage gets `(prev, original, index)`. |
 | `phase(title)` | Group agents under a phase (matches `meta.phases`). Optional `{ budget }` sub-budget. |
 | `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
-| `args`, `cwd`, `budget` | Run inputs + `budget.remaining()` / `budget.total`. |
+| `args`, `runId` / `workflowRunId`, `cwd`, `budget` | Run inputs, current workflow run id, cwd, and `budget.remaining()` / `budget.total`. |
 | `log(msg)` | Emit a progress log line. |
 | `stageCheck(opts)` | Host-side mechanical checks (TypeScript `tsc --noEmit` and Biome when detected) with zero LLM tokens. |
 | `compactFeedback(request)` / `renderCorrectionDelta(delta)` | Deterministically collapse retry feedback into a bounded, schema-validated Correction Delta for the next Worker turn. |
@@ -343,7 +343,16 @@ is truly active, and signals when a repair run needs finalization attention.
 | `needs-human` | blocked; requires human intervention |
 
 The semantic status is displayed in `/workflows list` and `/workflows status <id>`
-output alongside the engine status. The finalization gate checks:
+output alongside the engine status. On startup, stale persisted `running` runs
+without a live owner process are reconciled to paused engine state. Issue Delivery
+sidecars (`state.env`, `.issue-delivery/state.env`, and
+`.issue-delivery/status.json`) are used to surface `needs-finalize` or
+`needs-human` instead of leaving misleading stale-running state. Sidecars must
+carry a matching run id (`runId`, `workflowRunId`, `CONDUCTOR_RUN_ID`, or
+`WORKFLOW_RUN_ID`) before they are trusted for recovery, so stale scratch files
+from earlier runs do not affect a new crashed run.
+
+The finalization gate checks:
 
 1. Worktree clean (transient `.issue-delivery/`, legacy `.fugu/`, and `.fastcontext/` paths are ignored)
 2. Branch pushed to upstream

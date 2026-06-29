@@ -13,7 +13,7 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "14fdcdb4b0523637a0a4b843f5c553f5b88efe8f4581a4206c93f430b3ad7762",
+      "sha256": "74c0294bb1e3ba56b7fb82752555eb67bce7daf48ec8ce07d1fd131afe0e411e",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",

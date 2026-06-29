@@ -3,9 +3,15 @@
  */
 
 import { EventEmitter } from "node:events";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
+import {
+  CONDUCTOR_STATE_ENV_PATHS,
+  ISSUE_DELIVERY_STATUS_PATH,
+  parseConductorStateEnv,
+  reconcileStaleWorkflowRun,
+} from "./conductor-reconciliation.js";
 import type { ConductorRunStatus } from "./conductor-types.js";
 import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import type { ContextModeRegistry } from "./context-mode.js";
@@ -282,7 +288,12 @@ export class WorkflowManager extends EventEmitter {
           const lease = this.persistence.acquireRunLease(p.runId);
           if (!lease) continue;
           try {
-            this.persistence.save({ ...p, status: "paused" });
+            const reconciliation = reconcileStaleWorkflowRun(p, this.readConductorReconciliationSignals());
+            this.persistence.save({
+              ...p,
+              status: reconciliation?.status ?? "paused",
+              semanticStatus: reconciliation?.semanticStatus ?? p.semanticStatus,
+            });
           } finally {
             this.persistence.releaseRunLease(lease);
           }
@@ -290,6 +301,44 @@ export class WorkflowManager extends EventEmitter {
       }
     } catch {
       // Recovery is best-effort; never let it block manager construction.
+    }
+  }
+
+  private readConductorReconciliationSignals(): {
+    stateEnvs?: Array<{ path: string; env: Record<string, string | undefined> }>;
+    issueDeliveryStatus?: unknown;
+  } {
+    return {
+      stateEnvs: this.readConductorStateEnvs(),
+      issueDeliveryStatus: this.readJsonSidecar(ISSUE_DELIVERY_STATUS_PATH),
+    };
+  }
+
+  private readConductorStateEnvs(): Array<{ path: string; env: Record<string, string | undefined> }> | undefined {
+    const sources: Array<{ path: string; env: Record<string, string | undefined> }> = [];
+    for (const relativePath of CONDUCTOR_STATE_ENV_PATHS) {
+      const text = this.readTextSidecar(relativePath);
+      if (text === undefined) continue;
+      sources.push({ path: relativePath, env: parseConductorStateEnv(text) });
+    }
+    return sources.length > 0 ? sources : undefined;
+  }
+
+  private readJsonSidecar(relativePath: string): unknown | undefined {
+    const text = this.readTextSidecar(relativePath);
+    if (text === undefined) return undefined;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private readTextSidecar(relativePath: string): string | undefined {
+    try {
+      return readFileSync(join(this.cwd, relativePath), "utf8");
+    } catch {
+      return undefined;
     }
   }
 
