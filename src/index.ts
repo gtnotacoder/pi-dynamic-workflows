@@ -145,6 +145,18 @@ export {
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
+export {
+  classifyPiTelemetryEnv,
+  isProcessLive,
+  PI_TELEMETRY_ENV_KEYS,
+  type PiTelemetryEnvDecision,
+  type PiTelemetryEnvKey,
+  parseTelemetryOwnerPid,
+  scrubStalePiTelemetryEnv,
+  shouldPreservePiTelemetryEnv,
+  type TelemetryProcessRole,
+  type TelemetryRuntime,
+} from "./telemetry-env.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
