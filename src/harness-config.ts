@@ -61,7 +61,7 @@ function canonicalId(
   raw: Record<string, unknown>,
   fileName: string,
 ): { id: string; legacyHarnessType?: string } | null {
-  const id = stringField(raw.id);
+  const id = stringField(raw.id) ?? stringField(raw.harness_config) ?? stringField(raw.profile);
   if (id) return { id };
   const legacyHarnessType = stringField(raw.harnessType);
   if (legacyHarnessType) {
@@ -143,7 +143,15 @@ function readConfigsFromDir(
     const path = join(dir, file);
     try {
       const config = parseHarnessConfigDescriptor(readFileSync(path, "utf-8"), source, file);
-      if (config) configs.push({ ...config, path });
+      if (config) {
+        if ("profile" in config.raw) {
+          onWarning?.(`Deprecated harness_config descriptor field 'profile' used in ${path}; prefer 'id'.`);
+        }
+        if ("harness" in config.raw) {
+          onWarning?.(`Deprecated harness_config descriptor field 'harness' used in ${path}; prefer 'harness_type'.`);
+        }
+        configs.push({ ...config, path });
+      }
     } catch (error) {
       onWarning?.(
         `Skipping unreadable harness_config descriptor ${path}: ${error instanceof Error ? error.message : error}`,
@@ -240,4 +248,72 @@ function registerOneHarnessConfigsCommand(
 export function registerHarnessConfigsCommand(pi: ExtensionAPI, opts: { cwd: string }): void {
   registerOneHarnessConfigsCommand(pi, "harness-configs", opts);
   registerOneHarnessConfigsCommand(pi, "profiles", opts);
+}
+
+// TODO(#230): finalize field spelling/values — external harness_type / harness_config
+//              field names are tentative (blocked on dev-system #230). Kept as opaque
+//              strings so callers are not coupled to the HarnessType union yet.
+
+/** A single layer of harness overrides (e.g. run-level, frontmatter, per-call). */
+export interface HarnessOverrides {
+  harness_type?: string;
+  harness_config?: string;
+}
+
+/**
+ * Resolve the final harness override set from an ordered list of layers,
+ * lowest precedence first (e.g. [runLevel, frontmatter, perCall]).
+ *
+ * Higher-index layers override lower-index layers. An undefined layer is
+ * skipped. Within a layer, a field that is `undefined` inherits the lower
+ * layer's value; an explicit `"none"` is a real override (not inheritance).
+ */
+export function resolveHarnessLayers(layers: ReadonlyArray<HarnessOverrides | undefined>): {
+  harness_type?: string;
+  harness_config?: string;
+} {
+  let harness_type: string | undefined;
+  let harness_config: string | undefined;
+  for (const layer of layers) {
+    if (!layer) continue;
+    if (layer.harness_type !== undefined) harness_type = layer.harness_type;
+    if (layer.harness_config !== undefined) harness_config = layer.harness_config;
+  }
+  return { harness_type, harness_config };
+}
+
+/**
+ * Pull a `--harness-type <id>` / `--harness-type=<id>` / `--no-harness` flag out of a
+ * raw args string, returning the harness type (if present) and the args with the
+ * matched flag removed. The flag may appear anywhere; remaining args keep order
+ * and are trimmed. Case-insensitive on the flag, not on the value.
+ *
+ * `--no-harness` maps to `harnessType: "none"`.
+ */
+export function extractHarnessTypeFlag(args: string): { harnessType?: string; rest: string } {
+  const cut = (m: RegExpMatchArray): string =>
+    `${args.slice(0, m.index)} ${args.slice((m.index ?? 0) + m[0].length)}`.replace(/\s+/g, " ").trim();
+  const eq = args.match(/(?:^|\s)--harness-type=(\S+)/i);
+  if (eq?.index !== undefined) return { harnessType: eq[1], rest: cut(eq) };
+  const sp = args.match(/(?:^|\s)--harness-type\s+(\S+)/i);
+  if (sp?.index !== undefined) return { harnessType: sp[1], rest: cut(sp) };
+  const bare = args.match(/(?:^|\s)--no-harness/i);
+  if (bare?.index !== undefined) return { harnessType: "none", rest: cut(bare) };
+  return { rest: args.trim() };
+}
+
+/**
+ * Pull a `--harness-config <id>` or `--harness-config=<id>` flag out of a raw
+ * args string, returning the harness config (if present) and the args with the
+ * flag removed. The flag may appear anywhere; remaining args keep order and
+ * are trimmed. Case-insensitive on the flag, not on the value.
+ */
+export function extractHarnessConfigFlag(args: string): { harnessConfig?: string; rest: string } {
+  const cut = (m: RegExpMatchArray): string =>
+    `${args.slice(0, m.index)} ${args.slice((m.index ?? 0) + m[0].length)}`.replace(/\s+/g, " ").trim();
+  const eq = args.match(/(?:^|\s)--harness-config=(\S+)/i);
+  if (eq?.index !== undefined) return { harnessConfig: eq[1], rest: cut(eq) };
+  const sp = args.match(/(?:^|\s)--harness-config\s+(\S+)/i);
+  if (sp?.index !== undefined) return { harnessConfig: sp[1], rest: cut(sp) };
+  return { rest: args.trim() };
 }

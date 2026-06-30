@@ -138,10 +138,13 @@ export {
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
 export {
+  extractHarnessConfigFlag,
+  extractHarnessTypeFlag,
   HARNESS_RUNTIME_INFO,
   HARNESS_TYPES,
   type HarnessConfig,
   type HarnessConfigRegistry,
+  type HarnessOverrides,
   type HarnessRuntimeInfo,
   type HarnessType,
   listHarnessConfigs,
@@ -149,6 +152,7 @@ export {
   parseHarnessConfigDescriptor,
   registerHarnessConfigsCommand,
   renderHarnessConfigs,
+  resolveHarnessLayers,
 } from "./harness-config.js";
 export { type HarnessSelection, selectHarness } from "./harness-selector.js";
 export {

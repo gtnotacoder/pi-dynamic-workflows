@@ -12,6 +12,7 @@ import {
 import { generateAdversarialReviewWorkflow, parseAdversarialReviewArgs } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
+import { extractHarnessConfigFlag, extractHarnessTypeFlag } from "./harness-config.js";
 import { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
@@ -207,9 +208,15 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
     pi.registerCommand("deep-research", {
       description: "Research a question across the web with cross-checked sources",
       async handler(args: string, ctx: ExtensionCommandContext) {
-        const { mode, rest } = extractModeFlag(args);
+        const { mode, rest: r1 } = extractModeFlag(args);
+        const { harnessType, rest: r2 } = extractHarnessTypeFlag(r1);
+        const { harnessConfig, rest } = extractHarnessConfigFlag(r2);
         const question = rest;
-        if (!question) return ctx.ui.notify("Usage: /deep-research [--mode <name>] <question>", "warning");
+        if (!question)
+          return ctx.ui.notify(
+            "Usage: /deep-research [--mode <name>] [--harness-type <id>] [--harness-config <id>] <question>",
+            "warning",
+          );
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
         try {
           const result = await runWorkflow(generateDeepResearchWorkflow(), {
@@ -218,6 +225,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             // Research agents need real web access on top of the coding tools.
             tools: [...createCodingTools(cwd), ...createWebTools()],
             contextMode: mode,
+            harness_type: harnessType,
+            harness_config: harnessConfig,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
           });
@@ -235,11 +244,13 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
     pi.registerCommand("adversarial-review", {
       description: "Investigate a task, then cross-check each finding with skeptical reviewers",
       async handler(args: string, ctx: ExtensionCommandContext) {
-        const { mode, rest } = extractModeFlag(args);
+        const { mode, rest: r1 } = extractModeFlag(args);
+        const { harnessType, rest: r2 } = extractHarnessTypeFlag(r1);
+        const { harnessConfig, rest } = extractHarnessConfigFlag(r2);
         const parsed = parseAdversarialReviewArgs(rest);
         const usage =
-          "Usage: /adversarial-review [--mode <name>] [--evidence[=web_fetch,github|web_search]] " +
-          "[--no-evidence] [--reviewers N] [--threshold N] <task or question>";
+          "Usage: /adversarial-review [--mode <name>] [--harness-type <id>] [--harness-config <id>] " +
+          "[--evidence[=web_fetch,github|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task or question>";
         if (!parsed.task) return ctx.ui.notify(usage, "warning");
         for (const component of parsed.unknownEvidenceComponents) {
           ctx.ui.notify(`Ignoring unsupported evidence component: ${component}`, "warning");
@@ -265,6 +276,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
               workflowArgs,
               {
                 contextMode: mode,
+                harness_type: harnessType,
+                harness_config: harnessConfig,
                 tools,
               },
             );
@@ -283,6 +296,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             args: workflowArgs,
             tools,
             contextMode: mode,
+            harness_type: harnessType,
+            harness_config: harnessConfig,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
           });
@@ -303,11 +318,13 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         ? "Deprecated alias for /issue-delivery: autonomous issue-to-PR workflow"
         : "Autonomous Issue Delivery workflow: plan, edit, verify, and open a draft PR",
       async handler(args: string, ctx: ExtensionCommandContext) {
-        const { mode, rest } = extractModeFlag(args);
+        const { mode, rest: r1 } = extractModeFlag(args);
+        const { harnessType, rest: r2 } = extractHarnessTypeFlag(r1);
+        const { harnessConfig, rest } = extractHarnessConfigFlag(r2);
         const workflowArgs = buildIssueDeliveryArgs(rest);
         if (!workflowArgs.task) {
           return ctx.ui.notify(
-            `Usage: /${commandName} [--mode <name>] [--prototype] [--finish] <task or issue>`,
+            `Usage: /${commandName} [--mode <name>] [--harness-type <id>] [--harness-config <id>] [--prototype] [--finish] <task or issue>`,
             "warning",
           );
         }
@@ -323,6 +340,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           if (opts.manager) {
             const { runId, promise } = opts.manager.startInBackground(generateIssueDeliveryWorkflow(), workflowArgs, {
               contextMode: mode,
+              harness_type: harnessType,
+              harness_config: harnessConfig,
             });
             ctx.ui.setStatus(commandName, `${commandName} running (${runId})`);
             void promise.finally(() => ctx.ui.setStatus(commandName, undefined)).catch(() => {});
@@ -339,6 +358,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             args: workflowArgs,
             tools: createCodingTools(cwd),
             contextMode: mode,
+            harness_type: harnessType,
+            harness_config: harnessConfig,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus(commandName, `${commandName}: ${title}`),
           });
@@ -359,7 +380,9 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
     pi.registerCommand("code-review", {
       description: "Multi-angle code review with independent verification and synthesis",
       async handler(args: string, ctx: ExtensionCommandContext) {
-        const { mode, rest } = extractModeFlag(args);
+        const { mode, rest: r1 } = extractModeFlag(args);
+        const { harnessType, rest: r2 } = extractHarnessTypeFlag(r1);
+        const { harnessConfig, rest } = extractHarnessConfigFlag(r2);
         ctx.ui.notify("Reviewing — scoping, finding, verifying, synthesizing…", "info");
         try {
           // Host code owns all git argv/patch collection. Review agents get only
@@ -370,6 +393,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             args: prepared,
             tools: createReadOnlyTools(cwd),
             contextMode: mode,
+            harness_type: harnessType,
+            harness_config: harnessConfig,
             contextModeRegistry: buildRegistryForCwd(cwd),
             onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
           });

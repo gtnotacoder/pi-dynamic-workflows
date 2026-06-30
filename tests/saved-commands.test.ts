@@ -126,7 +126,7 @@ describe("registerSavedWorkflow", () => {
     assert.equal(commands[0].name, "test-workflow");
   });
 
-  it("advertises [--mode <name>] in the description while preserving the workflow's own description", async () => {
+  it("advertises [--mode <name>] and [--harness-type <id>] / [--harness-config <id>] hints in the description while preserving the workflow's own description", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands } = makeCommandRegistryPi();
     const wf = savedWorkflow({
@@ -136,7 +136,10 @@ describe("registerSavedWorkflow", () => {
     });
 
     registerSavedWorkflow(pi, "/cwd", wf);
-    assert.equal(commands[0].description, "Run a deep research sweep [--mode <name>]");
+    assert.equal(
+      commands[0].description,
+      "Run a deep research sweep [--mode <name>] [--harness-type <id>] [--harness-config <id>]",
+    );
   });
 
   it("does not duplicate the --mode hint when the description already mentions --mode", async () => {
@@ -274,6 +277,121 @@ describe("registerSavedWorkflow", () => {
 
     registerSavedWorkflow(pi, "/cwd", wf);
     assert.equal(commands.length, 0, "should not re-register when already present");
+  });
+
+  it("--harness-type is stripped from args and NOT passed as a workflow parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "strip-harness-type",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: JSON.stringify(args) };",
+    });
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
+    try {
+      registerSavedWorkflow(pi, "/cwd", wf);
+      const { ctx } = makeNotifyCtx();
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("--harness-type opencode review the auth module", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+
+    assert.equal(sent.length, 1);
+    const payload = parseInlineArgsReport(sent[0].content);
+    assert.equal(payload._, "review the auth module", "--harness-type <id> should be stripped from args._");
+    assert.equal(payload._raw, "review the auth module", "--harness-type <id> should be stripped from args._raw");
+    assert.equal(
+      payload.harness_type,
+      undefined,
+      "the stripped --harness-type must NOT leak through as a harness_type parameter",
+    );
+  });
+
+  it("--harness-config is stripped from args and NOT passed as a workflow parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "strip-harness-config",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: JSON.stringify(args) };",
+    });
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
+    try {
+      registerSavedWorkflow(pi, "/cwd", wf);
+      const { ctx } = makeNotifyCtx();
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("--harness-config my-config review the auth module", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+
+    assert.equal(sent.length, 1);
+    const payload = parseInlineArgsReport(sent[0].content);
+    assert.equal(payload._, "review the auth module", "--harness-config <id> should be stripped from args._");
+    assert.equal(payload._raw, "review the auth module", "--harness-config <id> should be stripped from args._raw");
+    assert.equal(
+      payload.harness_config,
+      undefined,
+      "the stripped --harness-config must NOT leak through as a harness_config parameter",
+    );
+  });
+
+  it("--harness-config=<id> (equals form) is also stripped and NOT passed as a workflow parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "strip-harness-config-eq",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: JSON.stringify(args) };",
+    });
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
+    try {
+      registerSavedWorkflow(pi, "/cwd", wf);
+      const { ctx } = makeNotifyCtx();
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("--harness-config=my-config review the auth module", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+
+    assert.equal(sent.length, 1);
+    const payload = parseInlineArgsReport(sent[0].content);
+    assert.equal(payload._, "review the auth module", "--harness-config=<id> should be stripped from args._");
+    assert.equal(payload._raw, "review the auth module", "--harness-config=<id> should be stripped from args._raw");
+    assert.equal(
+      payload.harness_config,
+      undefined,
+      "the stripped --harness-config=<id> must NOT leak through as a harness_config parameter",
+    );
+  });
+
+  it("harness_config=value (no -- prefix) is passed through as a normal workflow parameter", async () => {
+    const { registerSavedWorkflow } = await load();
+    const { pi, commands, sent } = makeCommandRegistryPi();
+    const wf = savedWorkflow({
+      name: "harness-config-param",
+      script: "export const meta = { name: 't', description: 't' };\nreturn { report: JSON.stringify(args) };",
+    });
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
+    try {
+      registerSavedWorkflow(pi, "/cwd", wf);
+      const { ctx } = makeNotifyCtx();
+      await withFakeHomeAsync(fakeHome, async () => {
+        await commands[0].handler("harness_config=my-bundle review the auth module", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+
+    assert.equal(sent.length, 1);
+    const payload = parseInlineArgsReport(sent[0].content);
+    assert.equal(
+      payload.harness_config,
+      "my-bundle",
+      "harness_config=value without -- should remain a normal parsed workflow parameter",
+    );
+    assert.equal(payload._, "review the auth module");
   });
 
   it("skips a saved workflow whose name collides with an existing command and warns the user", async () => {

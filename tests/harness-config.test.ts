@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  extractHarnessConfigFlag,
+  extractHarnessTypeFlag,
   loadHarnessConfigRegistry,
   parseHarnessConfigDescriptor,
   registerHarnessConfigsCommand,
   renderHarnessConfigs,
+  resolveHarnessLayers,
 } from "../src/harness-config.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
@@ -46,6 +49,17 @@ describe("parseHarnessConfigDescriptor", () => {
     assert.equal(config.harness_type, "hermes");
     assert.equal(config.wired, false);
     assert.equal(config.trigger, "manual");
+  });
+
+  it("accepts deprecated harness/profile descriptor aliases", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, profile: "legacy-docs", harness: "opencode" }),
+      "project",
+      "legacy.json",
+    );
+    assert.ok(config);
+    assert.equal(config.id, "legacy-docs");
+    assert.equal(config.harness_type, "opencode");
   });
 
   it("returns null for malformed or unsupported descriptors", () => {
@@ -93,6 +107,30 @@ describe("loadHarnessConfigRegistry", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("warns on deprecated harness/profile descriptor aliases", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-configs-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "legacy.json",
+        JSON.stringify({ schemaVersion: 1, profile: "legacy-docs", harness: "opencode" }),
+      );
+
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (message) => warnings.push(message),
+      });
+      assert.equal(registry.get("legacy-docs")?.harness_type, "opencode");
+      assert.ok(warnings.some((warning) => warning.includes("'profile'")));
+      assert.ok(warnings.some((warning) => warning.includes("'harness'")));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("renderHarnessConfigs / registerHarnessConfigsCommand", () => {
@@ -128,5 +166,137 @@ describe("renderHarnessConfigs / registerHarnessConfigsCommand", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── resolveHarnessLayers: precedence / inheritance ──────────────────────────
+
+describe("resolveHarnessLayers", () => {
+  it("higher-index layer wins", () => {
+    const result = resolveHarnessLayers([
+      { harness_type: "pi", harness_config: "base" },
+      { harness_type: "hermes", harness_config: "override" },
+    ]);
+    assert.equal(result.harness_type, "hermes");
+    assert.equal(result.harness_config, "override");
+  });
+
+  it("undefined inherits from the lower layer", () => {
+    const result = resolveHarnessLayers([{ harness_type: "pi", harness_config: "docs" }, { harness_type: undefined }]);
+    assert.equal(result.harness_type, "pi");
+    assert.equal(result.harness_config, "docs");
+  });
+
+  it('explicit "none" overrides an inherited value', () => {
+    const result = resolveHarnessLayers([{ harness_type: "pi", harness_config: "docs" }, { harness_type: "none" }]);
+    assert.equal(result.harness_type, "none");
+    assert.equal(result.harness_config, "docs"); // inherited unchanged
+  });
+
+  it("empty layers yield no fields", () => {
+    const result = resolveHarnessLayers([]);
+    assert.equal(result.harness_type, undefined);
+    assert.equal(result.harness_config, undefined);
+  });
+
+  it("all-undefined layers yield no fields", () => {
+    const result = resolveHarnessLayers([undefined, undefined, undefined]);
+    assert.equal(result.harness_type, undefined);
+    assert.equal(result.harness_config, undefined);
+  });
+
+  it("a mix of defined and undefined layers inherits correctly", () => {
+    const result = resolveHarnessLayers([
+      { harness_type: "opencode" },
+      undefined,
+      { harness_config: "backend-review" },
+      undefined,
+    ]);
+    assert.equal(result.harness_type, "opencode");
+    assert.equal(result.harness_config, "backend-review");
+  });
+});
+
+// ── extractHarnessTypeFlag ──────────────────────────────────────────────────
+
+describe("extractHarnessTypeFlag", () => {
+  it("returns no harnessType and trimmed args when the flag is absent", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("  review the auth module  ");
+    assert.equal(harnessType, undefined);
+    assert.equal(rest, "review the auth module");
+  });
+
+  it("parses `--harness-type <value>` and strips it from rest", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("--harness-type hermes review task");
+    assert.equal(harnessType, "hermes");
+    assert.equal(rest, "review task");
+  });
+
+  it("parses `--harness-type=<value>` form", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("task --harness-type=opencode");
+    assert.equal(harnessType, "opencode");
+    assert.equal(rest, "task");
+  });
+
+  it("a flag in the middle does not mangle surrounding args", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("urgent --harness-type hermes src/auth");
+    assert.equal(harnessType, "hermes");
+    assert.equal(rest, "urgent src/auth");
+  });
+
+  it("flag match is case-insensitive but the value is not", () => {
+    const { harnessType } = extractHarnessTypeFlag("--HARNESS-TYPE HerMees");
+    assert.equal(harnessType, "HerMees");
+  });
+
+  it("--no-harness yields harnessType 'none'", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("--no-harness do review");
+    assert.equal(harnessType, "none");
+    assert.equal(rest, "do review");
+  });
+
+  it("a plain harness_config=value (no --) is left untouched in rest", () => {
+    const { harnessType, rest } = extractHarnessTypeFlag("harness_config=backend review");
+    assert.equal(harnessType, undefined);
+    assert.equal(rest, "harness_config=backend review");
+  });
+});
+
+// ── extractHarnessConfigFlag ────────────────────────────────────────────────
+
+describe("extractHarnessConfigFlag", () => {
+  it("returns no harnessConfig and trimmed args when the flag is absent", () => {
+    const { harnessConfig, rest } = extractHarnessConfigFlag("  review the auth module  ");
+    assert.equal(harnessConfig, undefined);
+    assert.equal(rest, "review the auth module");
+  });
+
+  it("parses `--harness-config <value>` and strips it from rest", () => {
+    const { harnessConfig, rest } = extractHarnessConfigFlag("--harness-config docs review task");
+    assert.equal(harnessConfig, "docs");
+    assert.equal(rest, "review task");
+  });
+
+  it("parses `--harness-config=<value>` form", () => {
+    const { harnessConfig, rest } = extractHarnessConfigFlag("task --harness-config=backend");
+    assert.equal(harnessConfig, "backend");
+    assert.equal(rest, "task");
+  });
+
+  it("a flag in the middle does not mangle surrounding args", () => {
+    const { harnessConfig, rest } = extractHarnessConfigFlag("urgent --harness-config docs src/auth");
+    assert.equal(harnessConfig, "docs");
+    assert.equal(rest, "urgent src/auth");
+  });
+
+  it("flag match is case-insensitive but the value is not", () => {
+    const { harnessConfig } = extractHarnessConfigFlag("--HARNESS-CONFIG DocID");
+    assert.equal(harnessConfig, "DocID");
+  });
+
+  it("a plain harness_config=value (no --) is left untouched in rest", () => {
+    const { harnessConfig, rest } = extractHarnessConfigFlag("harness_config=backend review");
+    assert.equal(harnessConfig, undefined);
+    assert.equal(rest, "harness_config=backend review");
   });
 });
