@@ -40,6 +40,7 @@ import {
 } from "./context-mode.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
+import { LoopDetector, type LoopGuardOptions } from "./loop-detector.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import { loadModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import {
@@ -54,6 +55,7 @@ import {
   type StageCheckOptions,
   type StageCheckResult,
 } from "./stage-check.js";
+import { type DagNode, DagValidationError, runDag, type WaveResult } from "./workflow-dag.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -481,6 +483,9 @@ export async function runWorkflow<T = unknown>(
     depth: 0,
   };
   const limiter = shared.limiter;
+  // Per-run loop guard (a nested workflow() gets its own). Warn-only unless the
+  // caller opts into { loopGuard: { action: "abort" } }.
+  const loopDetector = new LoopDetector((options as { loopGuard?: LoopGuardOptions }).loopGuard);
 
   const log = (message: string) => {
     const text = String(message);
@@ -682,6 +687,25 @@ export async function runWorkflow<T = unknown>(
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
     const agentCallId = `${runId}:${callIndex}`;
+    // Loop guard: catch a script issuing the same agent() call over and over (a
+    // runaway while / loopUntilDry that silently burns budget). Keyed on the call
+    // identity (phase | label | model | prompt). Warn-only by default so genuine
+    // identical-prompt fan-out (verify / judgePanel reviewers) is never aborted;
+    // opt into { loopGuard: { action: "abort" } } to hard-stop. Never touches
+    // resume state, so replays stay deterministic.
+    const loopVerdict = loopDetector.record(
+      `${assignedPhase ?? ""}\u0000${requestedLabel ?? ""}\u0000${modelSpec ?? ""}\u0000${prompt}`,
+    );
+    if (loopVerdict.looping) {
+      log(`[warn] possible loop: ${loopVerdict.reason} — agent "${requestedLabel ?? "agent"}"`);
+      if (loopDetector.action === "abort") {
+        throw new WorkflowError(
+          `loop guard tripped: ${loopVerdict.reason} for agent "${requestedLabel ?? "agent"}"`,
+          WorkflowErrorCode.WORKFLOW_ABORTED,
+          { recoverable: false },
+        );
+      }
+    }
     const effectiveContextPolicy = {
       maxContextTokens: effectiveMaxContextTokens,
       contextReserveTokens: effectiveContextReserveTokens,
@@ -1151,6 +1175,55 @@ export async function runWorkflow<T = unknown>(
     );
   };
 
+  // Dependency-aware DAG: run nodes in deterministic waves honoring `dependsOn`,
+  // cascade-skipping the dependents of any failed node so a dead upstream never
+  // hangs the wave. Built on the same limiter / callSeq machinery as
+  // agent()/parallel() (node.run() calls agent(), which the limiter gates), and
+  // waves run in stable declaration order, so concurrency caps and resume hold.
+  const dag = async (nodes: Array<DagNode<unknown>>) => {
+    throwIfAborted();
+    if (!Array.isArray(nodes)) throw new TypeError("dag() expects an array of { id, dependsOn?, run } nodes");
+    if (nodes.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `dag() accepts at most ${MAX_FANOUT_ITEMS} nodes (got ${nodes.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
+    try {
+      return await runDag(nodes, (batch) =>
+        Promise.all(
+          batch.map(async ({ node, deps }): Promise<WaveResult<unknown>> => {
+            try {
+              throwIfAborted();
+              const value = await node.run(deps);
+              throwIfAborted();
+              return { id: node.id, ok: true, value };
+            } catch (error) {
+              // Fatal, run-level failures (budget / agent-limit / abort) halt the
+              // whole run like parallel()/pipeline(). Any other node error is
+              // contained: the node fails and its dependents cascade-skip.
+              const workflowError = wrapError(error);
+              const fatal =
+                runSignal.aborted ||
+                workflowError.code === WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED ||
+                workflowError.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED ||
+                workflowError.code === WorkflowErrorCode.WORKFLOW_ABORTED;
+              if (fatal) throw workflowError;
+              log(`dag["${node.id}"] failed: ${workflowError.message}`);
+              return { id: node.id, ok: false, error: workflowError.message };
+            }
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof DagValidationError) {
+        throw new WorkflowError(error.message, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
+      }
+      throw error;
+    }
+  };
+
   // Nested workflow(): run a saved workflow (or a raw script) inline, sharing this
   // run's limiter/counters/budget so the global caps hold. One level deep only.
   const workflowFn = async (nameOrScript: string, childArgs?: unknown) => {
@@ -1381,6 +1454,7 @@ export async function runWorkflow<T = unknown>(
     agent,
     parallel,
     pipeline,
+    dag,
     workflow: workflowFn,
     verify,
     judgePanel,
