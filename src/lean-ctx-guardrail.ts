@@ -4,7 +4,7 @@ import {
   statSync as defaultStatSync,
   type Stats,
 } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 export const FRONTEND_COMPONENT_EXTENSIONS: readonly string[] = [".tsx", ".jsx", ".vue", ".svelte"];
 
@@ -86,7 +86,7 @@ export function guardCtxReadPath(rawPath: string, opts: GuardCtxReadOptions): Ct
 
   if (!exists(normalized.absolutePath)) {
     const frontendFallback = frontendFallbackOutcome(
-      pathText,
+      normalized.normalizedPath,
       opts.cwd,
       componentExtensions,
       indexExtensions,
@@ -217,9 +217,7 @@ function frontendFallbackOutcome(
   if (!looksLikeFrontendComponentPath(rawPath, componentExtensions)) return undefined;
   const normalizedPath = normalizeRelativePath(rawPath);
   if (frontendPathTriggers && frontendPathTriggers.length > 0) {
-    const matched = frontendPathTriggers.some(
-      (trigger) => normalizedPath === trigger || normalizedPath.startsWith(trigger),
-    );
+    const matched = frontendPathTriggers.some((trigger) => matchesFrontendTrigger(normalizedPath, trigger));
     if (!matched) return undefined;
   }
   for (const candidate of generateFrontendFallbacks(
@@ -254,6 +252,11 @@ function frontendFallbackOutcome(
     }
   }
   return undefined;
+}
+
+function matchesFrontendTrigger(normalizedPath: string, trigger: string): boolean {
+  const normalizedTrigger = normalizeTriggerPrefix(trigger);
+  return normalizedPath === normalizedTrigger || normalizedPath.startsWith(`${normalizedTrigger}/`);
 }
 
 function generateFrontendFallbacks(
@@ -362,6 +365,11 @@ function hasControlCharacter(value: string): boolean {
 
 function normalizeRelativePath(pathText: string): string {
   return pathText.split(sep).join("/").replace(/\/+/g, "/");
+}
+
+function normalizeTriggerPrefix(pathText: string): string {
+  const normalized = posix.normalize(normalizeRelativePath(pathText)).replace(/^\.\//, "").replace(/\/+$/g, "");
+  return normalized === "." ? "" : normalized;
 }
 
 function unique(values: string[]): string[] {

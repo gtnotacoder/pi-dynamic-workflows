@@ -5,7 +5,7 @@ import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
-import type { AgentContextWindowStats, AgentUsage } from "./agent.js";
+import type { AgentContextWindowStats, AgentUsage, WorkflowCtxReadGuardrailOptions } from "./agent.js";
 import { buildAgentContextWindowStats, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import {
@@ -550,6 +550,18 @@ export async function runWorkflow<T = unknown>(
     registry: harnessConfigRegistry,
     readOnly: options.readOnly,
   });
+  const harnessCtxReadGuardrail: WorkflowCtxReadGuardrailOptions | undefined =
+    harnessExpansion.componentExtensions !== undefined ||
+    harnessExpansion.indexExtensions !== undefined ||
+    harnessExpansion.directoryModuleSelfFile !== undefined ||
+    harnessExpansion.frontendPathTriggers !== undefined
+      ? {
+          componentExtensions: harnessExpansion.componentExtensions,
+          indexExtensions: harnessExpansion.indexExtensions,
+          directoryModuleSelfFile: harnessExpansion.directoryModuleSelfFile,
+          frontendPathTriggers: harnessExpansion.frontendPathTriggers,
+        }
+      : undefined;
 
   // Harness-not-wired clean-skip: when the resolved harness type is not wired to
   // the current runtime, short-circuit to a structured skip result instead of
@@ -896,6 +908,7 @@ export async function runWorkflow<T = unknown>(
               tools: harnessExpansion.tools ?? null,
               disallowedTools: harnessExpansion.disallowedTools ?? null,
             },
+            ctxReadGuardrail: harnessCtxReadGuardrail ?? null,
           });
     const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(
@@ -1142,6 +1155,7 @@ export async function runWorkflow<T = unknown>(
                   disallowedToolNames:
                     agentOptions.disallowedTools ?? agentDef?.disallowedTools ?? harnessExpansion.disallowedTools,
                   readOnly: options.readOnly,
+                  ctxReadGuardrail: harnessCtxReadGuardrail,
                   // The workflow layer is the single resolution authority: it passes
                   // the fully-resolved primitives, so the raw mode name is intentionally
                   // NOT forwarded (a project-mode name would be unknown to agent.ts's

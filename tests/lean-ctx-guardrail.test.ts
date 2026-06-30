@@ -249,6 +249,60 @@ test("guardCtxReadPath skips frontend fallback when path is not under a trigger 
   assert.equal(outcome.kind, "missing");
 });
 
+test("guardCtxReadPath matches frontend triggers against canonical repo-relative paths", () => {
+  const outcome = guardCtxReadPath("./components/ui/checkbox.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["components/ui/"],
+  });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.kind, "frontendFallback");
+  assert.equal(outcome.normalizedPath, "components/ui/checkbox/checkbox.tsx");
+});
+
+test("guardCtxReadPath does not let traversal satisfy frontend trigger prefixes", () => {
+  const outcome = guardCtxReadPath("components/ui/../../lib/Button.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["components/ui/"],
+  });
+
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.kind, "missing");
+});
+
+test("guardCtxReadPath requires path-segment boundaries for frontend triggers", () => {
+  const outcome = guardCtxReadPath("components/uikit/Button.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["components/ui"],
+  });
+
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.kind, "missing");
+});
+
+test("guardCtxReadPath normalizes relative frontend trigger prefixes", () => {
+  const outcome = guardCtxReadPath("components/ui/checkbox.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["./components/ui/"],
+  });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.kind, "frontendFallback");
+  assert.equal(outcome.normalizedPath, "components/ui/checkbox/checkbox.tsx");
+});
+
 test("guardCtxReadPath default frontend fallback still resolves Button → Button/index.tsx", () => {
   const outcome = guardCtxReadPath("components/Button.tsx", { cwd });
 

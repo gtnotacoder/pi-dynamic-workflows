@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
@@ -33,6 +34,7 @@ import {
   type SystemPromptMode,
 } from "./context-mode.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { type GuardCtxReadOptions, guardCtxReadPath } from "./lean-ctx-guardrail.js";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
@@ -276,6 +278,8 @@ export interface AgentContextWindowStats {
   warning?: string;
 }
 
+export type WorkflowCtxReadGuardrailOptions = Omit<GuardCtxReadOptions, "cwd" | "exists" | "stat" | "realpath">;
+
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
   schema?: TSchemaDef;
@@ -339,6 +343,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   toolNames?: string[];
   /** Remove these coding-tool names after the allowlist (an agentType `disallowedTools` denylist). */
   disallowedToolNames?: string[];
+  /** Optional read-path guardrail options supplied by a harness_config expansion. */
+  ctxReadGuardrail?: WorkflowCtxReadGuardrailOptions;
   /**
    * With `schema`: how many extra repair turns to allow if the model finishes
    * without calling structured_output. Each retry re-prompts (tools restricted to
@@ -382,6 +388,78 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
   ? Static<TSchemaDef>
   : string;
+
+export function createGuardedReadOperations(cwd: string, guardrail: WorkflowCtxReadGuardrailOptions) {
+  const remappedPaths = new Map<string, string>();
+  const remap = (absolutePath: string): string =>
+    remappedPaths.get(absolutePath) ?? resolveGuardedReadPath(cwd, absolutePath, guardrail);
+  return {
+    async access(absolutePath: string): Promise<void> {
+      try {
+        await fsAccess(absolutePath);
+        remappedPaths.delete(absolutePath);
+      } catch {
+        const fallbackPath = resolveGuardedReadPath(cwd, absolutePath, guardrail);
+        await fsAccess(fallbackPath);
+        remappedPaths.set(absolutePath, fallbackPath);
+      }
+    },
+    async readFile(absolutePath: string): Promise<Buffer> {
+      return await fsReadFile(remap(absolutePath));
+    },
+    async detectImageMimeType(absolutePath: string): Promise<string | null> {
+      return imageMimeType(remap(absolutePath));
+    },
+  };
+}
+
+export function applyCtxReadGuardrailToTools(
+  baseTools: ToolDefinition[],
+  cwd: string,
+  guardrail: WorkflowCtxReadGuardrailOptions,
+): ToolDefinition[] {
+  const guardedReadTool = createCodingTools(cwd, {
+    read: { operations: createGuardedReadOperations(cwd, guardrail) },
+  }).find((tool) => tool.name === "read");
+  if (!guardedReadTool) return baseTools;
+  return baseTools.map((tool) => (tool.name === "read" ? guardedReadTool : tool));
+}
+
+function resolveGuardedReadPath(cwd: string, absolutePath: string, guardrail: WorkflowCtxReadGuardrailOptions): string {
+  const normalizedPath = relativeToCwd(cwd, absolutePath);
+  if (!normalizedPath) throw new Error(`Path escapes the repository: ${absolutePath}`);
+  const outcome = guardCtxReadPath(normalizedPath, { cwd, ...guardrail });
+  if (outcome.ok && outcome.normalizedPath) return resolve(cwd, outcome.normalizedPath);
+  throw new Error([outcome.reason, outcome.fallbackHint].filter(Boolean).join(" "));
+}
+
+function relativeToCwd(cwd: string, absolutePath: string): string | undefined {
+  const normalized = relative(cwd, absolutePath).split(sep).join("/") || ".";
+  if (normalized === ".." || normalized.startsWith("../") || isAbsolute(normalized)) return undefined;
+  return normalized;
+}
+
+function imageMimeType(path: string): string | null {
+  switch (extname(path).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+function hasCtxReadGuardrailOptions(
+  value: WorkflowCtxReadGuardrailOptions | undefined,
+): value is WorkflowCtxReadGuardrailOptions {
+  return value !== undefined && Object.values(value).some((entry) => entry !== undefined);
+}
 
 export function buildAgentContextWindowStats(
   usage: Pick<AgentUsage, "input" | "total">,
@@ -564,7 +642,10 @@ export class WorkflowAgent {
     // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
     // since tools capture their cwd at construction and can't be relocated.
     const runCwd = options.cwd ?? this.cwd;
-    const baseTools = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
+    const baseToolsForCwd = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
+    const baseTools = hasCtxReadGuardrailOptions(options.ctxReadGuardrail)
+      ? applyCtxReadGuardrailToTools(baseToolsForCwd, runCwd, options.ctxReadGuardrail)
+      : baseToolsForCwd;
     // Apply the agentType tool policy BEFORE adding structured_output, so a
     // restrictive allowlist never strips the schema tool.
     const customTools: ToolDefinition[] = applyToolPolicy(

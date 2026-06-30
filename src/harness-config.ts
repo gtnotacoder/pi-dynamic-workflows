@@ -403,10 +403,20 @@ export function expandHarnessConfig(opts: {
       result.agentOverrides = raw.agentOverrides as Record<string, unknown>;
     }
 
-    result.componentExtensions = stringArrayField(raw.componentExtensions);
-    result.indexExtensions = stringArrayField(raw.indexExtensions);
-    result.frontendPathTriggers = stringArrayField(raw.frontendPathTriggers);
-    result.directoryModuleSelfFile = raw.directoryModuleSelfFile === true;
+    const shadcnDefaults = descriptor.id === "frontend-react-shadcn";
+    result.componentExtensions =
+      stringArrayField(raw.componentExtensions) ?? (shadcnDefaults ? [".tsx", ".jsx"] : undefined);
+    result.indexExtensions =
+      stringArrayField(raw.indexExtensions) ?? (shadcnDefaults ? [".ts", ".tsx", ".js", ".jsx"] : undefined);
+    result.frontendPathTriggers =
+      stringArrayField(raw.frontendPathTriggers) ??
+      (shadcnDefaults && isRecord(raw.triggerRules) ? stringArrayField(raw.triggerRules.pathPrefixes) : undefined);
+    result.directoryModuleSelfFile =
+      typeof raw.directoryModuleSelfFile === "boolean"
+        ? raw.directoryModuleSelfFile
+        : shadcnDefaults
+          ? true
+          : undefined;
   }
 
   return result;
