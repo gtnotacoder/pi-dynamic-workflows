@@ -150,6 +150,7 @@ export {
   registerHarnessConfigsCommand,
   renderHarnessConfigs,
 } from "./harness-config.js";
+export { type HarnessSelection, selectHarness } from "./harness-selector.js";
 export {
   type ActiveRunView,
   type HerdrReporterOptions,
