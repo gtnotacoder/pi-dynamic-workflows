@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 
 export interface StageCheckCommand {
   name: string;
@@ -49,6 +49,21 @@ export interface StageCheckOptions {
 
 const DEFAULT_STAGE_CHECK_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
+const BIOME_TARGET_EXTENSIONS = new Set([
+  ".cjs",
+  ".css",
+  ".cts",
+  ".gql",
+  ".graphql",
+  ".js",
+  ".json",
+  ".jsonc",
+  ".jsx",
+  ".mjs",
+  ".mts",
+  ".ts",
+  ".tsx",
+]);
 
 /**
  * Host-side mechanical verification. Runs native compiler/linter commands without
@@ -96,10 +111,15 @@ export function detectDefaultStageCheckCommands(cwd: string, targetFile?: string
   if (hasPackage && existsSync(join(cwd, "tsconfig.json"))) {
     commands.push({ name: "typescript", command: "npm", args: ["exec", "--", "tsc", "--noEmit"] });
   }
-  if (hasPackage && existsSync(join(cwd, "biome.json"))) {
+  if (hasPackage && existsSync(join(cwd, "biome.json")) && isBiomeCheckTarget(targetFile)) {
     commands.push({ name: "biome", command: "npm", args: ["exec", "--", "biome", "check", targetFile || "."] });
   }
   return commands;
+}
+
+function isBiomeCheckTarget(targetFile: string | undefined): boolean {
+  if (!targetFile) return true;
+  return BIOME_TARGET_EXTENSIONS.has(extname(targetFile).toLowerCase());
 }
 
 export function renderStageCheckFeedback(result: StageCheckResult): string {

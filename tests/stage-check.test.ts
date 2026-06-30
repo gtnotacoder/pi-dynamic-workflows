@@ -29,6 +29,39 @@ test("detectDefaultStageCheckCommands finds TypeScript and Biome checks", () => 
   }
 });
 
+test("detectDefaultStageCheckCommands skips targeted Biome for README docs files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stage-check-"));
+  try {
+    writeFileSync(join(dir, "package.json"), "{}");
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    writeFileSync(join(dir, "biome.json"), "{}");
+    const commands = detectDefaultStageCheckCommands(dir, "README.md");
+    assert.deepEqual(
+      commands.map((command) => command.name),
+      ["typescript"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectDefaultStageCheckCommands keeps repo-level Biome when no target file is provided", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stage-check-"));
+  try {
+    writeFileSync(join(dir, "package.json"), "{}");
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    writeFileSync(join(dir, "biome.json"), "{}");
+    const commands = detectDefaultStageCheckCommands(dir);
+    assert.deepEqual(
+      commands.map((command) => command.name),
+      ["typescript", "biome"],
+    );
+    assert.deepEqual(commands[1].args, ["exec", "--", "biome", "check", "."]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("runStageCheck executes commands through an injectable host runner", async () => {
   const seen: string[] = [];
   const runner: StageCheckRunner = async (command, options): Promise<StageCheckCommandResult> => {
