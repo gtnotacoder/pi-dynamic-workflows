@@ -29,6 +29,8 @@ export interface HarnessConfig {
   trigger?: string;
   triggerRules?: Record<string, unknown>;
   legacyHarnessType?: string;
+  invalid?: boolean;
+  invalidReason?: string;
   source: "project" | "user";
   path?: string;
   raw: Record<string, unknown>;
@@ -59,6 +61,10 @@ function stringArrayField(value: unknown): string[] | undefined {
     return value;
   }
   return undefined;
+}
+
+function booleanField(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isHarnessType(value: unknown): value is HarnessType {
@@ -115,19 +121,25 @@ export function parseHarnessConfigDescriptor(
   if (!identity) return null;
 
   const rawHarnessType = raw.harness_type ?? raw.harness;
-  const harness_type: HarnessType = isHarnessType(rawHarnessType) ? rawHarnessType : "pi";
+  const invalidReason =
+    rawHarnessType !== undefined && !isHarnessType(rawHarnessType)
+      ? `Unknown harness_type '${String(rawHarnessType)}'`
+      : undefined;
+  const harness_type: HarnessType = invalidReason ? "pi" : isHarnessType(rawHarnessType) ? rawHarnessType : "pi";
   const triggerRules = isRecord(raw.triggerRules) ? raw.triggerRules : undefined;
 
   return {
     schemaVersion: 1,
     id: identity.id,
     harness_type,
-    wired: HARNESS_RUNTIME_INFO[harness_type].wired,
+    wired: invalidReason ? false : HARNESS_RUNTIME_INFO[harness_type].wired,
     displayName: stringField(raw.displayName) ?? stringField(raw.name),
     description: stringField(raw.description),
     trigger: triggerSummary(raw),
     triggerRules,
     legacyHarnessType: identity.legacyHarnessType,
+    invalid: invalidReason !== undefined,
+    invalidReason,
     source,
     raw,
   };
@@ -151,15 +163,20 @@ function readConfigsFromDir(
     const path = join(dir, file);
     try {
       const config = parseHarnessConfigDescriptor(readFileSync(path, "utf-8"), source, file);
-      if (config) {
-        if ("profile" in config.raw) {
-          onWarning?.(`Deprecated harness_config descriptor field 'profile' used in ${path}; prefer 'id'.`);
-        }
-        if ("harness" in config.raw) {
-          onWarning?.(`Deprecated harness_config descriptor field 'harness' used in ${path}; prefer 'harness_type'.`);
-        }
-        configs.push({ ...config, path });
+      if (!config) {
+        onWarning?.(`Skipping invalid or unsupported harness_config descriptor ${path}.`);
+        continue;
       }
+      if (config.invalidReason) {
+        onWarning?.(`Skipping invalid harness_config descriptor ${path}: ${config.invalidReason}.`);
+      }
+      if ("profile" in config.raw) {
+        onWarning?.(`Deprecated harness_config descriptor field 'profile' used in ${path}; prefer 'id'.`);
+      }
+      if ("harness" in config.raw) {
+        onWarning?.(`Deprecated harness_config descriptor field 'harness' used in ${path}; prefer 'harness_type'.`);
+      }
+      configs.push({ ...config, path });
     } catch (error) {
       onWarning?.(
         `Skipping unreadable harness_config descriptor ${path}: ${error instanceof Error ? error.message : error}`,
@@ -214,9 +231,10 @@ export function renderHarnessConfigs(registry: HarnessConfigRegistry): string {
   const width = Math.max(...configs.map((config) => config.id.length), 8);
   const rows = configs.map((config) => {
     const runtime = `${config.harness_type}, ${config.wired ? "wired" : "not wired"}`;
+    const label = config.displayName ? ` · ${config.displayName}` : "";
     const trigger = config.trigger ? ` · trigger:${config.trigger}` : "";
     const legacy = config.legacyHarnessType ? ` · legacy:${config.legacyHarnessType}` : "";
-    return `  ${config.id.padEnd(width)}  (${runtime})${trigger}${legacy}`;
+    return `  ${config.id.padEnd(width)}  (${runtime})${label}${trigger}${legacy}`;
   });
 
   return [
@@ -351,21 +369,21 @@ export function expandHarnessConfig(opts: {
     };
   }
 
-  const type: HarnessType = descriptor.harness_type;
+  const type: HarnessType = isHarnessType(harness_type) ? harness_type : descriptor.harness_type;
   const raw = descriptor.raw;
 
   const result: HarnessExpansion = {
     harness_type: type,
     harness_config,
-    wired: HARNESS_RUNTIME_INFO[type].wired,
+    wired: descriptor.invalid && !isHarnessType(harness_type) ? false : HARNESS_RUNTIME_INFO[type].wired,
   };
 
   // Optional override fields from raw
   if (isRecord(raw)) {
     result.contextMode = stringField(raw.contextMode);
-    result.inheritProjectContext = raw.inheritProjectContext === true;
-    result.inheritSkills = raw.inheritSkills === true;
-    result.inheritMainRules = raw.inheritMainRules === true;
+    result.inheritProjectContext = booleanField(raw.inheritProjectContext);
+    result.inheritSkills = booleanField(raw.inheritSkills);
+    result.inheritMainRules = booleanField(raw.inheritMainRules);
     result.systemPromptMode = stringField(raw.systemPromptMode);
 
     const tools = stringArrayField(raw.tools);

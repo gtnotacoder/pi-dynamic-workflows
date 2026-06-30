@@ -34,10 +34,18 @@ export function selectHarness(
   opts?: { registry?: HarnessConfigRegistry; projectDir?: string; userDir?: string },
 ): HarnessSelection {
   const projectDir = opts?.projectDir ?? join(cwd, HARNESSES_DIR);
-  const registry = opts?.registry ?? loadHarnessConfigRegistry(cwd, { projectDir, userDir: opts?.userDir });
+  const registry =
+    opts?.registry ??
+    loadHarnessConfigRegistry(cwd, {
+      projectDir,
+      // Auto-selection must be reproducible from the checkout by default. User
+      // descriptors are included only when the caller explicitly opts in.
+      userDir: opts?.userDir ?? projectDir,
+    });
   const pkg = readJsonSafe(join(cwd, "package.json"));
 
   for (const descriptor of [...registry.values()].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (descriptor.invalid) continue;
     const signals = descriptorSignals(cwd, descriptor.id, descriptor.triggerRules, pkg);
     if (signals.length === 0) continue;
     signals.sort((a, b) => a.localeCompare(b));
@@ -145,10 +153,11 @@ function descriptorSignals(
   pkg: Record<string, unknown> | undefined,
 ): string[] {
   const signals = triggerRuleSignals(cwd, triggerRules, pkg);
-  if (descriptorId === "frontend-react-shadcn") {
-    signals.push(...componentsJsonSignals(cwd), ...shadcnDependencySignals(cwd, pkg));
-  }
-  return signals;
+  if (descriptorId !== "frontend-react-shadcn") return signals;
+
+  const shadcnSignals = [...componentsJsonSignals(cwd), ...shadcnDependencySignals(cwd, pkg)];
+  if (shadcnSignals.length === 0) return [];
+  return [...signals, ...shadcnSignals];
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,12 +230,11 @@ function isRadixDep(dep: string): boolean {
 /** Whether any dependency key matches the given import pattern fragment. */
 function dependencyMatches(depKeys: string[], pattern: string): boolean {
   for (const dep of depKeys) {
+    if (dep === pattern || pattern.startsWith(`${dep}/`)) return true;
     if (pattern.includes("*")) {
       const regex = new RegExp(`^${escapeRegExp(pattern).replace(/\\\*/g, ".*")}$`);
       if (regex.test(dep)) return true;
-      continue;
     }
-    if (dep === pattern || dep.startsWith(`${pattern}/`) || dep.includes(pattern)) return true;
   }
   return false;
 }
@@ -257,7 +265,11 @@ function fallbackDefault(): HarnessSelection {
  * Mirrors the sort discipline from harness-config.ts `readConfigsFromDir`.
  */
 function sortedReaddir(dir: string): string[] {
-  return existsSync(dir) ? readdirSync(dir).sort((a, b) => a.localeCompare(b)) : [];
+  try {
+    return existsSync(dir) ? readdirSync(dir).sort((a, b) => a.localeCompare(b)) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -277,8 +289,8 @@ function readJsonSafe(path: string): Record<string, unknown> | undefined {
 
 /**
  * Check whether `cwd/src/components/ui/` contains any `.tsx` file, supporting
- * both flat (`checkbox.tsx`) and directory-module (`checkbox/index.tsx`) layouts
- * per Issue #48.
+ * both flat (`checkbox.tsx`) and directory-module (`checkbox/index.tsx` or
+ * `checkbox/checkbox.tsx`) layouts per Issue #48.
  */
 function hasSrcComponentsUiTsx(cwd: string): boolean {
   const uiDir = join(cwd, "src", "components", "ui");
@@ -287,7 +299,7 @@ function hasSrcComponentsUiTsx(cwd: string): boolean {
   for (const entry of entries) {
     const full = join(uiDir, entry);
     if (entry.endsWith(".tsx")) return true;
-    if (existsSync(join(full, "index.tsx"))) return true;
+    if (sortedReaddir(full).some((child) => child.endsWith(".tsx"))) return true;
   }
   return false;
 }

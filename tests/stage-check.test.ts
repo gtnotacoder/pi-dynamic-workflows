@@ -45,6 +45,35 @@ test("detectDefaultStageCheckCommands skips targeted Biome for README docs files
   }
 });
 
+test("detectDefaultStageCheckCommands includes Biome-supported framework files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stage-check-"));
+  try {
+    writeFileSync(join(dir, "package.json"), "{}");
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    writeFileSync(join(dir, "biome.json"), "{}");
+
+    for (const target of ["src/App.vue", "src/App.svelte", "src/App.astro"]) {
+      const commands = detectDefaultStageCheckCommands(dir, target);
+      assert.deepEqual(
+        commands.map((command) => command.name),
+        ["typescript", "biome"],
+        target,
+      );
+    }
+
+    for (const target of ["src/index.html", "src/icon.svg"]) {
+      const commands = detectDefaultStageCheckCommands(dir, target);
+      assert.deepEqual(
+        commands.map((command) => command.name),
+        ["typescript"],
+        target,
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("detectDefaultStageCheckCommands keeps repo-level Biome when no target file is provided", () => {
   const dir = mkdtempSync(join(tmpdir(), "stage-check-"));
   try {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { AgentUsage } from "../src/agent.js";
+import type { AgentRunOptions, AgentRunResult, WorkflowAgent } from "../src/agent.js";
 import { type HarnessConfigRegistry, parseHarnessConfigDescriptor } from "../src/harness-config.js";
 import { type HarnessSelection, serializeHarnessSelection } from "../src/harness-selector.js";
 import { loadHarnessSelection, type PersistedRunState } from "../src/run-persistence.js";
@@ -15,13 +15,29 @@ const oneAgentScript = `export const meta = { name: 'harness_runtime', descripti
 const result = await agent('do it', { label: 'worker' })
 return result`;
 
+const stageCheckScript = `export const meta = { name: 'harness_stage_check', description: 'harness stageCheck test' }
+const result = await stageCheck({ targetFile: 'packages/web/src/App.vue' })
+return result.summary`;
+
+const stageCheckDefaultTargetScript = `export const meta = { name: 'harness_stage_check_default', description: 'harness stageCheck default target test' }
+const result = await stageCheck({})
+return result.summary`;
+
+const stageCheckPackageLocalTargetScript = `export const meta = { name: 'harness_stage_check_local', description: 'harness stageCheck package-local target test' }
+const result = await stageCheck({ targetFile: 'src/App.vue' })
+return result.summary`;
+
+const stageCheckOutsidePackageTargetScript = `export const meta = { name: 'harness_stage_check_outside', description: 'harness stageCheck outside package target test' }
+const result = await stageCheck({ targetFile: 'packages/api/src/foo.ts' })
+return result.summary`;
+
 function tempCwd(): string {
   return mkdtempSync(join(tmpdir(), "harness-runtime-"));
 }
 
 function registryFromDescriptor(raw: Record<string, unknown>): HarnessConfigRegistry {
   const config = parseHarnessConfigDescriptor(JSON.stringify({ schemaVersion: 1, ...raw }), "project", "test.json");
-  assert.ok(config);
+  if (!config) throw new Error("test descriptor failed to parse");
   return new Map([[config.id, config]]);
 }
 
@@ -30,12 +46,15 @@ function countingAgent() {
   return {
     state,
     runner: {
-      async run(prompt: string, options?: { toolNames?: string[]; onUsage?: (usage: AgentUsage) => void }) {
+      async run<TSchemaDef extends import("typebox").TSchema | undefined = undefined>(
+        prompt: string,
+        options: AgentRunOptions<TSchemaDef> = {},
+      ): Promise<AgentRunResult<TSchemaDef>> {
         state.calls++;
-        state.toolNames = options?.toolNames;
-        return `ran:${prompt}`;
+        state.toolNames = options.toolNames;
+        return `ran:${prompt}` as AgentRunResult<TSchemaDef>;
       },
-    },
+    } satisfies Pick<WorkflowAgent, "run">,
   };
 }
 
@@ -83,6 +102,110 @@ test("non-pi harness types clean-skip without spawning agents", async () => {
       harness_config: "go-backend",
       reason: "Harness 'opencode' is not wired to the current runtime.",
     });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness_config-only explicit selection preserves the descriptor runtime", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    const result = await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_config: "go-backend",
+      harnessConfigRegistry: registryFromDescriptor({ id: "go-backend", harness_type: "opencode" }),
+    });
+
+    assert.equal(agent.state.calls, 0);
+    assert.equal(result.harnessSelection?.harness_type, "opencode");
+    assert.equal(result.harnessSelection?.harness_config, "go-backend");
+    assert.equal((result.result as { status?: string }).status, "harness-not-wired");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("explicit harness_type wins when supplied alongside harness_config", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    const result = await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_type: "hermes",
+      harness_config: "frontend-react-shadcn",
+      harnessConfigRegistry: registryFromDescriptor({ id: "frontend-react-shadcn", harness_type: "pi" }),
+    });
+
+    assert.equal(agent.state.calls, 0);
+    assert.equal(result.harnessSelection?.harness_type, "hermes");
+    assert.equal(result.harnessSelection?.harness_config, "frontend-react-shadcn");
+    assert.equal((result.result as { status?: string }).status, "harness-not-wired");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("explicit invalid harness_config clean-skips instead of running Pi defaults", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    const result = await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_config: "bad-runtime",
+      harnessConfigRegistry: registryFromDescriptor({ id: "bad-runtime", harness_type: "p1" }),
+    });
+
+    assert.equal(agent.state.calls, 0);
+    assert.equal(result.harnessSelection?.harness_config, "bad-runtime");
+    assert.equal((result.result as { status?: string }).status, "harness-not-wired");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("explicit pi harness_type can override an invalid descriptor runtime", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    const result = await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_type: "pi",
+      harness_config: "bad-runtime",
+      harnessConfigRegistry: registryFromDescriptor({ id: "bad-runtime", harness_type: "p1" }),
+    });
+
+    assert.equal(agent.state.calls, 1);
+    assert.equal(result.harnessSelection?.harness_type, "pi");
+    assert.equal(result.harnessSelection?.harness_config, "bad-runtime");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("--no-harness normalizes to a valid pi/none selection snapshot", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    const result = await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_type: "none",
+    });
+
+    assert.equal(agent.state.calls, 1);
+    assert.equal(result.harnessSelection?.harness_type, "pi");
+    assert.equal(result.harnessSelection?.harness_config, "none");
+    assert.equal(result.harnessSelection?.source, "explicit");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -155,6 +278,140 @@ test("harness_config changes invalidate cached agent results", async () => {
       resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
     });
     assert.equal(changed.state.calls, 1, "changed harness_config should miss the resume cache");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("expanded harness tool policy changes invalidate cached agent results", async () => {
+  const cwd = tempCwd();
+  try {
+    const journal: JournalEntry[] = [];
+    const first = countingAgent();
+    await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: first.runner,
+      persistLogs: false,
+      harness_config: "alpha",
+      harnessConfigRegistry: registryFromDescriptor({ id: "alpha", harness_type: "pi", tools: ["read"] }),
+      onAgentJournal: (entry) => journal.push(entry),
+    });
+    assert.equal(first.state.calls, 1);
+
+    const changedPolicy = countingAgent();
+    await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: changedPolicy.runner,
+      persistLogs: false,
+      harness_config: "alpha",
+      harnessConfigRegistry: registryFromDescriptor({ id: "alpha", harness_type: "pi", tools: ["read", "grep"] }),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+    });
+    assert.equal(changedPolicy.state.calls, 1, "changed harness tools should miss the resume cache");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness stageCheck defaults supply cwd and rebase root-relative targets when a call omits cwd", async () => {
+  const cwd = tempCwd();
+  const packageCwd = join(cwd, "packages", "web");
+  try {
+    const seen: string[] = [];
+    const result = await runWorkflow(stageCheckScript, {
+      cwd,
+      persistLogs: false,
+      harness_config: "web",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "web",
+        harness_type: "pi",
+        stageCheck: { cwd: "packages/web" },
+      }),
+      stageCheck: async (options) => {
+        seen.push(`${options.cwd ?? ""}:${options.targetFile ?? ""}`);
+        return { ok: true, checks: [], summary: "ok" };
+      },
+    });
+
+    assert.equal(result.result, "ok");
+    assert.deepEqual(seen, [`${packageCwd}:src/App.vue`]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness stageCheck defaults preserve descriptor targetFile", async () => {
+  const cwd = tempCwd();
+  const packageCwd = join(cwd, "packages", "web");
+  try {
+    const seen: string[] = [];
+    await runWorkflow(stageCheckDefaultTargetScript, {
+      cwd,
+      persistLogs: false,
+      harness_config: "web",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "web",
+        harness_type: "pi",
+        stageCheck: { cwd: "packages/web", targetFile: "packages/web/src/App.vue" },
+      }),
+      stageCheck: async (options) => {
+        seen.push(`${options.cwd ?? ""}:${options.targetFile ?? ""}`);
+        return { ok: true, checks: [], summary: "ok" };
+      },
+    });
+
+    assert.deepEqual(seen, [`${packageCwd}:src/App.vue`]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness stageCheck defaults keep package-local targetFile relative to the harness cwd", async () => {
+  const cwd = tempCwd();
+  const packageCwd = join(cwd, "packages", "web");
+  try {
+    const seen: string[] = [];
+    await runWorkflow(stageCheckPackageLocalTargetScript, {
+      cwd,
+      persistLogs: false,
+      harness_config: "web",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "web",
+        harness_type: "pi",
+        stageCheck: { cwd: "packages/web" },
+      }),
+      stageCheck: async (options) => {
+        seen.push(`${options.cwd ?? ""}:${options.targetFile ?? ""}`);
+        return { ok: true, checks: [], summary: "ok" };
+      },
+    });
+
+    assert.deepEqual(seen, [`${packageCwd}:src/App.vue`]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness stageCheck defaults fall back to project root for sibling package targets", async () => {
+  const cwd = tempCwd();
+  try {
+    const seen: string[] = [];
+    await runWorkflow(stageCheckOutsidePackageTargetScript, {
+      cwd,
+      persistLogs: false,
+      harness_config: "web",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "web",
+        harness_type: "pi",
+        stageCheck: { cwd: "apps/web" },
+      }),
+      stageCheck: async (options) => {
+        seen.push(`${options.cwd ?? ""}:${options.targetFile ?? ""}`);
+        return { ok: true, checks: [], summary: "ok" };
+      },
+    });
+
+    assert.deepEqual(seen, [`${cwd}:packages/api/src/foo.ts`]);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

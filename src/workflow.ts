@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
@@ -41,8 +43,10 @@ import {
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import {
   expandHarnessConfig,
+  HARNESS_TYPES,
   type HarnessConfigRegistry,
   type HarnessExpansion,
+  type HarnessType,
   harnessNotWiredSkip,
   loadHarnessConfigRegistry,
 } from "./harness-config.js";
@@ -475,25 +479,41 @@ export async function runWorkflow<T = unknown>(
   // observe a mid-run edit (determinism); a later resume re-reads it.
   const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
 
-  // Snapshot the harness selection ONCE per run so two agent() calls can't
-  // observe a mid-run detection change (determinism). On resume, reuse the
-  // persisted snapshot instead of re-detecting.
-  const harnessSelection: HarnessSelection = options.persistedRunState
-    ? (loadHarnessSelection(options.persistedRunState) ?? selectHarness(baseCwd))
-    : options.harness_type || options.harness_config
-      ? ({
-          harness_type: (options.harness_type as import("./harness-config.js").HarnessType) ?? "pi",
-          harness_config: options.harness_config ?? "none",
-          source: "explicit" as const,
-          detectorVersion: 1,
-        } satisfies HarnessSelection)
-      : selectHarness(baseCwd);
-
-  options.onHarnessSelection?.(harnessSelection);
-
   // Load the harness config registry ONCE per run, mirroring agentRegistry snapshot discipline.
   const harnessConfigRegistry: HarnessConfigRegistry =
     options.harnessConfigRegistry ?? loadHarnessConfigRegistry(baseCwd);
+
+  // Snapshot the harness selection ONCE per run so two agent() calls can't
+  // observe a mid-run detection change (determinism). On resume, reuse the
+  // persisted snapshot instead of re-detecting.
+  const explicitConfig = options.harness_config === "none" ? undefined : options.harness_config;
+  const explicitDescriptor = explicitConfig ? harnessConfigRegistry.get(explicitConfig) : undefined;
+  let explicitType: HarnessType = "pi";
+  if (options.harness_type !== undefined && options.harness_type !== "none") {
+    if ((HARNESS_TYPES as readonly string[]).includes(options.harness_type)) {
+      explicitType = options.harness_type as HarnessType;
+    } else if (explicitDescriptor) {
+      explicitType = explicitDescriptor.harness_type;
+    }
+  } else if (explicitDescriptor) {
+    explicitType = explicitDescriptor.harness_type;
+  }
+
+  let harnessSelection: HarnessSelection;
+  if (options.persistedRunState) {
+    harnessSelection = loadHarnessSelection(options.persistedRunState) ?? selectHarness(baseCwd);
+  } else if (options.harness_type || options.harness_config) {
+    harnessSelection = {
+      harness_type: explicitType,
+      harness_config: explicitConfig ?? "none",
+      source: "explicit" as const,
+      detectorVersion: 1,
+    } satisfies HarnessSelection;
+  } else {
+    harnessSelection = selectHarness(baseCwd);
+  }
+
+  options.onHarnessSelection?.(harnessSelection);
 
   // Initialize logger
   const logger = createWorkflowLogger({
@@ -517,8 +537,15 @@ export async function runWorkflow<T = unknown>(
   };
 
   // Expand the harness config into actionable overrides (context mode, tools, stageCheck defaults).
+  const persistedHarnessDescriptor = harnessConfigRegistry.get(harnessSelection.harness_config);
+  const expansionHarnessType =
+    options.persistedRunState && persistedHarnessDescriptor?.invalid
+      ? undefined
+      : options.persistedRunState || options.harness_type !== undefined
+        ? harnessSelection.harness_type
+        : undefined;
   const harnessExpansion: HarnessExpansion = expandHarnessConfig({
-    harness_type: harnessSelection.harness_type,
+    harness_type: expansionHarnessType,
     harness_config: harnessSelection.harness_config,
     registry: harnessConfigRegistry,
     readOnly: options.readOnly,
@@ -618,10 +645,43 @@ export async function runWorkflow<T = unknown>(
   const stageCheck = async (stageOptions: StageCheckOptions = {}): Promise<StageCheckResult> => {
     throwIfAborted();
     const input = stageOptions && typeof stageOptions === "object" ? stageOptions : {};
+    const stageCheckDefaults = harnessExpansion.stageCheckDefaults ?? {};
+    let defaultCwd = baseCwd;
+    if (typeof stageCheckDefaults.cwd === "string" && stageCheckDefaults.cwd.length > 0) {
+      defaultCwd = isAbsolute(stageCheckDefaults.cwd)
+        ? stageCheckDefaults.cwd
+        : resolve(baseCwd, stageCheckDefaults.cwd);
+    }
+    let effectiveCwd = input.cwd ?? defaultCwd;
+    const defaultTargetFile =
+      typeof stageCheckDefaults.targetFile === "string" ? stageCheckDefaults.targetFile : undefined;
+    let effectiveTargetFile = input.targetFile ?? defaultTargetFile;
+    if (input.cwd === undefined && defaultCwd !== baseCwd && typeof effectiveTargetFile === "string") {
+      if (isAbsolute(effectiveTargetFile)) {
+        const rebasedTarget = relative(defaultCwd, effectiveTargetFile);
+        if (rebasedTarget && !rebasedTarget.startsWith("..") && !isAbsolute(rebasedTarget)) {
+          effectiveTargetFile = rebasedTarget;
+        } else {
+          effectiveCwd = baseCwd;
+        }
+      } else {
+        const relativeDefaultCwd = relative(baseCwd, defaultCwd).replace(/\\/g, "/");
+        const normalizedTarget = effectiveTargetFile.replace(/\\/g, "/");
+        if (relativeDefaultCwd && normalizedTarget.startsWith(`${relativeDefaultCwd}/`)) {
+          effectiveTargetFile = normalizedTarget.slice(relativeDefaultCwd.length + 1);
+        } else if (
+          !existsSync(resolve(defaultCwd, normalizedTarget)) &&
+          (existsSync(resolve(baseCwd, normalizedTarget)) || isLikelyProjectRootRelativeStageTarget(normalizedTarget))
+        ) {
+          effectiveCwd = baseCwd;
+        }
+      }
+    }
     const result = await (options.stageCheck ?? runStageCheck)({
-      ...(harnessExpansion.stageCheckDefaults ?? {}),
+      ...stageCheckDefaults,
       ...input,
-      cwd: input.cwd ?? baseCwd,
+      cwd: effectiveCwd,
+      targetFile: effectiveTargetFile,
       signal: runSignal,
     });
     throwIfAborted();
@@ -818,14 +878,33 @@ export async function runWorkflow<T = unknown>(
     // today's hashes and still hit the resume cache. Any explicit/auto/frontmatter
     // selection is serialized in full, so a harness_type/harness_config change (or
     // a newly detected selection) busts every cached agent result on resume.
-    const harnessHashKey = harnessSelectionKey(harnessSelection.source === "default" ? undefined : harnessSelection);
+    const harnessSelectionHashKey = harnessSelectionKey(
+      harnessSelection.source === "default" ? undefined : harnessSelection,
+    );
+    const legacyNoHarnessSelectionHashKey =
+      options.harness_type === "none" &&
+      harnessSelection.source === "explicit" &&
+      harnessSelection.harness_config === "none"
+        ? '{"detectorVersion":1,"harness_config":"none","harness_type":"none","source":"explicit"}'
+        : null;
+    const harnessHashKey =
+      harnessSelectionHashKey === '"none"'
+        ? harnessSelectionHashKey
+        : JSON.stringify({
+            selection: harnessSelectionHashKey,
+            toolPolicy: {
+              tools: harnessExpansion.tools ?? null,
+              disallowedTools: harnessExpansion.disallowedTools ?? null,
+            },
+          });
+    const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(
       prompt,
       modelSpec,
       assignedPhase,
       hashAgentOptions,
       effectiveContextPolicy,
-      agentDefinitionKey(agentDef),
+      agentDefKey,
       ctx,
       harnessHashKey,
     );
@@ -835,11 +914,36 @@ export async function runWorkflow<T = unknown>(
       assignedPhase,
       hashAgentOptions,
       effectiveContextPolicy,
-      agentDefinitionKey(agentDef),
+      agentDefKey,
       ctx,
       harnessHashKey,
       { includeContextPolicy: false },
     );
+    const legacyNoHarnessCallHash = legacyNoHarnessSelectionHashKey
+      ? hashAgentCall(
+          prompt,
+          modelSpec,
+          assignedPhase,
+          hashAgentOptions,
+          effectiveContextPolicy,
+          agentDefKey,
+          ctx,
+          legacyNoHarnessSelectionHashKey,
+        )
+      : null;
+    const legacyNoHarnessNoContextCallHash = legacyNoHarnessSelectionHashKey
+      ? hashAgentCall(
+          prompt,
+          modelSpec,
+          assignedPhase,
+          hashAgentOptions,
+          effectiveContextPolicy,
+          agentDefKey,
+          ctx,
+          legacyNoHarnessSelectionHashKey,
+          { includeContextPolicy: false },
+        )
+      : null;
 
     const estimatedPromptTokens =
       estimateTokens(prompt) + estimateTokens(agentInstructions) + estimateTokens(roleSystemPrompt);
@@ -890,10 +994,11 @@ export async function runWorkflow<T = unknown>(
     const cached = options.resumeJournal?.get(callIndex);
     const legacyHashMatches =
       cached != null &&
-      cached.hash === legacyCallHash &&
+      (cached.hash === legacyCallHash || cached.hash === legacyNoHarnessNoContextCallHash) &&
       effectiveMaxContextTokens === undefined &&
       effectiveContextReserveTokens === undefined;
-    const hashMatches = cached != null && (cached.hash === callHash || legacyHashMatches);
+    const legacyNoHarnessHashMatches = cached != null && cached.hash === legacyNoHarnessCallHash;
+    const hashMatches = cached != null && (cached.hash === callHash || legacyHashMatches || legacyNoHarnessHashMatches);
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       const cachedModel = cached.model ?? displayModel;
@@ -1800,11 +1905,12 @@ function hashCheckpoint(promptText: string, options: CheckpointOptions): string 
 /**
  * Compute a stable hash for an agent() call, used as the resume cache key.
  *
- * @param harnessKey - Stable harness selection key (from harnessSelectionKey).
- *   When the selection is the default 'none' sentinel, this must reproduce
- *   the same string as older code that did not include harness information,
- *   so that changing the harness type or config busts every cached agent
- *   result on resume while default selections preserve existing hashes.
+ * @param harnessKey - Stable harness selection/expansion key. When the
+ *   selection is the default 'none' sentinel, this must reproduce the same
+ *   string as older code that did not include harness information, so that
+ *   changing the harness type, config, or expanded tool policy busts every
+ *   cached agent result on resume while default selections preserve existing
+ *   hashes.
  */
 function hashAgentCall(
   prompt: string,
@@ -1889,6 +1995,10 @@ function buildAgentInstructions(
 
 function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
   return schema === undefined && typeof result === "string" && result.trim().length === 0;
+}
+
+function isLikelyProjectRootRelativeStageTarget(targetFile: string): boolean {
+  return /^(apps|packages|services|libs)\//.test(targetFile);
 }
 
 function estimateTokens(value: unknown): number {
