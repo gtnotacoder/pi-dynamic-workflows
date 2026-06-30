@@ -330,6 +330,10 @@ export interface HarnessExpansion {
   disallowedTools?: string[];
   stageCheckDefaults?: Record<string, unknown>;
   agentOverrides?: Record<string, unknown>;
+  componentExtensions?: string[];
+  indexExtensions?: string[];
+  directoryModuleSelfFile?: boolean;
+  frontendPathTriggers?: string[];
 }
 
 /**
@@ -398,6 +402,11 @@ export function expandHarnessConfig(opts: {
     if (isRecord(raw.agentOverrides)) {
       result.agentOverrides = raw.agentOverrides as Record<string, unknown>;
     }
+
+    result.componentExtensions = stringArrayField(raw.componentExtensions);
+    result.indexExtensions = stringArrayField(raw.indexExtensions);
+    result.frontendPathTriggers = stringArrayField(raw.frontendPathTriggers);
+    result.directoryModuleSelfFile = raw.directoryModuleSelfFile === true;
   }
 
   return result;

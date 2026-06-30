@@ -206,3 +206,53 @@ test("guardCtxReadPath treats package build directories as package internals", (
   assert.equal(outcome.ok, false);
   assert.equal(outcome.kind, "packageInternal");
 });
+
+test("guardCtxReadPath resolves directory-module self-file over index barrel", () => {
+  const outcome = guardCtxReadPath("components/ui/checkbox.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["components/ui/"],
+  });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.kind, "frontendFallback");
+  assert.equal(outcome.normalizedPath, "components/ui/checkbox/checkbox.tsx");
+});
+
+test("guardCtxReadPath resolves index barrel when no self-file exists", () => {
+  const indexPath = join(cwd, "components/ui", "NoSelfFile", "index.ts");
+  const outcome = guardCtxReadPath("components/ui/NoSelfFile.tsx", {
+    cwd,
+    componentExtensions: [".tsx", ".jsx"],
+    indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+    directoryModuleSelfFile: true,
+    frontendPathTriggers: ["components/ui/"],
+    exists: (path) => path === indexPath,
+    realpath: (path) => path,
+    stat: () => ({ isDirectory: () => false, isFile: () => true }),
+  });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.kind, "frontendFallback");
+  assert.equal(outcome.normalizedPath, "components/ui/NoSelfFile/index.ts");
+});
+
+test("guardCtxReadPath skips frontend fallback when path is not under a trigger prefix", () => {
+  const outcome = guardCtxReadPath("components/Widget.tsx", {
+    cwd,
+    frontendPathTriggers: ["components/ui/"],
+  });
+
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.kind, "missing");
+});
+
+test("guardCtxReadPath default frontend fallback still resolves Button → Button/index.tsx", () => {
+  const outcome = guardCtxReadPath("components/Button.tsx", { cwd });
+
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.kind, "frontendFallback");
+  assert.equal(outcome.normalizedPath, "components/Button/index.tsx");
+});

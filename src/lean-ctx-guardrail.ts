@@ -32,6 +32,14 @@ export interface GuardCtxReadOptions {
   allowDirectory?: boolean;
   allowPackageInternals?: boolean;
   frontendExtensions?: readonly string[];
+  /** Component file extensions for frontend fallback (e.g. [".tsx", ".jsx"]). */
+  componentExtensions?: readonly string[];
+  /** Barrel/index file extensions (e.g. [".ts", ".tsx", ".js", ".jsx"]). */
+  indexExtensions?: readonly string[];
+  /** When true, emit dir/stem/stem.ext directory-module self-file candidates. */
+  directoryModuleSelfFile?: boolean;
+  /** Glob-ish path prefixes that gate frontend fallback (e.g. ["components/ui/"]). */
+  frontendPathTriggers?: readonly string[];
   /** Injectable filesystem hooks for tests. */
   exists?: (path: string) => boolean;
   stat?: (path: string) => Pick<Stats, "isDirectory" | "isFile">;
@@ -60,6 +68,10 @@ export function guardCtxReadPath(rawPath: string, opts: GuardCtxReadOptions): Ct
   const stat = opts.stat ?? defaultStatSync;
   const realpath = opts.realpath ?? defaultRealpathSync.native;
   const frontendExtensions = opts.frontendExtensions ?? FRONTEND_COMPONENT_EXTENSIONS;
+  const componentExtensions = opts.componentExtensions ?? frontendExtensions;
+  const indexExtensions = opts.indexExtensions ?? frontendExtensions;
+  const directoryModuleSelfFile = opts.directoryModuleSelfFile ?? false;
+  const frontendPathTriggers = opts.frontendPathTriggers;
 
   if (!pathText) return invalid("Path is empty.");
   if (pathText.startsWith("-")) return invalid(`Path looks like an option, not a file: ${pathText}`);
@@ -76,7 +88,10 @@ export function guardCtxReadPath(rawPath: string, opts: GuardCtxReadOptions): Ct
     const frontendFallback = frontendFallbackOutcome(
       pathText,
       opts.cwd,
-      frontendExtensions,
+      componentExtensions,
+      indexExtensions,
+      directoryModuleSelfFile,
+      frontendPathTriggers,
       exists,
       stat,
       realpath,
@@ -113,7 +128,7 @@ export function guardCtxReadPath(rawPath: string, opts: GuardCtxReadOptions): Ct
   if (stats.isDirectory()) {
     if (opts.allowDirectory)
       return ok("directory", normalized.normalizedPath, "Directory reads are explicitly allowed.");
-    const indexHint = firstExistingIndex(normalized.normalizedPath, opts.cwd, frontendExtensions, exists);
+    const indexHint = firstExistingIndex(normalized.normalizedPath, opts.cwd, indexExtensions, exists);
     return {
       ok: false,
       kind: "directory",
@@ -190,14 +205,29 @@ function packageInternalOutcome(normalizedPath: string, allowed: boolean): CtxRe
 function frontendFallbackOutcome(
   rawPath: string,
   cwd: string,
-  frontendExtensions: readonly string[],
+  componentExtensions: readonly string[],
+  indexExtensions: readonly string[],
+  directoryModuleSelfFile: boolean,
+  frontendPathTriggers: readonly string[] | undefined,
   exists: (path: string) => boolean,
   stat: (path: string) => Pick<Stats, "isDirectory" | "isFile">,
   realpath: (path: string) => string,
   allowPackageInternals: boolean,
 ): CtxReadGuardrailOutcome | undefined {
-  if (!looksLikeFrontendComponentPath(rawPath, frontendExtensions)) return undefined;
-  for (const candidate of generateFrontendFallbacks(rawPath, frontendExtensions)) {
+  if (!looksLikeFrontendComponentPath(rawPath, componentExtensions)) return undefined;
+  const normalizedPath = normalizeRelativePath(rawPath);
+  if (frontendPathTriggers && frontendPathTriggers.length > 0) {
+    const matched = frontendPathTriggers.some(
+      (trigger) => normalizedPath === trigger || normalizedPath.startsWith(trigger),
+    );
+    if (!matched) return undefined;
+  }
+  for (const candidate of generateFrontendFallbacks(
+    rawPath,
+    componentExtensions,
+    indexExtensions,
+    directoryModuleSelfFile,
+  )) {
     const normalized = normalizeWithinCwd(candidate, cwd);
     if (!isNormalizedPath(normalized)) continue;
     if (exists(normalized.absolutePath)) {
@@ -226,27 +256,44 @@ function frontendFallbackOutcome(
   return undefined;
 }
 
-function generateFrontendFallbacks(rawPath: string, frontendExtensions: readonly string[]): string[] {
+function generateFrontendFallbacks(
+  rawPath: string,
+  componentExtensions: readonly string[],
+  indexExtensions: readonly string[],
+  directoryModuleSelfFile: boolean,
+): string[] {
   const dir = dirname(rawPath);
   const ext = extname(rawPath);
   const stem = basename(rawPath, ext);
   const candidates: string[] = [];
-  for (const candidateExt of frontendExtensions) {
+
+  /* 1) Directory-module self-file: dir/stem/stem.ext (when opt-in) */
+  if (directoryModuleSelfFile) {
+    for (const candidateExt of componentExtensions) {
+      candidates.push(join(dir, stem, `${stem}${candidateExt}`));
+    }
+  }
+
+  /* 2) Barrel/index: dir/stem/index.ext */
+  for (const candidateExt of indexExtensions) {
     candidates.push(join(dir, stem, `index${candidateExt}`));
   }
-  for (const candidateExt of frontendExtensions) {
+
+  /* 3) Sibling variants: dir/stem.ext */
+  for (const candidateExt of componentExtensions) {
     candidates.push(join(dir, `${stem}${candidateExt}`));
   }
+
   return unique(candidates.filter((candidate) => normalizeRelativePath(candidate) !== normalizeRelativePath(rawPath)));
 }
 
 function firstExistingIndex(
   normalizedDirectory: string,
   cwd: string,
-  frontendExtensions: readonly string[],
+  indexExtensions: readonly string[],
   exists: (path: string) => boolean,
 ): string | undefined {
-  for (const extension of frontendExtensions) {
+  for (const extension of indexExtensions) {
     const candidate = normalizeRelativePath(join(normalizedDirectory, `index${extension}`));
     if (exists(resolve(cwd, candidate))) return candidate;
   }
