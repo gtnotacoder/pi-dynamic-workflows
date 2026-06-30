@@ -335,3 +335,103 @@ describe("extractHarnessConfigFlag", () => {
     assert.equal(rest, "harness_config=backend review");
   });
 });
+
+// ── expandHarnessConfig ──────────────────────────────────────────────────────
+
+describe("expandHarnessConfig", () => {
+  it("surfaces componentExtensions, indexExtensions, directoryModuleSelfFile, and frontendPathTriggers from a frontend-react-shadcn descriptor", () => {
+    const registry = new Map();
+    registry.set("frontend-react-shadcn", {
+      schemaVersion: 1,
+      id: "frontend-react-shadcn",
+      harness_type: "pi",
+      wired: true,
+      source: "project" as const,
+      raw: {
+        schemaVersion: 1,
+        id: "frontend-react-shadcn",
+        harness_type: "pi",
+        componentExtensions: [".tsx", ".jsx"],
+        indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+        directoryModuleSelfFile: true,
+        frontendPathTriggers: ["components/ui/"],
+      },
+    });
+
+    const result = expandHarnessConfig({
+      harness_config: "frontend-react-shadcn",
+      registry,
+    });
+
+    assert.deepStrictEqual(result.componentExtensions, [".tsx", ".jsx"]);
+    assert.deepStrictEqual(result.indexExtensions, [".ts", ".tsx", ".js", ".jsx"]);
+    assert.strictEqual(result.directoryModuleSelfFile, true);
+    assert.deepStrictEqual(result.frontendPathTriggers, ["components/ui/"]);
+  });
+
+  it("populates shadcn guardrail defaults for legacy frontend-react-shadcn descriptors", () => {
+    const registry = new Map();
+    registry.set("frontend-react-shadcn", {
+      schemaVersion: 1,
+      id: "frontend-react-shadcn",
+      harness_type: "pi",
+      wired: true,
+      source: "project" as const,
+      raw: {
+        schemaVersion: 1,
+        id: "frontend-react-shadcn",
+        harness_type: "pi",
+        triggerRules: { pathPrefixes: ["./components/ui/"] },
+      },
+    });
+
+    const result = expandHarnessConfig({
+      harness_config: "frontend-react-shadcn",
+      registry,
+    });
+
+    assert.deepStrictEqual(result.componentExtensions, [".tsx", ".jsx"]);
+    assert.deepStrictEqual(result.indexExtensions, [".ts", ".tsx", ".js", ".jsx"]);
+    assert.strictEqual(result.directoryModuleSelfFile, true);
+    assert.deepStrictEqual(result.frontendPathTriggers, ["./components/ui/"]);
+  });
+
+  it("does not enable guardrail fields by default for unrelated descriptors", () => {
+    const registry = new Map();
+    registry.set("backend-review", {
+      schemaVersion: 1,
+      id: "backend-review",
+      harness_type: "pi",
+      wired: true,
+      source: "project" as const,
+      raw: {
+        schemaVersion: 1,
+        id: "backend-review",
+        harness_type: "pi",
+        tools: ["read"],
+      },
+    });
+
+    const result = expandHarnessConfig({
+      harness_config: "backend-review",
+      registry,
+    });
+
+    assert.strictEqual(result.componentExtensions, undefined);
+    assert.strictEqual(result.indexExtensions, undefined);
+    assert.strictEqual(result.directoryModuleSelfFile, undefined);
+    assert.strictEqual(result.frontendPathTriggers, undefined);
+  });
+
+  it("'none' pass-through leaves the new fields undefined", () => {
+    const result = expandHarnessConfig({
+      harness_config: "none",
+      registry: new Map(),
+    });
+
+    assert.strictEqual(result.componentExtensions, undefined);
+    assert.strictEqual(result.indexExtensions, undefined);
+    assert.strictEqual(result.directoryModuleSelfFile, undefined);
+    assert.strictEqual(result.frontendPathTriggers, undefined);
+  });
+});

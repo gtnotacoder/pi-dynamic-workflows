@@ -330,6 +330,10 @@ export interface HarnessExpansion {
   disallowedTools?: string[];
   stageCheckDefaults?: Record<string, unknown>;
   agentOverrides?: Record<string, unknown>;
+  componentExtensions?: string[];
+  indexExtensions?: string[];
+  directoryModuleSelfFile?: boolean;
+  frontendPathTriggers?: string[];
 }
 
 /**
@@ -398,6 +402,21 @@ export function expandHarnessConfig(opts: {
     if (isRecord(raw.agentOverrides)) {
       result.agentOverrides = raw.agentOverrides as Record<string, unknown>;
     }
+
+    const shadcnDefaults = descriptor.id === "frontend-react-shadcn";
+    result.componentExtensions =
+      stringArrayField(raw.componentExtensions) ?? (shadcnDefaults ? [".tsx", ".jsx"] : undefined);
+    result.indexExtensions =
+      stringArrayField(raw.indexExtensions) ?? (shadcnDefaults ? [".ts", ".tsx", ".js", ".jsx"] : undefined);
+    result.frontendPathTriggers =
+      stringArrayField(raw.frontendPathTriggers) ??
+      (shadcnDefaults && isRecord(raw.triggerRules) ? stringArrayField(raw.triggerRules.pathPrefixes) : undefined);
+    result.directoryModuleSelfFile =
+      typeof raw.directoryModuleSelfFile === "boolean"
+        ? raw.directoryModuleSelfFile
+        : shadcnDefaults
+          ? true
+          : undefined;
   }
 
   return result;

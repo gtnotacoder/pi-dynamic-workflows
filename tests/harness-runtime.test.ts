@@ -42,7 +42,11 @@ function registryFromDescriptor(raw: Record<string, unknown>): HarnessConfigRegi
 }
 
 function countingAgent() {
-  const state = { calls: 0, toolNames: undefined as string[] | undefined };
+  const state = {
+    calls: 0,
+    toolNames: undefined as string[] | undefined,
+    ctxReadGuardrail: undefined as AgentRunOptions["ctxReadGuardrail"],
+  };
   return {
     state,
     runner: {
@@ -52,6 +56,7 @@ function countingAgent() {
       ): Promise<AgentRunResult<TSchemaDef>> {
         state.calls++;
         state.toolNames = options.toolNames;
+        state.ctxReadGuardrail = options.ctxReadGuardrail;
         return `ran:${prompt}` as AgentRunResult<TSchemaDef>;
       },
     } satisfies Pick<WorkflowAgent, "run">,
@@ -77,6 +82,65 @@ test("read-only harness expansion cannot add write tools", async () => {
 
     assert.equal(agent.state.calls, 1);
     assert.deepEqual(agent.state.toolNames, ["read"]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("harness guardrail expansion is passed into agent runtime options", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_config: "frontend-react-shadcn",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "frontend-react-shadcn",
+        harness_type: "pi",
+        componentExtensions: [".tsx", ".jsx"],
+        indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+        directoryModuleSelfFile: true,
+        frontendPathTriggers: ["components/ui/"],
+      }),
+    });
+
+    assert.equal(agent.state.calls, 1);
+    assert.deepEqual(agent.state.ctxReadGuardrail, {
+      componentExtensions: [".tsx", ".jsx"],
+      indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+      directoryModuleSelfFile: true,
+      frontendPathTriggers: ["components/ui/"],
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("legacy frontend-react-shadcn descriptors pass default guardrails into agent runtime options", async () => {
+  const cwd = tempCwd();
+  try {
+    const agent = countingAgent();
+    await runWorkflow(oneAgentScript, {
+      cwd,
+      agent: agent.runner,
+      persistLogs: false,
+      harness_config: "frontend-react-shadcn",
+      harnessConfigRegistry: registryFromDescriptor({
+        id: "frontend-react-shadcn",
+        harness_type: "pi",
+        triggerRules: { pathPrefixes: ["./components/ui/"] },
+      }),
+    });
+
+    assert.equal(agent.state.calls, 1);
+    assert.deepEqual(agent.state.ctxReadGuardrail, {
+      componentExtensions: [".tsx", ".jsx"],
+      indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+      directoryModuleSelfFile: true,
+      frontendPathTriggers: ["./components/ui/"],
+    });
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

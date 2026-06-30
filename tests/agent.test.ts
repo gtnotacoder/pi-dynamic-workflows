@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
+  applyCtxReadGuardrailToTools,
   buildContextWindowStatsForSession,
+  createGuardedReadOperations,
   listAvailableModelSpecs,
   resolveAgentModelSpec,
   WorkflowAgent,
@@ -19,6 +24,92 @@ type WorkflowAgentPrivates = {
   resolveModel(spec: string): unknown;
   resolveSettingsDefaultModel(settingsManager: SettingsManager): { provider?: string; id?: string } | undefined;
 };
+
+test("createGuardedReadOperations resolves missing flat shadcn paths through harness guardrail options", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-guardrail-"));
+  try {
+    const checkboxDir = join(cwd, "components", "ui", "checkbox");
+    mkdirSync(checkboxDir, { recursive: true });
+    const fallbackPath = join(checkboxDir, "checkbox.tsx");
+    writeFileSync(fallbackPath, "export function Checkbox() {}", "utf-8");
+
+    const operations = createGuardedReadOperations(cwd, {
+      componentExtensions: [".tsx", ".jsx"],
+      indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
+      directoryModuleSelfFile: true,
+      frontendPathTriggers: ["components/ui/"],
+    });
+    const missingFlatPath = resolve(cwd, "components/ui/checkbox.tsx");
+
+    await operations.access(missingFlatPath);
+    const content = await operations.readFile(missingFlatPath);
+
+    assert.equal(content.toString("utf-8"), "export function Checkbox() {}");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("createGuardedReadOperations rejects guardrail failures instead of reading through", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-guardrail-"));
+  try {
+    const internalDir = join(cwd, "node_modules", "pkg", "src");
+    mkdirSync(internalDir, { recursive: true });
+    const internalPath = join(internalDir, "private.ts");
+    writeFileSync(internalPath, "export const secret = true", "utf-8");
+
+    const operations = createGuardedReadOperations(cwd, {});
+
+    await assert.rejects(() => operations.readFile(internalPath), /Package internals are not enabled/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("createGuardedReadOperations clears stale fallback remaps when the original path appears", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-guardrail-"));
+  try {
+    const checkboxDir = join(cwd, "components", "ui", "checkbox");
+    mkdirSync(checkboxDir, { recursive: true });
+    const fallbackPath = join(checkboxDir, "checkbox.tsx");
+    const originalPath = resolve(cwd, "components/ui/checkbox.tsx");
+    writeFileSync(fallbackPath, "fallback", "utf-8");
+
+    const operations = createGuardedReadOperations(cwd, {
+      componentExtensions: [".tsx"],
+      indexExtensions: [".tsx"],
+      directoryModuleSelfFile: true,
+      frontendPathTriggers: ["components/ui/"],
+    });
+
+    await operations.access(originalPath);
+    assert.equal((await operations.readFile(originalPath)).toString("utf-8"), "fallback");
+
+    writeFileSync(originalPath, "original", "utf-8");
+    await operations.access(originalPath);
+
+    assert.equal((await operations.readFile(originalPath)).toString("utf-8"), "original");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("applyCtxReadGuardrailToTools only replaces read and preserves custom tools", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agent-guardrail-"));
+  try {
+    const readTool = { name: "read" } as any;
+    const webTool = { name: "web_search" } as any;
+
+    const tools = applyCtxReadGuardrailToTools([readTool, webTool], cwd, { componentExtensions: [".tsx"] });
+
+    assert.equal(tools.length, 2);
+    assert.equal(tools[0].name, "read");
+    assert.notEqual(tools[0], readTool);
+    assert.equal(tools[1], webTool);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("listAvailableModelSpecs returns an array (empty when no auth configured)", () => {
   const result = listAvailableModelSpecs();
