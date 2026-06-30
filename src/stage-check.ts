@@ -50,6 +50,7 @@ export interface StageCheckOptions {
 const DEFAULT_STAGE_CHECK_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
 const BIOME_TARGET_EXTENSIONS = new Set([
+  ".astro",
   ".cjs",
   ".css",
   ".cts",
@@ -61,8 +62,10 @@ const BIOME_TARGET_EXTENSIONS = new Set([
   ".jsx",
   ".mjs",
   ".mts",
+  ".svelte",
   ".ts",
   ".tsx",
+  ".vue",
 ]);
 
 /**

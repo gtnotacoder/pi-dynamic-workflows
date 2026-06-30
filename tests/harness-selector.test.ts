@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { selectHarness } from "../src/harness-selector.js";
+import { withFakeHome } from "./helpers/fake-home.js";
 
 const legacyDescriptor = JSON.stringify({
   schemaVersion: 1,
@@ -88,6 +89,23 @@ describe("selectHarness", () => {
     }
   });
 
+  it("detects frontend-react-shadcn for directory-module sibling TSX with an index.ts barrel", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
+    try {
+      writeJson(root, "package.json", JSON.stringify({ dependencies: { react: "^18", tailwindcss: "^3" } }));
+      writeFile(root, "src/components/ui/checkbox/checkbox.tsx", "export function Checkbox() {}");
+      writeFile(root, "src/components/ui/checkbox/index.ts", "export * from './checkbox'");
+      writeJson(join(root, ".pi/workflows/harnesses"), "frontend-react-shadcn.json", legacyDescriptor);
+
+      const result = selectHarness(root);
+      assert.equal(result.harness_config, "frontend-react-shadcn");
+      assert.equal(result.source, "auto");
+      assert.ok(result.signals?.includes("src/components/ui/**/*.tsx"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses descriptor trigger rules so rule-expressible harness_configs extend detection", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
     try {
@@ -104,7 +122,7 @@ describe("selectHarness", () => {
     }
   });
 
-  it("matches wildcard importPatterns from legacy descriptors", () => {
+  it("matches wildcard importPatterns from legacy descriptors only after shadcn shape is satisfied", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
     try {
       writeJson(
@@ -122,6 +140,53 @@ describe("selectHarness", () => {
     }
   });
 
+  it("does not select frontend-react-shadcn from a generic Radix dependency alone", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
+    try {
+      writeJson(root, "package.json", JSON.stringify({ dependencies: { "@radix-ui/react-slot": "^1" } }));
+      writeJson(join(root, ".pi/workflows/harnesses"), "frontend-react-shadcn.json", legacyDescriptor);
+
+      const result = selectHarness(root);
+      assert.equal(result.harness_config, "none");
+      assert.equal(result.source, "default");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("matches importPatterns on package boundaries instead of substrings", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
+    try {
+      writeJson(
+        join(root, ".pi/workflows/harnesses"),
+        "mui.json",
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "mui",
+          harness_type: "pi",
+          triggerRules: { importPatterns: ["@mui/material/Button"] },
+        }),
+      );
+      writeJson(
+        join(root, ".pi/workflows/harnesses"),
+        "react.json",
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "react-substring",
+          harness_type: "pi",
+          triggerRules: { importPatterns: ["react"] },
+        }),
+      );
+      writeJson(root, "package.json", JSON.stringify({ dependencies: { "@mui/material": "^6", preact: "^10" } }));
+
+      const result = selectHarness(root);
+      assert.equal(result.harness_config, "mui");
+      assert.deepEqual(result.signals, ["importPattern:@mui/material/Button"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns fallback for a plain repo with no descriptors", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
     try {
@@ -134,6 +199,26 @@ describe("selectHarness", () => {
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not read user harness descriptors by default during auto-selection", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-selector-"));
+    const fakeHome = mkdtempSync(join(tmpdir(), "harness-selector-home-"));
+    try {
+      writeShadcnFixtures(root);
+      writeFile(root, "src/components/ui/button.tsx", "export function Button() {}");
+      writeJson(join(fakeHome, ".pi/workflows/harnesses"), "frontend-react-shadcn.json", legacyDescriptor);
+
+      const result = withFakeHome(fakeHome, () => selectHarness(root));
+      assert.equal(result.harness_config, "none");
+      assert.equal(result.source, "default");
+
+      const explicitUser = selectHarness(root, { userDir: join(fakeHome, ".pi/workflows/harnesses") });
+      assert.equal(explicitUser.harness_config, "frontend-react-shadcn");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
     }
   });
 

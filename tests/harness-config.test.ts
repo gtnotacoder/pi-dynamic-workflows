@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  expandHarnessConfig,
   extractHarnessConfigFlag,
   extractHarnessTypeFlag,
   loadHarnessConfigRegistry,
@@ -65,6 +66,25 @@ describe("parseHarnessConfigDescriptor", () => {
   it("returns null for malformed or unsupported descriptors", () => {
     assert.equal(parseHarnessConfigDescriptor("not json", "project"), null);
     assert.equal(parseHarnessConfigDescriptor(JSON.stringify({ schemaVersion: 2, id: "x" }), "project"), null);
+  });
+
+  it("keeps unknown explicit harness runtimes invalid instead of treating them as wired pi", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "typo", harness_type: "p1" }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.id, "typo");
+    assert.equal(config.harness_type, "pi");
+    assert.equal(config.wired, false);
+    assert.equal(config.invalid, true);
+    assert.match(config.invalidReason ?? "", /Unknown harness_type 'p1'/);
+
+    const legacy = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "typo", harness: "future" }),
+      "project",
+    );
+    assert.ok(legacy?.invalid);
   });
 });
 
@@ -141,6 +161,7 @@ describe("renderHarnessConfigs / registerHarnessConfigsCommand", () => {
     assert.match(out, /harness_config/);
     assert.match(out, /harness_type/);
     assert.match(out, /frontend-react-shadcn/);
+    assert.match(out, /React shadcn\/ui Radix adversarial PR review/);
     assert.match(out, /pi, wired/);
     assert.match(out, /legacy:frontend\.radix-shadcn/);
   });
@@ -166,6 +187,20 @@ describe("renderHarnessConfigs / registerHarnessConfigsCommand", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("expandHarnessConfig", () => {
+  it("leaves omitted optional context booleans undefined so defaults can inherit", () => {
+    const config = parseHarnessConfigDescriptor(JSON.stringify({ schemaVersion: 1, id: "minimal" }), "project");
+    assert.ok(config);
+
+    const expanded = expandHarnessConfig({ harness_config: "minimal", registry: new Map([[config.id, config]]) });
+
+    assert.equal(expanded.contextMode, undefined);
+    assert.equal(expanded.inheritProjectContext, undefined);
+    assert.equal(expanded.inheritSkills, undefined);
+    assert.equal(expanded.inheritMainRules, undefined);
   });
 });
 
