@@ -75,7 +75,6 @@ return 'never'`;
         },
       },
       persistLogs: false,
-      // @ts-expect-error loopGuard is read structurally from options
       loopGuard: { action: "abort", maxConsecutive: 3 },
     }),
     /loop guard tripped/,

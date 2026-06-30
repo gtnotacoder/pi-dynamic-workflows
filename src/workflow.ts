@@ -158,6 +158,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   agentTimeoutMs?: number | null;
   /** Wall-clock timeout for the whole async workflow script. null means no hard timeout. */
   workflowTimeoutMs?: number | null;
+  /** Detect repeated identical agent() calls. Default is warn-only. */
+  loopGuard?: LoopGuardOptions;
   /** Whether to persist logs to disk. Default: true */
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
@@ -485,7 +487,7 @@ export async function runWorkflow<T = unknown>(
   const limiter = shared.limiter;
   // Per-run loop guard (a nested workflow() gets its own). Warn-only unless the
   // caller opts into { loopGuard: { action: "abort" } }.
-  const loopDetector = new LoopDetector((options as { loopGuard?: LoopGuardOptions }).loopGuard);
+  const loopDetector = new LoopDetector(options.loopGuard);
 
   const log = (message: string) => {
     const text = String(message);

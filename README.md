@@ -78,6 +78,7 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `agent(prompt, opts)` | Spawn one sub-agent. Returns its result (or `null` on recoverable failure). |
 | `parallel(thunks)` | Fan-out. **Pass functions, not promises:** `items.map(x => () => agent(...))`. Results in input order; recoverable failures become `null`. |
 | `pipeline(items, ...stages)` | Each item flows through stages sequentially; different items run concurrently. Stage gets `(prev, original, index)`. |
+| `dag(nodes)` | Dependency-aware fan-out. Nodes are `{ id, dependsOn?, run(deps) }`; dependency-ready nodes run in deterministic waves, failed nodes cascade-skip dependents, and independent branches continue. |
 | `phase(title)` | Group agents under a phase (matches `meta.phases`). Optional `{ budget }` sub-budget. |
 | `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
 | `args`, `runId` / `workflowRunId`, `cwd`, `budget` | Run inputs, current workflow run id, cwd, and `budget.remaining()` / `budget.total`. |
@@ -85,6 +86,22 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `stageCheck(opts)` | Host-side mechanical checks (TypeScript `tsc --noEmit` and Biome when detected) with zero LLM tokens. |
 | `compactFeedback(request)` / `renderCorrectionDelta(delta)` | Deterministically collapse retry feedback into a bounded, schema-validated Correction Delta for the next Worker turn. |
 | `checkpoint(prompt, opts)` | Human-in-the-loop yes/no gate — deterministic, journaled, replayable (resume-safe). Maps to `ctx.ui.confirm` in a UI run; headless runs use the declared `headless` default. |
+
+### Dependency-aware `dag()`
+
+Use `dag()` when work has real dependencies instead of a flat `parallel()` wave. Each node has a stable `id`, optional `dependsOn`, and a `run(deps)` thunk. The scheduler runs all currently-ready nodes in declaration order, waits for that wave to settle, then promotes the next wave. This preserves the stable `agent()` call sequence required for resume replay.
+
+```js
+const out = await dag([
+  { id: 'fetch', run: () => agent('Fetch raw data', { label: 'fetch', tier: 'small' }) },
+  { id: 'parse', dependsOn: ['fetch'], run: (deps) => agent(`Parse: ${deps.fetch}`, { label: 'parse' }) },
+  { id: 'report', dependsOn: ['parse'], run: (deps) => agent(`Report: ${deps.parse}`, { label: 'report', tier: 'big' }) },
+]);
+if (!out.ok) log(JSON.stringify({ status: out.status, errors: out.errors, skipped: out.skipped }));
+return out.results.report;
+```
+
+Invalid graphs (duplicate ids, missing dependencies, cycles) fail script validation. Ordinary node failures are contained: that node becomes `failed`, its dependents become `skipped`, and independent branches keep running. Run-level failures such as token-budget exhaustion, agent-limit exhaustion, or abort still stop the whole workflow.
 
 ### Quality helpers
 
@@ -98,6 +115,19 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 | `completenessCheck(taskArgs, results)` | "What's still missing?" critic. | `{ complete, missing[] }` |
 | `retry(thunk, {attempts=3, until})` | Bounded retry until `until(result)` is true. | last result |
 | `gate(thunk, validator, {attempts=3})` | Retry where the validator's `feedback` steers the next attempt. | `{ ok, value, attempts }` |
+
+### Run-level loop guard
+
+Repeated identical `agent()` calls are often a runaway script loop. The run-level `loopGuard` option detects repeated call identities (`phase` + `label` + `model` + `prompt`). It is **warn-only by default** so legitimate identical-prompt fan-out such as reviewer panels is not aborted. To hard-stop a runaway loop, pass for example:
+
+```jsonc
+{
+  "script": "export const meta = { name: '...', description: '...' }\n...",
+  "loopGuard": { "action": "abort", "maxConsecutive": 3 }
+}
+```
+
+Supported fields: `window`, `maxRepeats`, `maxConsecutive`, and `action: 'warn' | 'abort'`.
 
 ### `agent()` options
 

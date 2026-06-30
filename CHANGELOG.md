@@ -9,6 +9,8 @@ See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tra
 
 ### Added
 
+- Add the workflow authoring global `dag([{ id, dependsOn?, run }])` for dependency-aware fan-out. It runs dependency-ready nodes in deterministic waves for resume-safe `agent()` call ordering, validates duplicate/missing/cyclic dependencies, cascade-skips dependents of failed nodes, and lets independent branches continue.
+- Add a run-level `loopGuard` option that detects repeated identical `agent()` calls. The default is warn-only; `{ action: "abort" }` hard-stops runaway workflow loops.
 - `WorkflowSettings.defaultWorkflowTimeoutMs` (number | null) for a configurable run-wide wall-clock timeout default, normalized like `defaultAgentTimeoutMs` (`null` disables, positive finite numbers are retained, invalid/zero/negative values are dropped, absent keeps the runtime constant).
 - Thread the settings default through `WorkflowManager` (`WorkflowManagerOptions.defaultWorkflowTimeoutMs`), the `workflow` tool, saved slash-command execution, and `/workflows resume`. Effective timeout precedence per run: `exec.workflowTimeoutMs` → the run's captured/persisted value → the manager/settings default → `undefined` (runtime `DEFAULT_WORKFLOW_TIMEOUT_MS`). The effective value is persisted so resumed runs keep their original explicit/settings timeout; old persisted runs without the field keep using the runtime constant. (Closes #10, part 1)
 

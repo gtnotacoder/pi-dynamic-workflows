@@ -116,6 +116,8 @@ export interface ExecOptions {
   agentContextReserveTokens?: number | null;
   /** Default per-agent compaction posture for this execution. */
   compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
+  /** Detect repeated identical agent() calls. Default is warn-only. */
+  loopGuard?: WorkflowRunOptions["loopGuard"];
   /** Max concurrent agents for this execution. */
   concurrency?: number;
   /** Retry attempts after recoverable agent failures for this execution. */
@@ -502,6 +504,7 @@ export class WorkflowManager extends EventEmitter {
       agentMaxContextTokens,
       agentContextReserveTokens,
       compactionPolicy,
+      loopGuard,
       concurrency,
       agentRetries,
       tools,
@@ -564,6 +567,7 @@ export class WorkflowManager extends EventEmitter {
         agentMaxContextTokens: resolvedAgentMaxContextTokens,
         agentContextReserveTokens: resolvedAgentContextReserveTokens,
         compactionPolicy: resolvedCompactionPolicy,
+        loopGuard,
         confirm,
         contextMode,
         loadSavedWorkflow: this.loadSavedWorkflow,
