@@ -86,7 +86,7 @@ test("/issue-delivery uses WorkflowManager background path and prototype flag wh
       started = true;
       assert.match(script, /name: 'issue_delivery'/);
       assert.deepEqual(args, { task: "solve #12", prototype: true });
-      assert.deepEqual(exec, { contextMode: "scoped" });
+      assert.deepEqual(exec, { contextMode: "scoped", harness_type: undefined, harness_config: undefined });
       return { runId: "issue-run", promise: new Promise(() => {}) };
     },
     getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
@@ -117,7 +117,7 @@ test("/issue-delivery parses prototype dry-run guardrail options", async () => {
         baseBranch: "main",
         task: "implement #35",
       });
-      assert.deepEqual(exec, { contextMode: undefined });
+      assert.deepEqual(exec, { contextMode: undefined, harness_type: undefined, harness_config: undefined });
       return { runId: "issue-run", promise: new Promise(() => {}) };
     },
     getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
@@ -249,6 +249,88 @@ test("/adversarial-review evidence flag enables no-key evidence tools", async ()
 
   assert.equal(sent.length, 1);
   assert.match(notified.at(-1)?.message ?? "", /Reviewing with evidence/);
+});
+
+test("/issue-delivery strips harness flags (--mode, --harness-type, --harness-config) from task", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>, _exec: { contextMode?: string }) => {
+      seen.push(args);
+      return { runId: "issue-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx, notified } = makeNotifyCtx();
+  await issueDeliveryHandler("--mode isolated --harness-type pi --harness-config auto fix the parser", ctx);
+
+  assert.equal(
+    notified.some((n) => n.type === "error"),
+    false,
+    "handler should not error out (which would swallow assertion failures)",
+  );
+  assert.equal(seen.length, 1, "startInBackground should have been called exactly once");
+  assert.equal(seen[0].task, "fix the parser", "all harness flags must be stripped from task");
+});
+
+test("/issue-delivery strips --harness-config=value form from task", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>, _exec: { contextMode?: string }) => {
+      seen.push(args);
+      return { runId: "issue-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx, notified } = makeNotifyCtx();
+  await issueDeliveryHandler("--harness-config=auto --mode isolated fix the parser", ctx);
+
+  assert.equal(
+    notified.some((n) => n.type === "error"),
+    false,
+    "handler should not error out (which would swallow assertion failures)",
+  );
+  assert.equal(seen.length, 1, "startInBackground should have been called exactly once");
+  assert.equal(seen[0].task, "fix the parser", "key=value harness flag must be stripped from task");
+});
+
+test("/issue-delivery preserves key=value positional arg without leading --", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const manager = {
+    startInBackground: (_script: string, args: Record<string, unknown>, _exec: { contextMode?: string }) => {
+      seen.push(args);
+      return { runId: "issue-run", promise: new Promise(() => {}) };
+    },
+    getRun: (_runId: string) => ({ transcriptDir: "/tmp/issue-run/subagents" }),
+  };
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: manager as never });
+  const issueDeliveryHandler = commands.find((c) => c.name === "issue-delivery")?.handler;
+  assert.ok(issueDeliveryHandler, "issue-delivery handler should exist");
+
+  const { ctx, notified } = makeNotifyCtx();
+  await issueDeliveryHandler("--dry-run harness_config=auto fix the parser", ctx);
+
+  assert.equal(
+    notified.some((n) => n.type === "error"),
+    false,
+    "handler should not error out (which would swallow assertion failures)",
+  );
+  assert.equal(seen.length, 1, "startInBackground should have been called exactly once");
+  assert.equal(
+    seen[0].task,
+    "harness_config=auto fix the parser",
+    "positional key=value without -- must remain in task",
+  );
 });
 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {

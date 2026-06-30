@@ -128,6 +128,10 @@ export interface ExecOptions {
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
   /** Run-level default context posture for this execution (e.g. slash --mode). */
   contextMode?: string;
+  /** Tentative run-level harness runtime selector; inert until Issue D wires expansion. */
+  harness_type?: string;
+  /** Tentative run-level harness capability/config selector; inert until Issue D wires expansion. */
+  harness_config?: string;
   /**
    * Directory to persist each subagent's NDJSON transcript into for this run.
    * Overrides the manager's default (computed from the run id) when set.
@@ -510,6 +514,8 @@ export class WorkflowManager extends EventEmitter {
       tools,
       confirm,
       contextMode,
+      harness_type,
+      harness_config,
     } = exec;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     // Effective run-wide timeout precedence:
@@ -570,6 +576,8 @@ export class WorkflowManager extends EventEmitter {
         loopGuard,
         confirm,
         contextMode,
+        harness_type,
+        harness_config,
         loadSavedWorkflow: this.loadSavedWorkflow,
         transcriptDir: exec.transcriptDir ?? managed.transcriptDir,
         resumeJournal,

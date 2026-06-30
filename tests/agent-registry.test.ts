@@ -59,6 +59,29 @@ describe("parseAgentDefinition", () => {
     const def = parseAgentDefinition(md, "project", "x.md");
     assert.deepEqual(def?.tools, ["read", "write"]);
   });
+
+  it("parses harness_type and harness_config from frontmatter", () => {
+    const md = [
+      "---",
+      "name: harness-agent",
+      "harness_type: claude-code",
+      "harness_config: maxTokens=4096",
+      "---",
+      "Body text.",
+    ].join("\n");
+    const def = parseAgentDefinition(md, "project", "harness-agent.md");
+    assert.ok(def);
+    assert.equal(def.harness_type, "claude-code");
+    assert.equal(def.harness_config, "maxTokens=4096");
+  });
+
+  it("leaves harness_type and harness_config undefined when absent", () => {
+    const md = "---\nname: plain\n---\nBody";
+    const def = parseAgentDefinition(md, "project", "plain.md");
+    assert.ok(def);
+    assert.equal(def.harness_type, undefined);
+    assert.equal(def.harness_config, undefined);
+  });
 });
 
 // ── loadAgentRegistry (dir injection) ──────────────────────────────────────
@@ -163,6 +186,33 @@ describe("agentDefinitionKey", () => {
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, prompt: "p2" }));
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, model: "m2" }));
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, tools: ["read", "write"] }));
+  });
+  it("changes when harness_type or harness_config changes", () => {
+    const base: AgentDefinition = { name: "x", prompt: "p", source: "project" };
+    assert.notEqual(
+      agentDefinitionKey(base),
+      agentDefinitionKey({ ...base, harness_type: "claude-code" }),
+      "harness_type change invalidates the key",
+    );
+    assert.notEqual(
+      agentDefinitionKey(base),
+      agentDefinitionKey({ ...base, harness_config: "maxTokens=4096" }),
+      "harness_config change invalidates the key",
+    );
+  });
+  it("is stable when harness_type and harness_config are unchanged", () => {
+    const base: AgentDefinition = {
+      name: "x",
+      prompt: "p",
+      harness_type: "claude-code",
+      harness_config: "maxTokens=4096",
+      source: "project",
+    };
+    assert.equal(
+      agentDefinitionKey(base),
+      agentDefinitionKey({ ...base }),
+      "identical harness fields produce the same key",
+    );
   });
 });
 

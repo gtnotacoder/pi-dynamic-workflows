@@ -46,6 +46,10 @@ export interface AgentDefinition {
   inheritSkills?: boolean;
   /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
   inheritMainRules?: boolean;
+  /** Opaque harness selector, bound from the agentType `.md` (tentative, pending dev-system #230). */
+  harness_type?: string;
+  /** Opaque harness configuration string (tentative, pending dev-system #230). */
+  harness_config?: string;
   /** Where the definition was loaded from (project wins over user). */
   source: "project" | "user";
 }
@@ -105,6 +109,8 @@ export function parseAgentDefinition(
     systemPromptMode,
     inheritSkills: toBool(fm.inheritSkills),
     inheritMainRules: toBool(fm.inheritMainRules),
+    harness_type: typeof fm.harness_type === "string" ? fm.harness_type.trim() || undefined : undefined,
+    harness_config: typeof fm.harness_config === "string" ? fm.harness_config.trim() || undefined : undefined,
     source,
   };
 }
@@ -191,6 +197,8 @@ export function agentDefinitionKey(def: AgentDefinition | undefined): string | n
     systemPromptMode: def.systemPromptMode ?? null,
     inheritSkills: def.inheritSkills ?? null,
     inheritMainRules: def.inheritMainRules ?? null,
+    harness_type: def.harness_type ?? null,
+    harness_config: def.harness_config ?? null,
   });
 }
 

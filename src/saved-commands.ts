@@ -9,6 +9,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { extractHarnessConfigFlag, extractHarnessTypeFlag } from "./harness-config.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
 import { runWorkflow, type WorkflowRunOptions, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -16,14 +17,14 @@ import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
 /**
  * Build the command description for a saved workflow. The workflow's own
- * `description` is preserved when present; a concise `[--mode <name>]` hint is
- * appended so users discover the run-level context-mode flag — unless the
- * description already mentions `--mode` (or `contextMode`).
+ * `description` is preserved when present; a concise hint for the
+ * run-level flags (`--mode`, `--harness-type`, `--harness-config`) is
+ * appended unless the description already mentions `--mode` (or `contextMode`).
  */
 function describeSavedWorkflowCommand(wf: SavedWorkflow): string {
   const base = wf.description?.trim() || `Saved workflow: ${wf.name}`;
-  if (/--mode\b|contextMode/i.test(base)) return base;
-  return `${base} [--mode <name>]`;
+  if (/--mode\b|contextMode|--harness-type|--harness-config/i.test(base)) return base;
+  return `${base} [--mode <name>] [--harness-type <id>] [--harness-config <id>]`;
 }
 
 function isRegistered(pi: ExtensionAPI, name: string): boolean {
@@ -149,16 +150,16 @@ export function registerSavedWorkflow(
         ctx.ui.notify(`/${wf.name} was deleted — reload the session to remove this command.`, "warning");
         return;
       }
-      // Pull a run-level `--mode <name>` out of the args (e.g. `--mode isolated`)
-      // so e.g. `/my-flow --mode isolated` sets the LOWEST-precedence posture for
-      // every subagent in this run without editing any agentType `.md`. The
-      // remaining args (with the flag removed) are parsed as usual.
-      const { mode, rest } = extractModeFlag(args);
-      // Parse the remaining args (with `--mode` stripped) once and reuse for
-      // both the manager and inline execution paths. `mode=value` is still a
-      // normal saved-workflow argument; only `--mode` / `--mode=<name>` is
-      // reserved for run-level context.
-      const parsedArgs = parseCommandArgs(rest, wf.parameters);
+      // Pull run-level flags out of args so they do not collide with
+      // saved-workflow parameters (`key=value` without `--` is NOT a reserved
+      // flag — step-1 regexes enforce this). Reserved run-level flags:
+      // `--mode`, `--harness-type`, `--harness-config`, `--no-harness`.
+      const { mode, rest: restAfterMode } = extractModeFlag(args);
+      const { harnessType, rest: restAfterHarnessType } = extractHarnessTypeFlag(restAfterMode);
+      const { harnessConfig, rest: restAfterHarnessConfig } = extractHarnessConfigFlag(restAfterHarnessType);
+      // Parse the remaining args (with all run-level flags stripped) once and
+      // reuse for both the manager and inline execution paths.
+      const parsedArgs = parseCommandArgs(restAfterHarnessConfig, wf.parameters);
       const executionPolicy = savedWorkflowExecutionPolicy(cwd, wf, parsedArgs);
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
@@ -171,6 +172,8 @@ export function registerSavedWorkflow(
           // non-interactive instead of returning to an editing-capable Pi prompt.
           const { runId, promise } = manager.startInBackground(wf.script, parsedArgs, {
             contextMode: mode,
+            harness_type: harnessType,
+            harness_config: harnessConfig,
             tools: executionPolicy.tools,
           });
           const key = `wf:${wf.name}`;
@@ -192,6 +195,8 @@ export function registerSavedWorkflow(
           args: parsedArgs,
           tools: executionPolicy.tools,
           contextMode: mode,
+          harness_type: harnessType,
+          harness_config: harnessConfig,
           contextModeRegistry: buildRegistryForCwd(cwd),
           onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
         });

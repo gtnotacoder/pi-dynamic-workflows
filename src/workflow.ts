@@ -184,6 +184,10 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * every reviewer clean-room without editing any agent `.md`.
    */
   contextMode?: string;
+  /** Tentative run-level harness runtime selector (`--harness-type`); inert until Issue D wires expansion. */
+  harness_type?: string;
+  /** Tentative run-level harness capability/config selector (`--harness-config`); inert until Issue D wires expansion. */
+  harness_config?: string;
   inheritProjectContext?: boolean;
   systemPromptMode?: SystemPromptMode;
   inheritSkills?: boolean;
@@ -312,6 +316,10 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    * (runtime > frontmatter). Default `focused` (main-agent rules don't leak in).
    */
   contextMode?: string;
+  /** Tentative per-call harness runtime selector; inert until Issue D wires expansion. */
+  harness_type?: string;
+  /** Tentative per-call harness capability/config selector; inert until Issue D wires expansion. */
+  harness_config?: string;
   /** Load project AGENTS.md / context files into this subagent. Default true. */
   inheritProjectContext?: boolean;
   /** "append": base prompt + role-as-task (default); "replace": role IS the base system prompt. */
