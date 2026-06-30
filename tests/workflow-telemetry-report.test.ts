@@ -620,6 +620,89 @@ test("buildWorkflowTelemetryReport filters file compaction events before applyin
   }
 });
 
+test("buildWorkflowTelemetryReport reports cache impact around compaction boundaries", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "warm before compaction",
+      prompt: "a",
+      status: "done",
+      model: "meridian/claude-opus-4-8:high",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      id: 2,
+      label: "cold after compaction",
+      prompt: "b",
+      status: "done",
+      model: "meridian/claude-opus-4-8:high",
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "before",
+      result: "before",
+      label: "warm before compaction",
+      model: "meridian/claude-opus-4-8:high",
+      usage: { input: 2, output: 10, total: 100_012, cacheRead: 100_000, cacheWrite: 0, cost: 0.1 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      index: 1,
+      hash: "after",
+      result: "after",
+      label: "cold after compaction",
+      model: "meridian/claude-opus-4-8:high",
+      usage: { input: 100_000, output: 10, total: 100_010, cacheRead: 0, cacheWrite: 40_000, cost: 0.1 },
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      {
+        type: "compaction_result",
+        workflowRunId: "run-abc",
+        timestamp: "2026-06-27T00:01:30Z",
+        beforeTokens: 400_000,
+        afterTokens: 220_000,
+      },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.compactionEvents, 1);
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 1);
+  assert.equal(report.compactionCacheImpact.coldStartsAfterCompaction, 1);
+  assert.equal(report.compactionCacheImpact.cacheDropsAfterCompaction, 1);
+  assert.ok((report.compactionCacheImpact.maxDropPct ?? 0) < -0.99);
+  assert.equal(report.compactionCacheImpact.recent[0].afterAgentLabel, "cold after compaction");
+  assert.ok(report.anomalies.some((a) => a.kind === "compaction_cache_disruption"));
+
+  const rendered = renderWorkflowTelemetryReport(report);
+  assert.match(rendered, /Cache impact around compaction/);
+  assert.match(rendered, /cold starts after compaction: 1/);
+  assert.match(rendered, /warm before compaction/);
+});
+
+test("buildWorkflowTelemetryReport leaves compaction cache impact empty without timestamped adjacent samples", () => {
+  const report = buildWorkflowTelemetryReport({
+    runs: [sampleRun()],
+    compactionEvents: [{ type: "compaction_result", workflowRunId: "run-abc", beforeTokens: 10, afterTokens: 5 }],
+  });
+
+  assert.equal(report.compactionCacheImpact.compactionEvents, 1);
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 0);
+});
+
 test("buildWorkflowTelemetryReport returns no compaction events for an empty run selection", () => {
   const report = buildWorkflowTelemetryReport({
     runs: [],
