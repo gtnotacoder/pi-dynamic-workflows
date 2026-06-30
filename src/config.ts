@@ -78,3 +78,11 @@ export const WORKFLOW_SETTINGS_FILE = ".pi/workflows/settings.json";
  * collision. Each `*.md` file is an agent definition (frontmatter + body prompt).
  */
 export const AGENTS_DIR = ".pi/agents";
+
+/**
+ * Workflow harness descriptors directory. Resolved both project-relative
+ * (cwd/.pi/workflows/harnesses) and home-relative (~/.pi/workflows/harnesses);
+ * project entries win on id collision. Each `*.json` file is a harness config
+ * descriptor (schemaVersion 1).
+ */
+export const HARNESSES_DIR = ".pi/workflows/harnesses";

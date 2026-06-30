@@ -166,6 +166,61 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
 ---
 
+## Harness configs
+
+A **harness_config** is a JSON descriptor that declares how a workflow harness is configured. Descriptors live as `schemaVersion` 1 JSON files under:
+
+- **User-level:** `~/.pi/workflows/harnesses/`
+- **Project-level:** `.pi/workflows/harnesses/` (project wins over user)
+
+### Descriptor schema
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "frontend-react-shadcn",
+  "harness_type": "pi",
+  "trigger": "auto",
+  "displayName": "React + shadcn UI"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schemaVersion` | `number` | Must be `1`. Schema version for forwards compatibility. |
+| `id` | `string` | Unique identifier for the harness config. |
+| `harness_type` | `string` | Runtime axis — see [Runtime axis](#runtime-axis) below. |
+| `trigger` | `string` | Trigger mode summary (e.g. `"auto"`, `"manual"`). |
+| `displayName` | `string` | Human-readable label shown in listings. |
+
+### Runtime axis
+
+The `harness_type` field determines how the runtime treats the harness config. `pi` is wired; `opencode` and `hermes` are honest no-op placeholders for cross-platform descriptors:
+
+| `harness_type` | Behavior |
+|----------------|----------|
+| `pi` | **Wired** — the Pi runtime connects the harness config to live tooling and workflows. |
+| `opencode` | **Honest no-op placeholder** — recognized by the runtime but not wired; useful for cross-platform descriptors. |
+| `hermes` | **Honest no-op placeholder** — recognized by the runtime but not wired; useful for cross-platform descriptors. |
+
+### Legacy `harnessType` compatibility
+
+Legacy descriptors used a `harnessType` field with fully-qualified identifiers.
+A compatibility mapping normalizes the old `harnessType` to the canonical `id`:
+
+| Legacy `harnessType` | Canonical `id` |
+|---------------------|----------------|
+| `"frontend.radix-shadcn"` | `"frontend-react-shadcn"` |
+
+When a descriptor carries a legacy `harnessType`, the runtime resolves it to
+the canonical `id` above. New descriptors should use the `id` field directly.
+
+### `/harness-configs` command
+
+Run `/harness-configs` to list all harness configs with their id, harness_type, wired status, and trigger summary. The legacy `/profiles` command remains a deprecated compatibility alias; new documentation and user-facing text should use `harness_config` vocabulary.
+
+---
+
 ## Slash commands
 
 | Command | Usage | What it does |
@@ -177,6 +232,7 @@ Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 | `/issue-delivery` | `[--mode <name>] [--prototype] [--finish] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. `--finish` skips planning/worker steps and ships an already-repaired failed run. |
 | `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
+| `/harness-configs` | — | List harness configs: id, harness_type, wired status, and trigger summary — see [Harness configs](#harness-configs). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
 | `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
 | `/workflows-models` | — | View and edit model tiers (small/medium/big). |
