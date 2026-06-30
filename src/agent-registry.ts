@@ -23,6 +23,22 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { AGENTS_DIR } from "./config.js";
 import { isSystemPromptMode, type SystemPromptMode } from "./context-mode.js";
 
+/**
+ * Coding tools that mutate the workspace.
+ *
+ * Invariant (read-only fence): when `opts.readOnly` is passed to `applyToolPolicy`,
+ * every tool whose name appears here is unconditionally stripped — the fence is
+ * the last filter step, so an allowlist from `harness_config` or `agentType` can
+ * never re-grant a write tool on a read-only run.
+ *
+ * Canonical names come from `createCodingTools(cwd)` in the Pi SDK:
+ * `read`, `bash`, `edit`, `write` (plus `grep`, `find`, `ls` from allTools).
+ * Only `bash`, `edit`, `write` are workspace-mutating.
+ */
+export const WRITE_TOOL_NAMES: ReadonlySet<string> = Object.freeze(
+  new Set(["edit", "bash", "write"]) as ReadonlySet<string>,
+);
+
 export interface AgentDefinition {
   /** Stable identity used as the `agentType` value. */
   name: string;
@@ -165,10 +181,20 @@ export function resolveAgentType(name: string | undefined, registry: AgentRegist
 
 /**
  * Apply a definition's tool policy to a tool list: keep only allowlisted names
- * (when an allowlist is given), then drop any denylisted names. Generic over any
- * object with a `name` so it is unit-testable without real ToolDefinitions.
+ * (when an allowlist is given), then drop any denylisted names. When
+ * `opts.readOnly` is true, strip every write-capable tool as the final step —
+ * this fence is unconditional and applied AFTER allow/deny so a harness_config
+ * allowlist can never re-grant a write tool.
+ *
+ * Generic over any object with a `name` so it is unit-testable without real
+ * ToolDefinitions.
  */
-export function applyToolPolicy<T extends { name: string }>(tools: T[], allow?: string[], deny?: string[]): T[] {
+export function applyToolPolicy<T extends { name: string }>(
+  tools: T[],
+  allow?: string[],
+  deny?: string[],
+  opts?: { readOnly?: boolean },
+): T[] {
   let out = tools;
   if (allow?.length) {
     const allowSet = new Set(allow);
@@ -178,12 +204,20 @@ export function applyToolPolicy<T extends { name: string }>(tools: T[], allow?: 
     const denySet = new Set(deny);
     out = out.filter((t) => !denySet.has(t.name));
   }
+  /* Read-only fence: unconditional, applied LAST so no allowlist can bypass it. */
+  if (opts?.readOnly) {
+    out = out.filter((t) => !WRITE_TOOL_NAMES.has(t.name));
+  }
   return out;
 }
 
 /**
  * A stable identity string for a resolved definition, folded into the resume
  * call-hash so editing an agent `.md` invalidates that call's cached result.
+ *
+ * Already includes `harness_type` and `harness_config` fields (part of the
+ * per-call identity hash). The top-level harness selection hash that keys the
+ * workflow run lives in `workflow.ts` (`resolveHarnessSelection`).
  */
 export function agentDefinitionKey(def: AgentDefinition | undefined): string | null {
   if (!def) return null;

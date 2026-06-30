@@ -1,8 +1,12 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HARNESSES_DIR } from "./config.js";
-import type { HarnessConfigRegistry, HarnessType } from "./harness-config.js";
-import { loadHarnessConfigRegistry } from "./harness-config.js";
+import {
+  HARNESS_TYPES,
+  type HarnessConfigRegistry,
+  type HarnessType,
+  loadHarnessConfigRegistry,
+} from "./harness-config.js";
 
 /**
  * Result of deterministic harness selection.
@@ -47,6 +51,87 @@ export function selectHarness(
   }
 
   return fallbackDefault();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Serialization / round-trip helpers                                 */
+/* ------------------------------------------------------------------ */
+
+const VALID_SOURCES = ["explicit", "auto", "default", "frontmatter", "runtime"] as const;
+
+type ValidSource = (typeof VALID_SOURCES)[number];
+
+/**
+ * Produce a canonical, key-sorted JSON string for a `HarnessSelection`.
+ * The `signals` array (if present) is sorted before serialization so that
+ * equal selections always produce the same string across runs.
+ */
+export function serializeHarnessSelection(sel: HarnessSelection): string {
+  const clone: Record<string, unknown> = {
+    detectorVersion: sel.detectorVersion,
+    harness_config: sel.harness_config,
+    harness_type: sel.harness_type,
+    source: sel.source,
+  };
+  if (sel.signals !== undefined) {
+    clone.signals = [...sel.signals].sort((a, b) => a.localeCompare(b));
+  }
+  return JSON.stringify(clone, Object.keys(clone).sort(), 0);
+}
+
+/**
+ * Return a hashable key for an optional `HarnessSelection`.
+ * Used in resume call-hash computation — returns a fixed sentinel when
+ * the selection is `undefined`.
+ */
+export function harnessSelectionKey(sel: HarnessSelection | undefined): string {
+  return sel !== undefined ? serializeHarnessSelection(sel) : '"none"';
+}
+
+/**
+ * Validate a persisted/plain object back into a `HarnessSelection`.
+ *
+ * Guards:
+ *  - `harness_type` against the canonical `HARNESS_TYPES` set.
+ *  - `source` against the known source literals (including "runtime").
+ *  - `detectorVersion` defaults to `1`.
+ *  - `signals` must be a string array (if present).
+ *
+ * Returns `undefined` on malformed input so callers fall back to
+ * a fresh `selectHarness()` call.
+ */
+export function parseHarnessSelection(raw: unknown): HarnessSelection | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const harnessType: HarnessType | undefined =
+    typeof obj.harness_type === "string" && (HARNESS_TYPES as readonly string[]).includes(obj.harness_type)
+      ? (obj.harness_type as HarnessType)
+      : undefined;
+  if (harnessType === undefined) return undefined;
+
+  const harnessConfig = typeof obj.harness_config === "string" ? obj.harness_config : undefined;
+  if (harnessConfig === undefined) return undefined;
+
+  const source: ValidSource | undefined =
+    typeof obj.source === "string" && VALID_SOURCES.includes(obj.source as ValidSource)
+      ? (obj.source as ValidSource)
+      : undefined;
+  if (source === undefined) return undefined;
+
+  const signals: string[] | undefined = Array.isArray(obj.signals)
+    ? obj.signals.filter((s): s is string => typeof s === "string")
+    : undefined;
+
+  return {
+    harness_type: harnessType,
+    harness_config: harnessConfig,
+    source,
+    signals,
+    detectorVersion: 1,
+  };
 }
 
 /* ------------------------------------------------------------------ */

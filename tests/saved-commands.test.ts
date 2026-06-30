@@ -291,7 +291,7 @@ describe("registerSavedWorkflow", () => {
       registerSavedWorkflow(pi, "/cwd", wf);
       const { ctx } = makeNotifyCtx();
       await withFakeHomeAsync(fakeHome, async () => {
-        await commands[0].handler("--harness-type opencode review the auth module", ctx);
+        await commands[0].handler("--harness-type pi review the auth module", ctx);
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });

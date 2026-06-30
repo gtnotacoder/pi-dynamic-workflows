@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { WRITE_TOOL_NAMES } from "./agent-registry.js";
 import { HARNESSES_DIR } from "./config.js";
 
 export const HARNESS_TYPES = ["pi", "opencode", "hermes"] as const;
@@ -51,6 +52,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArrayField(value: unknown): string[] | undefined {
+  if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string")) {
+    return value;
+  }
+  return undefined;
 }
 
 function isHarnessType(value: unknown): value is HarnessType {
@@ -280,6 +288,129 @@ export function resolveHarnessLayers(layers: ReadonlyArray<HarnessOverrides | un
     if (layer.harness_config !== undefined) harness_config = layer.harness_config;
   }
   return { harness_type, harness_config };
+}
+
+// ---------------------------------------------------------------------------
+// Expansion layer: resolved harness_config → concrete runWorkflow overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure expansion of a resolved harness_config into concrete runWorkflow
+ * override fields. Callers may merge this into the `agent()` call options
+ * before scheduling work.
+ */
+export interface HarnessExpansion {
+  harness_type: HarnessType;
+  harness_config: string;
+  wired: boolean;
+  contextMode?: string;
+  inheritProjectContext?: boolean;
+  inheritSkills?: boolean;
+  inheritMainRules?: boolean;
+  systemPromptMode?: string;
+  tools?: string[];
+  disallowedTools?: string[];
+  stageCheckDefaults?: Record<string, unknown>;
+  agentOverrides?: Record<string, unknown>;
+}
+
+/**
+ * Expand a resolved harness_config (from the registry) into a concrete
+ * `HarnessExpansion` with all agent/context/tool/stageCheck overrides
+ * derived from the descriptor's raw payload.
+ *
+ * Pure — reads only the passed registry. When `readOnly` is true the
+ * returned `tools` array will not include known write tool names. The
+ * `applyToolPolicy` read-only fence also strips write tools as a final guard.
+ */
+export function expandHarnessConfig(opts: {
+  harness_type?: string;
+  harness_config?: string;
+  registry: HarnessConfigRegistry;
+  readOnly?: boolean;
+}): HarnessExpansion {
+  const { harness_type, harness_config, registry, readOnly } = opts;
+
+  // "none" / missing harness_config ⇒ pass-through with defaults
+  if (!harness_config || harness_config === "none") {
+    const resolvedType = isHarnessType(harness_type) ? harness_type : "pi";
+    return {
+      harness_type: resolvedType,
+      harness_config: "none",
+      wired: HARNESS_RUNTIME_INFO[resolvedType].wired,
+    };
+  }
+
+  const descriptor = registry.get(harness_config);
+  if (!descriptor) {
+    // Unknown id: fall back to pi defaults
+    return {
+      harness_type: isHarnessType(harness_type) ? harness_type : "pi",
+      harness_config,
+      wired: HARNESS_RUNTIME_INFO[isHarnessType(harness_type) ? harness_type : "pi"].wired,
+    };
+  }
+
+  const type: HarnessType = descriptor.harness_type;
+  const raw = descriptor.raw;
+
+  const result: HarnessExpansion = {
+    harness_type: type,
+    harness_config,
+    wired: HARNESS_RUNTIME_INFO[type].wired,
+  };
+
+  // Optional override fields from raw
+  if (isRecord(raw)) {
+    result.contextMode = stringField(raw.contextMode);
+    result.inheritProjectContext = raw.inheritProjectContext === true;
+    result.inheritSkills = raw.inheritSkills === true;
+    result.inheritMainRules = raw.inheritMainRules === true;
+    result.systemPromptMode = stringField(raw.systemPromptMode);
+
+    const tools = stringArrayField(raw.tools);
+    const disallowedTools = stringArrayField(raw.disallowedTools);
+
+    result.tools = readOnly ? tools?.filter((tool) => !WRITE_TOOL_NAMES.has(tool)) : tools;
+    result.disallowedTools = disallowedTools;
+
+    if (isRecord(raw.stageCheck)) {
+      result.stageCheckDefaults = raw.stageCheck as Record<string, unknown>;
+    }
+    if (isRecord(raw.agentOverrides)) {
+      result.agentOverrides = raw.agentOverrides as Record<string, unknown>;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Check whether a given harness_type is wired (connected to the Pi
+ * runtime). Unknown types are treated as not wired.
+ */
+export function isHarnessWired(harness_type?: string): boolean {
+  const type = isHarnessType(harness_type) ? harness_type : undefined;
+  return type !== undefined ? HARNESS_RUNTIME_INFO[type].wired : false;
+}
+
+/**
+ * Produce a structured clean-skip payload so callers can short-circuit
+ * when the active harness is not wired.
+ */
+export function harnessNotWiredSkip(selection: { harness_type?: string; harness_config?: string; reason?: string }): {
+  status: "harness-not-wired";
+  harness_type: string;
+  harness_config: string;
+  reason: string;
+} {
+  const type = selection.harness_type ?? "pi";
+  return {
+    status: "harness-not-wired" as const,
+    harness_type: type,
+    harness_config: selection.harness_config ?? "none",
+    reason: selection.reason ?? `Harness '${type}' is not wired to the current runtime.`,
+  };
 }
 
 /**
