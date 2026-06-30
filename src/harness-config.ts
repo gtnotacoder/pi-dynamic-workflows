@@ -63,6 +63,10 @@ function stringArrayField(value: unknown): string[] | undefined {
   return undefined;
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
 function booleanField(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
@@ -408,9 +412,12 @@ export function expandHarnessConfig(opts: {
       stringArrayField(raw.componentExtensions) ?? (shadcnDefaults ? [".tsx", ".jsx"] : undefined);
     result.indexExtensions =
       stringArrayField(raw.indexExtensions) ?? (shadcnDefaults ? [".ts", ".tsx", ".js", ".jsx"] : undefined);
+    const legacyShadcnTriggers = isRecord(raw.triggerRules)
+      ? (stringArrayField(raw.triggerRules.pathPrefixes) ?? [])
+      : [];
     result.frontendPathTriggers =
       stringArrayField(raw.frontendPathTriggers) ??
-      (shadcnDefaults && isRecord(raw.triggerRules) ? stringArrayField(raw.triggerRules.pathPrefixes) : undefined);
+      (shadcnDefaults ? uniqueStrings([...legacyShadcnTriggers, "components/ui/", "src/components/ui/"]) : undefined);
     result.directoryModuleSelfFile =
       typeof raw.directoryModuleSelfFile === "boolean"
         ? raw.directoryModuleSelfFile

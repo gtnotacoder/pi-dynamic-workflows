@@ -395,13 +395,12 @@ export function createGuardedReadOperations(cwd: string, guardrail: WorkflowCtxR
     remappedPaths.get(absolutePath) ?? resolveGuardedReadPath(cwd, absolutePath, guardrail);
   return {
     async access(absolutePath: string): Promise<void> {
-      try {
-        await fsAccess(absolutePath);
+      const guardedPath = resolveGuardedReadPath(cwd, absolutePath, guardrail);
+      await fsAccess(guardedPath);
+      if (guardedPath === absolutePath) {
         remappedPaths.delete(absolutePath);
-      } catch {
-        const fallbackPath = resolveGuardedReadPath(cwd, absolutePath, guardrail);
-        await fsAccess(fallbackPath);
-        remappedPaths.set(absolutePath, fallbackPath);
+      } else {
+        remappedPaths.set(absolutePath, guardedPath);
       }
     },
     async readFile(absolutePath: string): Promise<Buffer> {

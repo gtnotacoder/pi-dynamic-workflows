@@ -139,7 +139,7 @@ test("legacy frontend-react-shadcn descriptors pass default guardrails into agen
       componentExtensions: [".tsx", ".jsx"],
       indexExtensions: [".ts", ".tsx", ".js", ".jsx"],
       directoryModuleSelfFile: true,
-      frontendPathTriggers: ["./components/ui/"],
+      frontendPathTriggers: ["./components/ui/", "components/ui/", "src/components/ui/"],
     });
   } finally {
     rmSync(cwd, { recursive: true, force: true });

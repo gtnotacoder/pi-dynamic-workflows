@@ -60,6 +60,7 @@ test("createGuardedReadOperations rejects guardrail failures instead of reading 
 
     const operations = createGuardedReadOperations(cwd, {});
 
+    await assert.rejects(() => operations.access(internalPath), /Package internals are not enabled/);
     await assert.rejects(() => operations.readFile(internalPath), /Package internals are not enabled/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
