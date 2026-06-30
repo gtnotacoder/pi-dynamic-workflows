@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -379,6 +380,8 @@ export interface CheckpointOptions {
   /** Per-checkpoint timeout in ms for the interactive prompt. */
   timeoutMs?: number;
 }
+
+const dagNodeScope = new AsyncLocalStorage<boolean>();
 
 interface RuntimeState {
   currentPhase?: string;
@@ -857,12 +860,14 @@ export async function runWorkflow<T = unknown>(
     const agentCallId = `${runId}:${callIndex}`;
     // Loop guard: catch a script issuing the same agent() call over and over (a
     // runaway while / loopUntilDry that silently burns budget). Keyed on the call
-    // identity (phase | label | model | prompt). Warn-only by default so genuine
+    // identity (phase | label | resolved model | prompt). Warn-only by default so genuine
     // identical-prompt fan-out (verify / judgePanel reviewers) is never aborted;
     // opt into { loopGuard: { action: "abort" } } to hard-stop. Never touches
     // resume state, so replays stay deterministic.
+    const loopRouteModel = displayModel ?? "";
+    const loopRouteTier = explicitModel ? "" : (effectiveTier ?? "");
     const loopVerdict = loopDetector.record(
-      `${assignedPhase ?? ""}\u0000${requestedLabel ?? ""}\u0000${modelSpec ?? ""}\u0000${prompt}`,
+      `${assignedPhase ?? ""}\u0000${requestedLabel ?? ""}\u0000${loopRouteModel}\u0000${loopRouteTier}\u0000${prompt}`,
     );
     if (loopVerdict.looping) {
       log(`[warn] possible loop: ${loopVerdict.reason} — agent "${requestedLabel ?? "agent"}"`);
@@ -1320,6 +1325,7 @@ export async function runWorkflow<T = unknown>(
               log(
                 `agent "${label}" exhausted ${maxAttempts} attempt${maxAttempts === 1 ? "" : "s"}: ${workflowError.code} ${workflowError.message}`,
               );
+              if (dagNodeScope.getStore() === true) throw workflowError;
               return null;
             }
             throw workflowError;
@@ -1346,22 +1352,29 @@ export async function runWorkflow<T = unknown>(
         { recoverable: false },
       );
     }
-    return Promise.all(
-      thunks.map(async (thunk, index) => {
+    const settled = await Promise.all(
+      thunks.map(async (thunk, index): Promise<{ ok: true; value: unknown } | { ok: false; error: WorkflowError }> => {
         try {
-          return await thunk();
+          return { ok: true, value: await thunk() };
         } catch (error) {
           if (runSignal.aborted) throw error;
           const workflowError = wrapError(error);
           // Non-recoverable failures (token budget / agent limit exhausted) must
           // halt the whole run, exactly like a directly-awaited agent() — not be
-          // swallowed into a null in the result array.
+          // swallowed into a null in the result array. Inside dag() nodes, even
+          // recoverable helper failures should fail the node so dependents skip.
           if (!workflowError.recoverable) throw workflowError;
+          if (dagNodeScope.getStore() === true && workflowError.agentLabel) {
+            return { ok: false, error: workflowError };
+          }
           log(`parallel[${index}] failed: ${workflowError.message}`);
-          return null;
+          return { ok: true, value: null };
         }
       }),
     );
+    const failure = settled.find((entry): entry is { ok: false; error: WorkflowError } => !entry.ok);
+    if (failure) throw failure.error;
+    return settled.map((entry) => (entry.ok ? entry.value : undefined));
   };
 
   const pipeline = async (
@@ -1380,8 +1393,8 @@ export async function runWorkflow<T = unknown>(
         { recoverable: false },
       );
     }
-    return Promise.all(
-      items.map(async (item, index) => {
+    const settled = await Promise.all(
+      items.map(async (item, index): Promise<{ ok: true; value: unknown } | { ok: false; error: WorkflowError }> => {
         let value: unknown = item;
         for (const stage of stages) {
           try {
@@ -1391,22 +1404,29 @@ export async function runWorkflow<T = unknown>(
           } catch (error) {
             if (runSignal.aborted) throw error;
             const workflowError = wrapError(error);
-            // Non-recoverable failures halt the whole run (see parallel()).
+            // Non-recoverable failures halt the whole run (see parallel()). Inside
+            // dag() nodes, recoverable helper failures fail the node after sibling
+            // item promises settle instead of becoming successful null data.
             if (!workflowError.recoverable) throw workflowError;
+            if (dagNodeScope.getStore() === true && workflowError.agentLabel)
+              return { ok: false, error: workflowError };
             log(`pipeline[${index}] failed: ${workflowError.message}`);
-            return null;
+            return { ok: true, value: null };
           }
         }
-        return value;
+        return { ok: true, value };
       }),
     );
+    const failure = settled.find((entry): entry is { ok: false; error: WorkflowError } => !entry.ok);
+    if (failure) throw failure.error;
+    return settled.map((entry) => (entry.ok ? entry.value : undefined));
   };
 
   // Dependency-aware DAG: run nodes in deterministic waves honoring `dependsOn`,
   // cascade-skipping the dependents of any failed node so a dead upstream never
-  // hangs the wave. Built on the same limiter / callSeq machinery as
-  // agent()/parallel() (node.run() calls agent(), which the limiter gates), and
-  // waves run in stable declaration order, so concurrency caps and resume hold.
+  // hangs the wave. Wave nodes execute in stable declaration order (rather than
+  // Promise completion order) so agent() callSeq remains deterministic even when
+  // a node awaits before calling agent(). Agent calls still use the shared limiter.
   const dag = async (nodes: Array<DagNode<unknown>>) => {
     throwIfAborted();
     if (!Array.isArray(nodes)) throw new TypeError("dag() expects an array of { id, dependsOn?, run } nodes");
@@ -1418,31 +1438,26 @@ export async function runWorkflow<T = unknown>(
       );
     }
     try {
-      return await runDag(nodes, (batch) =>
-        Promise.all(
-          batch.map(async ({ node, deps }): Promise<WaveResult<unknown>> => {
-            try {
-              throwIfAborted();
-              const value = await node.run(deps);
-              throwIfAborted();
-              return { id: node.id, ok: true, value };
-            } catch (error) {
-              // Fatal, run-level failures (budget / agent-limit / abort) halt the
-              // whole run like parallel()/pipeline(). Any other node error is
-              // contained: the node fails and its dependents cascade-skip.
-              const workflowError = wrapError(error);
-              const fatal =
-                runSignal.aborted ||
-                workflowError.code === WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED ||
-                workflowError.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED ||
-                workflowError.code === WorkflowErrorCode.WORKFLOW_ABORTED;
-              if (fatal) throw workflowError;
-              log(`dag["${node.id}"] failed: ${workflowError.message}`);
-              return { id: node.id, ok: false, error: workflowError.message };
-            }
-          }),
-        ),
-      );
+      return await runDag(nodes, async (batch) => {
+        const results: WaveResult<unknown>[] = [];
+        for (const { node, deps } of batch) {
+          try {
+            throwIfAborted();
+            const value = await dagNodeScope.run(true, async () => await node.run(deps));
+            throwIfAborted();
+            results.push({ id: node.id, ok: true, value });
+          } catch (error) {
+            // Non-recoverable agent/workflow failures halt the whole run like
+            // parallel()/pipeline(). Recoverable node errors are contained: the
+            // node fails and its dependents cascade-skip.
+            const workflowError = wrapError(error);
+            if (runSignal.aborted || !workflowError.recoverable) throw workflowError;
+            log(`dag["${node.id}"] failed: ${workflowError.message}`);
+            results.push({ id: node.id, ok: false, error: workflowError.message });
+          }
+        }
+        return results;
+      });
     } catch (error) {
       if (error instanceof DagValidationError) {
         throw new WorkflowError(error.message, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
@@ -2188,7 +2203,7 @@ async function runWithAbortableTimeout<T>(
   const timeoutError = new WorkflowError(
     `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,
     WorkflowErrorCode.AGENT_TIMEOUT,
-    { recoverable: true },
+    { recoverable: true, agentLabel: label },
   );
   let timedOut = false;
   const timeoutPromise = new Promise<never>((_, reject) => {

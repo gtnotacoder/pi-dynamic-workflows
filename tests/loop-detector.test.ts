@@ -80,3 +80,22 @@ return 'never'`;
     /loop guard tripped/,
   );
 });
+
+test("loopGuard: ignored tier is excluded when explicit model wins", async () => {
+  const script = `export const meta = { name: 'lgm', description: 'loop guard model' }
+await agent('same', { label: 'x', model: 'provider/model', tier: 'small' })
+await agent('same', { label: 'x', model: 'provider/model', tier: 'big' })
+return 'never'`;
+  await assert.rejects(
+    runWorkflow(script, {
+      agent: {
+        async run() {
+          return "ok";
+        },
+      },
+      persistLogs: false,
+      loopGuard: { action: "abort", maxConsecutive: 2 },
+    }),
+    /loop guard tripped/,
+  );
+});

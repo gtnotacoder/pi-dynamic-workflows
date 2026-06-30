@@ -92,6 +92,8 @@ export interface ManagedRun {
   agentContextReserveTokens?: number | null;
   /** Effective run-level compaction policy captured at start/resume. */
   compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
+  /** Effective run-level loop-guard policy captured at start/resume. */
+  loopGuard?: WorkflowRunOptions["loopGuard"];
   /** Harness selection snapshot captured at run start and reused on resume. */
   harnessSelection?: HarnessSelection;
   /** Persisted run state used only to resume deterministic harness selection snapshots. */
@@ -401,6 +403,7 @@ export class WorkflowManager extends EventEmitter {
       agentMaxContextTokens: this.resolveStartAgentMaxContextTokens(exec),
       agentContextReserveTokens: this.resolveStartAgentContextReserveTokens(exec),
       compactionPolicy: exec.compactionPolicy,
+      loopGuard: exec.loopGuard,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
     };
@@ -428,6 +431,7 @@ export class WorkflowManager extends EventEmitter {
         agentMaxContextTokens: managed.agentMaxContextTokens,
         agentContextReserveTokens: managed.agentContextReserveTokens,
         compactionPolicy: managed.compactionPolicy,
+        loopGuard: managed.loopGuard,
       });
     } catch (err) {
       this.releaseRunLease(managed);
@@ -459,6 +463,7 @@ export class WorkflowManager extends EventEmitter {
     managed.agentMaxContextTokens = this.resolveStartAgentMaxContextTokens(exec);
     managed.agentContextReserveTokens = this.resolveStartAgentContextReserveTokens(exec);
     managed.compactionPolicy = exec.compactionPolicy;
+    managed.loopGuard = exec.loopGuard;
     const lease = this.persistence.acquireRunLease(managed.runId);
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -555,6 +560,7 @@ export class WorkflowManager extends EventEmitter {
       this.defaultAgentContextReserveTokens,
     );
     const resolvedCompactionPolicy = compactionPolicy !== undefined ? compactionPolicy : managed.compactionPolicy;
+    const resolvedLoopGuard = loopGuard !== undefined ? loopGuard : managed.loopGuard;
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -580,7 +586,7 @@ export class WorkflowManager extends EventEmitter {
         agentMaxContextTokens: resolvedAgentMaxContextTokens,
         agentContextReserveTokens: resolvedAgentContextReserveTokens,
         compactionPolicy: resolvedCompactionPolicy,
-        loopGuard,
+        loopGuard: resolvedLoopGuard,
         confirm,
         contextMode,
         harness_type,
@@ -779,6 +785,7 @@ export class WorkflowManager extends EventEmitter {
         agentMaxContextTokens: managed.agentMaxContextTokens,
         agentContextReserveTokens: managed.agentContextReserveTokens,
         compactionPolicy: managed.compactionPolicy,
+        loopGuard: managed.loopGuard,
         harnessSelection: saveHarnessSelection(managed.harnessSelection),
         semanticStatus: managed.semanticStatus,
       });
@@ -857,6 +864,7 @@ export class WorkflowManager extends EventEmitter {
       agentMaxContextTokens: persisted.agentMaxContextTokens ?? null,
       agentContextReserveTokens: persisted.agentContextReserveTokens ?? null,
       compactionPolicy: persisted.compactionPolicy,
+      loopGuard: persisted.loopGuard,
       harnessSelection: loadHarnessSelection(persisted),
       persistedRunState: persisted,
       transcriptDir: this.resolveTranscriptDir(runId),

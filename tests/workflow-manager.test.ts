@@ -634,6 +634,29 @@ test(
 );
 
 test(
+  "manager captures and resumes run-level loop guard policy",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    const { runId, promise } = manager.startInBackground(oneAgentScript, undefined, {
+      loopGuard: { action: "abort", maxConsecutive: 3 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const persistedWhileRunning = manager.getPersistence().load(runId);
+    assert.deepEqual(persistedWhileRunning?.loopGuard, { action: "abort", maxConsecutive: 3 });
+
+    da.resolve("ok");
+    await promise;
+
+    const completed = manager.listRuns().find((run) => run.runId === runId);
+    assert.deepEqual(completed?.loopGuard, { action: "abort", maxConsecutive: 3 });
+  }),
+);
+
+test(
   "resume treats absent legacy context policy as captured null instead of applying new defaults",
   withTempCwd(async (cwd) => {
     let seenMaxContextTokens: number | undefined;
