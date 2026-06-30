@@ -393,7 +393,7 @@ describe("expandHarnessConfig", () => {
     assert.deepStrictEqual(result.componentExtensions, [".tsx", ".jsx"]);
     assert.deepStrictEqual(result.indexExtensions, [".ts", ".tsx", ".js", ".jsx"]);
     assert.strictEqual(result.directoryModuleSelfFile, true);
-    assert.deepStrictEqual(result.frontendPathTriggers, ["./components/ui/"]);
+    assert.deepStrictEqual(result.frontendPathTriggers, ["./components/ui/", "components/ui/", "src/components/ui/"]);
   });
 
   it("does not enable guardrail fields by default for unrelated descriptors", () => {
