@@ -36,7 +36,7 @@ export interface UsageRollup {
 }
 
 export interface UsageAnomaly {
-  kind: "large_low_cache" | "missing_usage" | "context_overrun";
+  kind: "large_low_cache" | "missing_usage" | "context_overrun" | "compaction_cache_disruption";
   runId?: string;
   workflowName?: string;
   agentLabel?: string;
@@ -50,6 +50,38 @@ export interface UsageAnomaly {
   runStatePath?: string;
 }
 
+export interface CompactionCacheImpactBoundary {
+  runId?: string;
+  workflowName?: string;
+  timestamp?: string;
+  eventType: string;
+  beforeAgentLabel?: string;
+  beforeCacheReadPct?: number;
+  afterAgentLabel?: string;
+  afterModel?: string;
+  afterInput?: number;
+  afterCacheRead?: number;
+  afterCacheWrite?: number;
+  afterCacheReadPct?: number;
+  deltaPct?: number;
+  coldStart: boolean;
+  cacheDrop: boolean;
+  traceId?: string;
+  runStatePath?: string;
+}
+
+export interface CompactionCacheImpactSummary {
+  compactionEvents: number;
+  boundariesAnalyzed: number;
+  coldStartsAfterCompaction: number;
+  cacheDropsAfterCompaction: number;
+  avgPreCacheReadPct?: number;
+  avgPostCacheReadPct?: number;
+  avgDeltaPct?: number;
+  maxDropPct?: number;
+  recent: CompactionCacheImpactBoundary[];
+}
+
 export interface WorkflowTelemetryReport {
   generatedAt: string;
   window: { since?: string; until?: string };
@@ -59,6 +91,7 @@ export interface WorkflowTelemetryReport {
   byAgentLabel: Record<string, UsageRollup>;
   anomalies: UsageAnomaly[];
   compaction: CompactionEventSummary;
+  compactionCacheImpact: CompactionCacheImpactSummary;
   leanCtx: LeanCtxTelemetrySummary;
   traceLinks: Array<{ runId: string; workflowName: string; traceId: string; runStatePath?: string }>;
 }
@@ -106,6 +139,7 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
   const byAgentLabel = createRollupMap();
   const anomalies: UsageAnomaly[] = [];
   const traceLinks: WorkflowTelemetryReport["traceLinks"] = [];
+  const agentUsageObservations: AgentUsageObservation[] = [];
 
   for (const run of runs) {
     traceLinks.push({
@@ -139,6 +173,20 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
       }
       if (!rollupUsage) continue;
 
+      agentUsageObservations.push({
+        runId: run.runId,
+        workflowName: run.workflowName,
+        label,
+        model,
+        index,
+        usage: rollupUsage,
+        cacheReadPct: usageCacheReadPct(rollupUsage),
+        startedAt: agent.startedAt ?? journal?.startedAt,
+        endedAt: agent.endedAt ?? journal?.endedAt,
+        traceId: workflowLangfuseTraceId(run.runId),
+        runStatePath: runStatePathFromRun(run),
+      });
+
       addUsage(totals, rollupUsage);
       addUsage(perRunUsage, rollupUsage);
       if (!byModel[model]) byModel[model] = emptyRollup();
@@ -169,6 +217,30 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
     }
   }
 
+  const compactionCacheImpact = summarizeCompactionCacheImpact(
+    compactionEvents,
+    agentUsageObservations,
+    lowCacheInputThreshold,
+  );
+  for (const boundary of compactionCacheImpact.recent) {
+    if (!boundary.coldStart && !boundary.cacheDrop) continue;
+    anomalies.push({
+      kind: "compaction_cache_disruption",
+      runId: boundary.runId,
+      workflowName: boundary.workflowName,
+      agentLabel: boundary.afterAgentLabel,
+      model: boundary.afterModel,
+      message: `After ${boundary.eventType}, ${boundary.afterAgentLabel ?? "next agent"} cache read was ${formatPct(
+        boundary.afterCacheReadPct ?? 0,
+      )}${boundary.deltaPct !== undefined ? ` (${formatSignedPct(boundary.deltaPct)} vs previous agent)` : ""}; this may be the expected one-turn post-compaction re-cache boundary`,
+      input: boundary.afterInput,
+      cacheRead: boundary.afterCacheRead,
+      cacheReadPct: boundary.afterCacheReadPct,
+      traceId: boundary.traceId,
+      runStatePath: boundary.runStatePath,
+    });
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     window: { since: since?.toISOString(), until: until?.toISOString() },
@@ -178,6 +250,7 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
     byAgentLabel: sortRollups(byAgentLabel),
     anomalies,
     compaction: summarizeCompactionEvents(compactionEvents),
+    compactionCacheImpact,
     leanCtx,
     traceLinks,
   };
@@ -240,6 +313,39 @@ export function renderWorkflowTelemetryReport(report: WorkflowTelemetryReport): 
     lines.push(`Max estimated reclaim: ${formatNumber(report.compaction.maxEstReclaim)} tokens`);
   }
   lines.push("");
+  lines.push("## Cache impact around compaction");
+  if (!report.compactionCacheImpact.compactionEvents) {
+    lines.push("No compaction boundary events in the selected local data.");
+  } else if (!report.compactionCacheImpact.boundariesAnalyzed) {
+    lines.push(
+      `Compaction boundary events: ${report.compactionCacheImpact.compactionEvents}; no adjacent agent cache samples with timestamps were available.`,
+    );
+  } else {
+    lines.push(
+      `Boundaries analyzed: ${report.compactionCacheImpact.boundariesAnalyzed}/${report.compactionCacheImpact.compactionEvents}; cold starts after compaction: ${report.compactionCacheImpact.coldStartsAfterCompaction}; cache drops: ${report.compactionCacheImpact.cacheDropsAfterCompaction}`,
+    );
+    if (report.compactionCacheImpact.avgPreCacheReadPct !== undefined) {
+      lines.push(
+        `Avg cache read before → after: ${formatPct(report.compactionCacheImpact.avgPreCacheReadPct)} → ${formatPct(
+          report.compactionCacheImpact.avgPostCacheReadPct ?? 0,
+        )}${report.compactionCacheImpact.avgDeltaPct !== undefined ? ` (${formatSignedPct(report.compactionCacheImpact.avgDeltaPct)})` : ""}`,
+      );
+    }
+    if (report.compactionCacheImpact.maxDropPct !== undefined) {
+      lines.push(`Largest observed drop: ${formatSignedPct(report.compactionCacheImpact.maxDropPct)}`);
+    }
+    for (const boundary of report.compactionCacheImpact.recent.slice(-5)) {
+      const delta = boundary.deltaPct !== undefined ? `, delta ${formatSignedPct(boundary.deltaPct)}` : "";
+      lines.push(
+        `- ${boundary.workflowName ?? "workflow"} ${boundary.timestamp ?? "unknown time"}: ${boundary.eventType}; ${
+          boundary.beforeAgentLabel ?? "previous agent"
+        } ${formatPct(boundary.beforeCacheReadPct ?? 0)} → ${boundary.afterAgentLabel ?? "next agent"} ${formatPct(
+          boundary.afterCacheReadPct ?? 0,
+        )}${delta}`,
+      );
+    }
+  }
+  lines.push("");
   lines.push("## Trace/run references");
   if (!report.traceLinks.length) lines.push("No workflow runs in the selected window.");
   else {
@@ -298,6 +404,142 @@ function filterCompactionEvents(
   const selectedRunIds = new Set(runs.map((run) => run.runId));
   if (selectedRunIds.size === 0) return [];
   return events.filter((event) => event.workflowRunId !== undefined && selectedRunIds.has(event.workflowRunId));
+}
+
+interface AgentUsageObservation {
+  runId: string;
+  workflowName: string;
+  label: string;
+  model: string;
+  index: number;
+  usage: AgentUsage;
+  cacheReadPct: number;
+  startedAt?: string;
+  endedAt?: string;
+  traceId?: string;
+  runStatePath?: string;
+}
+
+function summarizeCompactionCacheImpact(
+  events: CompactionTelemetryEvent[],
+  observations: AgentUsageObservation[],
+  lowCacheInputThreshold: number,
+): CompactionCacheImpactSummary {
+  const boundaryEvents = events.filter(isCompactionBoundaryEvent).sort((a, b) => timestampMs(a) - timestampMs(b));
+  const boundaries: CompactionCacheImpactBoundary[] = [];
+
+  for (const event of boundaryEvents) {
+    const ts = timestampMs(event);
+    if (!Number.isFinite(ts) || !event.workflowRunId) continue;
+    const runObservations = observations
+      .filter((observation) => observation.runId === event.workflowRunId)
+      .sort((a, b) => a.index - b.index);
+    if (!runObservations.length) continue;
+
+    const before = latestObservationBefore(runObservations, ts);
+    const after = earliestObservationAfter(runObservations, ts);
+    if (!after) continue;
+
+    const deltaPct = before ? after.cacheReadPct - before.cacheReadPct : undefined;
+    const afterCacheableInput = cacheableInput(after.usage);
+    const coldStart = afterCacheableInput >= lowCacheInputThreshold && after.cacheReadPct < 0.05;
+    const cacheDrop = deltaPct !== undefined && deltaPct <= -0.2;
+    boundaries.push({
+      runId: event.workflowRunId,
+      workflowName: after.workflowName ?? before?.workflowName,
+      timestamp: event.timestamp,
+      eventType: event.type,
+      beforeAgentLabel: before?.label,
+      beforeCacheReadPct: before?.cacheReadPct,
+      afterAgentLabel: after.label,
+      afterModel: after.model,
+      afterInput: after.usage.input ?? 0,
+      afterCacheRead: after.usage.cacheRead ?? 0,
+      afterCacheWrite: after.usage.cacheWrite ?? 0,
+      afterCacheReadPct: after.cacheReadPct,
+      deltaPct,
+      coldStart,
+      cacheDrop,
+      traceId: after.traceId,
+      runStatePath: after.runStatePath,
+    });
+  }
+
+  const deltas = boundaries.flatMap((boundary) => (boundary.deltaPct === undefined ? [] : [boundary.deltaPct]));
+  const pre = boundaries.flatMap((boundary) =>
+    boundary.beforeCacheReadPct === undefined ? [] : [boundary.beforeCacheReadPct],
+  );
+  const post = boundaries.flatMap((boundary) =>
+    boundary.afterCacheReadPct === undefined ? [] : [boundary.afterCacheReadPct],
+  );
+
+  return {
+    compactionEvents: boundaryEvents.length,
+    boundariesAnalyzed: boundaries.length,
+    coldStartsAfterCompaction: boundaries.filter((boundary) => boundary.coldStart).length,
+    cacheDropsAfterCompaction: boundaries.filter((boundary) => boundary.cacheDrop).length,
+    avgPreCacheReadPct: average(pre),
+    avgPostCacheReadPct: average(post),
+    avgDeltaPct: average(deltas),
+    maxDropPct: deltas.length ? Math.min(...deltas) : undefined,
+    recent: boundaries.slice(-10),
+  };
+}
+
+function isCompactionBoundaryEvent(event: CompactionTelemetryEvent): boolean {
+  return (
+    event.type === "compaction_result" ||
+    event.type === "reinject" ||
+    event.beforeTokens !== undefined ||
+    event.afterTokens !== undefined
+  );
+}
+
+function latestObservationBefore(
+  observations: AgentUsageObservation[],
+  timestamp: number,
+): AgentUsageObservation | undefined {
+  return observations
+    .map((observation) => ({ observation, time: observationEndOrStartMs(observation) }))
+    .filter((entry) => entry.time !== undefined && entry.time <= timestamp)
+    .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))[0]?.observation;
+}
+
+function earliestObservationAfter(
+  observations: AgentUsageObservation[],
+  timestamp: number,
+): AgentUsageObservation | undefined {
+  return observations
+    .map((observation) => ({ observation, time: observationStartOrEndMs(observation) }))
+    .filter((entry) => entry.time !== undefined && entry.time >= timestamp)
+    .sort((a, b) => (a.time ?? 0) - (b.time ?? 0))[0]?.observation;
+}
+
+function observationEndOrStartMs(observation: AgentUsageObservation): number | undefined {
+  return parseIsoMs(observation.endedAt) ?? parseIsoMs(observation.startedAt);
+}
+
+function observationStartOrEndMs(observation: AgentUsageObservation): number | undefined {
+  return parseIsoMs(observation.startedAt) ?? parseIsoMs(observation.endedAt);
+}
+
+function timestampMs(event: CompactionTelemetryEvent): number {
+  return parseIsoMs(event.timestamp) ?? Number.POSITIVE_INFINITY;
+}
+
+function parseIsoMs(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function cacheableInput(usage: AgentUsage): number {
+  return (usage.input ?? 0) + (usage.cacheRead ?? 0);
+}
+
+function average(values: number[]): number | undefined {
+  if (!values.length) return undefined;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function leanCtxSourcesFromRuns(runs: PersistedRunState[]): Array<{ history?: JournalEntry["history"] }> {
@@ -524,4 +766,9 @@ function formatNumber(value: number): string {
 
 function formatPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatSignedPct(value: number): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatPct(value)}`;
 }
