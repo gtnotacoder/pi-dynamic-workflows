@@ -11,6 +11,7 @@ import {
   type WorkflowSnapshot,
 } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import type { LoopGuardOptions } from "./loop-detector.js";
 import { parseWorkflowScript, type WorkflowRunResult } from "./workflow.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
@@ -105,6 +106,28 @@ const workflowToolSchema = Type.Object({
         "Total wall-clock timeout for the entire workflow run in milliseconds. Default: 120 minutes (7,200,000 ms).",
     }),
   ),
+  loopGuard: Type.Optional(
+    Type.Object(
+      {
+        window: Type.Optional(Type.Number({ description: "Sliding window of recent agent() call identities." })),
+        maxRepeats: Type.Optional(
+          Type.Number({ description: "Occurrences of one call identity within the window before detection." }),
+        ),
+        maxConsecutive: Type.Optional(
+          Type.Number({ description: "Consecutive identical agent() calls before detection." }),
+        ),
+        action: Type.Optional(
+          Type.Union([Type.Literal("warn"), Type.Literal("abort")], {
+            description: "warn logs only; abort stops the workflow.",
+          }),
+        ),
+      },
+      {
+        description:
+          "Detect repeated identical agent() calls from runaway workflow loops. Defaults to warn-only; set action:'abort' to hard-stop.",
+      },
+    ),
+  ),
   tokenBudget: Type.Optional(
     Type.Number({
       description:
@@ -150,6 +173,7 @@ export type WorkflowToolInput = {
   agentRetries?: number;
   agentTimeoutMs?: number;
   workflowTimeoutMs?: number;
+  loopGuard?: LoopGuardOptions;
   tokenBudget?: number;
   agentMaxContextTokens?: number | null;
   agentContextReserveTokens?: number | null;
@@ -202,7 +226,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     name: "workflow",
     label: "Workflow",
     description: [
-      "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline().",
+      "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), pipeline(), and dag().",
       "script is required raw JavaScript. It must start with export const meta = { name, description, phases? } and must call agent() at least once.",
     ].join(" "),
     promptSnippet:
@@ -212,7 +236,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
       "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description', phases: [{ title: 'Phase name' }] }`; meta.name and meta.description are required non-empty strings.",
       "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
-      "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
+      "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), dag(nodes), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
       "For workflow, prefer the built-in quality helpers when they fit (each is built on agent()/parallel() and returns plain data): verify(item, {reviewers, threshold, lens}) for adversarial fact-checking; judgePanel(attempts, {judges, rubric}) to score N candidates and return the best; loopUntilDry({round, key, consecutiveEmpty}) to keep finding until rounds stop yielding new items; completenessCheck(args, results) as a final 'what's missing' critic.",
       "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
       "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; likewise do not set agentMaxContextTokens unless asked to cap context size; the defaults are unbounded.",
@@ -222,6 +246,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
       "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
+      "For workflow, dag([{ id, dependsOn, run }]) runs dependency-ready nodes in deterministic waves; failed nodes cascade-skip their dependents while independent branches continue.",
       "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
       "For workflow, use low concurrency and agentRetries for unstable provider/transport fan-out runs; retries apply only to recoverable agent failures and still require explicit null handling after exhaustion.",
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
@@ -263,6 +288,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           agentRetries: params.agentRetries,
           agentTimeoutMs: params.agentTimeoutMs,
           workflowTimeoutMs: params.workflowTimeoutMs,
+          loopGuard: params.loopGuard,
           tokenBudget: params.tokenBudget,
           agentMaxContextTokens: params.agentMaxContextTokens,
           agentContextReserveTokens: params.agentContextReserveTokens,
@@ -304,6 +330,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           agentRetries: params.agentRetries,
           agentTimeoutMs: params.agentTimeoutMs,
           workflowTimeoutMs: params.workflowTimeoutMs,
+          loopGuard: params.loopGuard,
           tokenBudget: params.tokenBudget,
           agentMaxContextTokens: params.agentMaxContextTokens,
           agentContextReserveTokens: params.agentContextReserveTokens,
