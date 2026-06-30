@@ -11,7 +11,13 @@ export { buildAgentContextWindowStats, listAvailableModelSpecs, WorkflowAgent } 
 export type { AgentHistoryEntry, AgentHistoryKind, AgentHistoryRole } from "./agent-history.js";
 export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
-export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
+export {
+  applyToolPolicy,
+  listAgentTypes,
+  loadAgentRegistry,
+  resolveAgentType,
+  WRITE_TOOL_NAMES,
+} from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export type {
   WorkflowCompactionCacheValue,
@@ -154,7 +160,13 @@ export {
   renderHarnessConfigs,
   resolveHarnessLayers,
 } from "./harness-config.js";
-export { type HarnessSelection, selectHarness } from "./harness-selector.js";
+export {
+  type HarnessSelection,
+  harnessSelectionKey,
+  parseHarnessSelection,
+  selectHarness,
+  serializeHarnessSelection,
+} from "./harness-selector.js";
 export {
   type ActiveRunView,
   type HerdrReporterOptions,

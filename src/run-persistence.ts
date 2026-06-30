@@ -8,6 +8,8 @@ import type { AgentContextWindowStats } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { ConductorRunStatus } from "./conductor-types.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import type { HarnessSelection } from "./harness-selector.js";
+import { parseHarnessSelection, serializeHarnessSelection } from "./harness-selector.js";
 import type { JournalEntry, WorkflowRunOptions } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
@@ -72,6 +74,16 @@ export interface PersistedRunState {
   agentContextReserveTokens?: number | null;
   /** Effective run-level compaction policy captured at start. */
   compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
+  /** Snapshot of the harness selection detected at run start.
+   *
+   *  Persisted as a canonical serialized string (via serializeHarnessSelection)
+   *  so the on-disk snapshot is deterministic and resume can reuse it instead of
+   *  re-running detection. The field also tolerates a plain `HarnessSelection`
+   *  object form for backward compatibility with older persisted runs. Either
+   *  form is validated back through parseHarnessSelection() on load.
+   *  Optional — older persisted runs may omit it, in which case resume falls
+   *  back to a fresh selectHarness() call. */
+  harnessSelection?: HarnessSelection | string;
   tokenUsage?: {
     input: number;
     output: number;
@@ -363,6 +375,49 @@ export function createRunPersistence(cwd: string, fsOverride?: Partial<FsLayer>)
       return runsDir;
     },
   };
+}
+
+/**
+ * Read a persisted harness-selection snapshot back into a validated
+ * `HarnessSelection`, so resume can reuse the snapshot instead of re-running
+ * `selectHarness()`.
+ *
+ * Accepts either stored form:
+ *  - canonical serialized string (current writers, via serializeHarnessSelection)
+ *  - plain `HarnessSelection` object (legacy/compatible writers)
+ *
+ * Returns `undefined` when the field is absent (old run) or malformed, so the
+ * caller falls back to a fresh `selectHarness()` call. This keeps the load path
+ * backward-compatible: a persisted run without the field still loads.
+ */
+export function loadHarnessSelection(state: PersistedRunState): HarnessSelection | undefined {
+  const raw = state.harnessSelection;
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string") {
+    // Canonical serialized string form (current writers). Parse the JSON
+    // envelope, then validate the inner object through parseHarnessSelection.
+    if (raw.length === 0) return undefined;
+    try {
+      return parseHarnessSelection(JSON.parse(raw));
+    } catch {
+      return undefined;
+    }
+  }
+  // Plain object form (legacy/compatible writers): validate directly.
+  return parseHarnessSelection(raw);
+}
+
+/**
+ * Serialize a harness selection for persistence into the run-metadata record.
+ * Returns the canonical serialized string form (via serializeHarnessSelection)
+ * that round-trips through `loadHarnessSelection()`, or `undefined` when `sel`
+ * is `undefined` (so the field stays absent on disk for runs without a snapshot).
+ *
+ * runWorkflow should assign the result onto `PersistedRunState.harnessSelection`
+ * for a freshly-detected selection before `save()`.
+ */
+export function saveHarnessSelection(sel: HarnessSelection | undefined): string | undefined {
+  return sel !== undefined ? serializeHarnessSelection(sel) : undefined;
 }
 
 /**

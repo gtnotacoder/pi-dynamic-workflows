@@ -39,6 +39,14 @@ import {
   type SystemPromptMode,
 } from "./context-mode.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
+import {
+  expandHarnessConfig,
+  type HarnessConfigRegistry,
+  type HarnessExpansion,
+  harnessNotWiredSkip,
+  loadHarnessConfigRegistry,
+} from "./harness-config.js";
+import { type HarnessSelection, harnessSelectionKey, selectHarness } from "./harness-selector.js";
 import { createWorkflowLogger } from "./logger.js";
 import { LoopDetector, type LoopGuardOptions } from "./loop-detector.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -48,7 +56,7 @@ import {
   type PrototypeSafetyOptions,
   type PrototypeSafetyResult,
 } from "./prototype-safety.js";
-import { assertValidRunId } from "./run-persistence.js";
+import { assertValidRunId, loadHarnessSelection } from "./run-persistence.js";
 import {
   renderStageCheckFeedback,
   runStageCheck,
@@ -184,9 +192,9 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * every reviewer clean-room without editing any agent `.md`.
    */
   contextMode?: string;
-  /** Tentative run-level harness runtime selector (`--harness-type`); inert until Issue D wires expansion. */
+  /** Run-level harness runtime selector (`--harness-type`); wired: drives HarnessSelection snapshot, expandHarnessConfig, clean-skip, and agent() seams. */
   harness_type?: string;
-  /** Tentative run-level harness capability/config selector (`--harness-config`); inert until Issue D wires expansion. */
+  /** Run-level harness capability/config selector (`--harness-config`); wired: drives HarnessSelection snapshot, expandHarnessConfig, clean-skip, and agent() seams. */
   harness_config?: string;
   inheritProjectContext?: boolean;
   systemPromptMode?: SystemPromptMode;
@@ -198,6 +206,14 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * `contextModes` are resolvable here and in tool-driven runs.
    */
   contextModeRegistry?: ContextModeRegistry;
+  /** Persisted run state loaded by the caller for resume, so the harness selection snapshot can be reused. */
+  persistedRunState?: import("./run-persistence.js").PersistedRunState;
+  /** Harness config registry for expansion. Snapshotted once per run, mirroring agentRegistry. Injectable for tests. */
+  harnessConfigRegistry?: HarnessConfigRegistry;
+  /** Run-level read-only flag; when set, the harness expansion and agent fence enforce read-only tool policy. */
+  readOnly?: boolean;
+  /** Called immediately after the run's harness selection snapshot is resolved. */
+  onHarnessSelection?: (selection: HarnessSelection) => void;
   /** Internal: shared runtime inherited by a nested workflow() call. */
   sharedRuntime?: SharedRuntime;
   /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
@@ -280,6 +296,8 @@ export interface WorkflowRunResult<T = unknown> {
     cacheRead?: number;
     cacheWrite?: number;
   };
+  /** Harness selection snapshot for this run, exposed for resume and telemetry. */
+  harnessSelection?: HarnessSelection;
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
@@ -457,6 +475,26 @@ export async function runWorkflow<T = unknown>(
   // observe a mid-run edit (determinism); a later resume re-reads it.
   const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
 
+  // Snapshot the harness selection ONCE per run so two agent() calls can't
+  // observe a mid-run detection change (determinism). On resume, reuse the
+  // persisted snapshot instead of re-detecting.
+  const harnessSelection: HarnessSelection = options.persistedRunState
+    ? (loadHarnessSelection(options.persistedRunState) ?? selectHarness(baseCwd))
+    : options.harness_type || options.harness_config
+      ? ({
+          harness_type: (options.harness_type as import("./harness-config.js").HarnessType) ?? "pi",
+          harness_config: options.harness_config ?? "none",
+          source: "explicit" as const,
+          detectorVersion: 1,
+        } satisfies HarnessSelection)
+      : selectHarness(baseCwd);
+
+  options.onHarnessSelection?.(harnessSelection);
+
+  // Load the harness config registry ONCE per run, mirroring agentRegistry snapshot discipline.
+  const harnessConfigRegistry: HarnessConfigRegistry =
+    options.harnessConfigRegistry ?? loadHarnessConfigRegistry(baseCwd);
+
   // Initialize logger
   const logger = createWorkflowLogger({
     runId,
@@ -477,6 +515,45 @@ export async function runWorkflow<T = unknown>(
     callSeq: 0,
     firstMiss: Number.POSITIVE_INFINITY,
   };
+
+  // Expand the harness config into actionable overrides (context mode, tools, stageCheck defaults).
+  const harnessExpansion: HarnessExpansion = expandHarnessConfig({
+    harness_type: harnessSelection.harness_type,
+    harness_config: harnessSelection.harness_config,
+    registry: harnessConfigRegistry,
+    readOnly: options.readOnly,
+  });
+
+  // Harness-not-wired clean-skip: when the resolved harness type is not wired to
+  // the current runtime, short-circuit to a structured skip result instead of
+  // executing the script body.
+  if (!harnessExpansion.wired) {
+    const skip = harnessNotWiredSkip({
+      harness_type: harnessExpansion.harness_type,
+      harness_config: harnessExpansion.harness_config,
+      reason: `Harness '${harnessExpansion.harness_type}' is not wired to the current runtime.`,
+    });
+    state.logs.push(`[harness-skip] ${skip.reason}`);
+    logger.log(`[harness-skip] ${skip.reason}`);
+    return {
+      meta,
+      result: skip as T,
+      logs: state.logs,
+      phases: state.phases,
+      agentCount: 0,
+      durationMs: Date.now() - started,
+      runId,
+      tokenUsage: options.sharedRuntime?.tokenUsage ?? {
+        input: 0,
+        output: 0,
+        total: 0,
+        cost: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      harnessSelection,
+    };
+  }
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
   const concurrency = normalizeConcurrency(
@@ -542,6 +619,7 @@ export async function runWorkflow<T = unknown>(
     throwIfAborted();
     const input = stageOptions && typeof stageOptions === "object" ? stageOptions : {};
     const result = await (options.stageCheck ?? runStageCheck)({
+      ...(harnessExpansion.stageCheckDefaults ?? {}),
       ...input,
       cwd: input.cwd ?? baseCwd,
       signal: runSignal,
@@ -618,13 +696,21 @@ export async function runWorkflow<T = unknown>(
       log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
     }
 
-    // Resolve the context-inheritance posture once: the agentType frontmatter is
-    // the lower-precedence layer, the agent() call options the higher. The result
-    // is passed to run() as explicit primitives (which win over any bare mode), so
-    // run()'s own resolveContextMode reproduces exactly this triple.
+    // Resolve the context-inheritance posture once: the harness expansion is the
+    // lowest-precedence layer, agentType frontmatter is mid, agent() call options highest.
+    // The result is passed to run() as explicit primitives (which win over any bare
+    // mode), so run()'s own resolveContextMode reproduces exactly this stack.
     const { primitives: ctx, unknownMode } = resolveContextModeLayers(
       [
-        // Lowest precedence: run-level default (e.g. a `--mode` flag).
+        // Lowest precedence: harness expansion (from expandHarnessConfig).
+        {
+          contextMode: harnessExpansion.contextMode,
+          inheritProjectContext: harnessExpansion.inheritProjectContext,
+          systemPromptMode: harnessExpansion.systemPromptMode as SystemPromptMode | undefined,
+          inheritSkills: harnessExpansion.inheritSkills,
+          inheritMainRules: harnessExpansion.inheritMainRules,
+        },
+        // Next: run-level default (e.g. a `--mode` flag).
         {
           contextMode: options.contextMode,
           inheritProjectContext: options.inheritProjectContext,
@@ -727,6 +813,12 @@ export async function runWorkflow<T = unknown>(
       ...agentOptions,
       compactionPolicy: effectiveCompactionPolicy,
     };
+    // Resume-hash harness key: the auto-detected default fallback (source
+    // "default") collapses to the 'none' sentinel so unchanged default runs keep
+    // today's hashes and still hit the resume cache. Any explicit/auto/frontmatter
+    // selection is serialized in full, so a harness_type/harness_config change (or
+    // a newly detected selection) busts every cached agent result on resume.
+    const harnessHashKey = harnessSelectionKey(harnessSelection.source === "default" ? undefined : harnessSelection);
     const callHash = hashAgentCall(
       prompt,
       modelSpec,
@@ -735,6 +827,7 @@ export async function runWorkflow<T = unknown>(
       effectiveContextPolicy,
       agentDefinitionKey(agentDef),
       ctx,
+      harnessHashKey,
     );
     const legacyCallHash = hashAgentCall(
       prompt,
@@ -744,6 +837,7 @@ export async function runWorkflow<T = unknown>(
       effectiveContextPolicy,
       agentDefinitionKey(agentDef),
       ctx,
+      harnessHashKey,
       { includeContextPolicy: false },
     );
 
@@ -937,8 +1031,12 @@ export async function runWorkflow<T = unknown>(
                   instructions: agentInstructions,
                   model: modelSpec,
                   tier: agentOptions.tier,
-                  toolNames: agentOptions.tools ?? agentDef?.tools,
-                  disallowedToolNames: agentOptions.disallowedTools ?? agentDef?.disallowedTools,
+                  // Tool policy: harness adds (lowest) < per-call/agentType overrides;
+                  // fence still wins when readOnly is set.
+                  toolNames: agentOptions.tools ?? agentDef?.tools ?? harnessExpansion.tools,
+                  disallowedToolNames:
+                    agentOptions.disallowedTools ?? agentDef?.disallowedTools ?? harnessExpansion.disallowedTools,
+                  readOnly: options.readOnly,
                   // The workflow layer is the single resolution authority: it passes
                   // the fully-resolved primitives, so the raw mode name is intentionally
                   // NOT forwarded (a project-mode name would be unknown to agent.ts's
@@ -1535,6 +1633,7 @@ export async function runWorkflow<T = unknown>(
     durationMs: Date.now() - started,
     runId,
     tokenUsage: shared.tokenUsage,
+    harnessSelection,
   };
 }
 
@@ -1698,6 +1797,15 @@ function hashCheckpoint(promptText: string, options: CheckpointOptions): string 
   return createHash("sha256").update(identity).digest("hex");
 }
 
+/**
+ * Compute a stable hash for an agent() call, used as the resume cache key.
+ *
+ * @param harnessKey - Stable harness selection key (from harnessSelectionKey).
+ *   When the selection is the default 'none' sentinel, this must reproduce
+ *   the same string as older code that did not include harness information,
+ *   so that changing the harness type or config busts every cached agent
+ *   result on resume while default selections preserve existing hashes.
+ */
 function hashAgentCall(
   prompt: string,
   model: string | undefined,
@@ -1706,6 +1814,7 @@ function hashAgentCall(
   effectiveContextPolicy: { maxContextTokens?: number; contextReserveTokens?: number },
   agentDefKey: string | null,
   resolvedContext: ContextPrimitives,
+  harnessKey: string,
   hashOptions: { includeContextPolicy?: boolean } = {},
 ): string {
   const identityValue: Record<string, unknown> = {
@@ -1739,6 +1848,13 @@ function hashAgentCall(
     agentDef: agentDefKey,
     schema: options.schema ?? null,
   };
+  // Harness selection snapshot: a change in harness_type or harness_config
+  // invalidates every cached agent result on resume, but the 'none' sentinel
+  // (default undefined selection) reproduces today's hashes — so unchanged
+  // default runs still hit the cache.
+  if (harnessKey !== '"none"') {
+    identityValue.harness = harnessKey;
+  }
   if (options.compactionPolicy !== undefined && options.compactionPolicy !== null) {
     identityValue.compactionPolicy = options.compactionPolicy;
   }

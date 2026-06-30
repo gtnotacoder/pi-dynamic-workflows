@@ -371,6 +371,12 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * the resolved mode is "replace".
    */
   systemPromptText?: string;
+  /**
+   * Read-only fence: when true, the subagent never receives write tools
+   * (edit, bash, write). The fence is the last filter step so it cannot be
+   * bypassed by an allowlist from `harness_config` or `agentType`.
+   */
+  readOnly?: boolean;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -565,6 +571,7 @@ export class WorkflowAgent {
       [...baseTools, ...(options.tools ?? [])],
       options.toolNames,
       options.disallowedToolNames,
+      { readOnly: options.readOnly },
     );
 
     if (options.schema) {

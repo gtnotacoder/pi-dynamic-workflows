@@ -17,16 +17,19 @@ import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import type { HarnessSelection } from "./harness-selector.js";
 import {
   assertValidRunId,
   createRunPersistence,
   generateRunId,
   isValidRunId,
+  loadHarnessSelection,
   type PersistedRunState,
   type RunLease,
   type RunPersistence,
   type RunStatus,
   runStateJsonPath,
+  saveHarnessSelection,
 } from "./run-persistence.js";
 import {
   type JournalEntry,
@@ -89,6 +92,10 @@ export interface ManagedRun {
   agentContextReserveTokens?: number | null;
   /** Effective run-level compaction policy captured at start/resume. */
   compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
+  /** Harness selection snapshot captured at run start and reused on resume. */
+  harnessSelection?: HarnessSelection;
+  /** Persisted run state used only to resume deterministic harness selection snapshots. */
+  persistedRunState?: PersistedRunState;
   /** Optional conductor-level semantic status, layered on top of the engine
    *  `status` above. Older runs may omit this. */
   semanticStatus?: ConductorRunStatus;
@@ -578,6 +585,11 @@ export class WorkflowManager extends EventEmitter {
         contextMode,
         harness_type,
         harness_config,
+        persistedRunState: managed.persistedRunState,
+        onHarnessSelection: (selection) => {
+          managed.harnessSelection = selection;
+          this.persistRun(managed);
+        },
         loadSavedWorkflow: this.loadSavedWorkflow,
         transcriptDir: exec.transcriptDir ?? managed.transcriptDir,
         resumeJournal,
@@ -656,6 +668,7 @@ export class WorkflowManager extends EventEmitter {
 
       managed.status = "completed";
       managed.result = result;
+      managed.harnessSelection = result.harnessSelection;
       this.emit("complete", { runId: managed.runId, result });
 
       // Persist final state
@@ -766,6 +779,7 @@ export class WorkflowManager extends EventEmitter {
         agentMaxContextTokens: managed.agentMaxContextTokens,
         agentContextReserveTokens: managed.agentContextReserveTokens,
         compactionPolicy: managed.compactionPolicy,
+        harnessSelection: saveHarnessSelection(managed.harnessSelection),
         semanticStatus: managed.semanticStatus,
       });
     } catch (err) {
@@ -843,6 +857,8 @@ export class WorkflowManager extends EventEmitter {
       agentMaxContextTokens: persisted.agentMaxContextTokens ?? null,
       agentContextReserveTokens: persisted.agentContextReserveTokens ?? null,
       compactionPolicy: persisted.compactionPolicy,
+      harnessSelection: loadHarnessSelection(persisted),
+      persistedRunState: persisted,
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
       semanticStatus: persisted.semanticStatus,
