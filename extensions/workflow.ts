@@ -13,6 +13,7 @@ import {
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
   registerEffortCommand,
+  registerHarnessConfigsCommand,
   registerModesCommand,
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
@@ -59,6 +60,7 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowModelsCommand(pi);
   registerWorkflowTelemetryReportCommand(pi, { cwd, manager });
   registerModesCommand(pi, { cwd });
+  registerHarnessConfigsCommand(pi, { cwd });
   registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive

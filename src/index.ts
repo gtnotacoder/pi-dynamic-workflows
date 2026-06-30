@@ -138,6 +138,19 @@ export {
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
 export {
+  HARNESS_RUNTIME_INFO,
+  HARNESS_TYPES,
+  type HarnessConfig,
+  type HarnessConfigRegistry,
+  type HarnessRuntimeInfo,
+  type HarnessType,
+  listHarnessConfigs,
+  loadHarnessConfigRegistry,
+  parseHarnessConfigDescriptor,
+  registerHarnessConfigsCommand,
+  renderHarnessConfigs,
+} from "./harness-config.js";
+export {
   type ActiveRunView,
   type HerdrReporterOptions,
   herdrPaneTarget,
