@@ -343,6 +343,13 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   harness_type?: string;
   /** Tentative per-call harness capability/config selector; inert until Issue D wires expansion. */
   harness_config?: string;
+  /**
+   * Per-call read-only fence. Narrow-only: the effective readOnly is `run-level
+   * readOnly || agentOptions.readOnly`, so a call (e.g. the Issue Delivery verifier)
+   * can add the fence but cannot lift a run-level one. Filters WRITE_TOOL_NAMES from
+   * the resolved tool set.
+   */
+  readOnly?: boolean;
   /** Load project AGENTS.md / context files into this subagent. Default true. */
   inheritProjectContext?: boolean;
   /** "append": base prompt + role-as-task (default); "replace": role IS the base system prompt. */
@@ -441,6 +448,24 @@ const DETERMINISM_PRELUDE = [
   "  globalThis.Date = SafeDate;",
   "}",
 ].join("\n");
+
+/** Intersect defined tool allowlists (narrow); undefined lists are ignored. Undefined when none define a list. */
+function intersectToolAllowlists(lists: ReadonlyArray<readonly string[] | undefined>): string[] | undefined {
+  const defined = lists.filter((l): l is readonly string[] => l !== undefined);
+  if (defined.length === 0) return undefined;
+  if (defined.length === 1) return [...defined[0]];
+  const [first, ...rest] = defined;
+  let result = [...first];
+  for (const list of rest) result = result.filter((tool) => list.includes(tool));
+  return result;
+}
+
+/** Union defined denylists (a narrower layer cannot lift a wider layer's deny). */
+function unionToolDenylists(lists: ReadonlyArray<readonly string[] | undefined>): string[] | undefined {
+  const defined = lists.filter((l): l is readonly string[] => l !== undefined);
+  if (defined.length === 0) return undefined;
+  return [...new Set(defined.flatMap((list) => [...list]))];
+}
 
 export async function runWorkflow<T = unknown>(
   script: string,
@@ -771,6 +796,137 @@ export async function runWorkflow<T = unknown>(
       log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
     }
 
+    // Per-call harness precedence: agentOptions.harness_type / harness_config override
+    // the run-level selection so a leader's mixed plan can route each worker to its
+    // own config (e.g. a frontend step + a backend step). The expansion is re-resolved
+    // per call. Discipline (issue #64): a step config may only SELECT/NARROW — it must
+    // not widen authority. Enforced three ways:
+    //   - an unknown/invalid per-call config id is rejected (keep run-level + warn);
+    //   - tool allowlists are intersected with the run-level policy and run-level
+    //     denylists are preserved (a step config cannot re-grant a revoked tool);
+    //   - expandHarnessConfig still filters WRITE_TOOL_NAMES under readOnly.
+    // `harness_config: "none"` is a real explicit override (clear to Pi defaults), not
+    // a no-op; `harness_type: "none"` means "not set" (inherit), matching run-level.
+    // Per-call read-only fence: narrow-only (a call may add readOnly, not lift a run-level one).
+    const effectiveReadOnly = options.readOnly || agentOptions.readOnly === true;
+    const perCallHarnessType = agentOptions.harness_type === "none" ? undefined : agentOptions.harness_type;
+    const perCallHarnessConfigRaw = agentOptions.harness_config;
+    const hasPerCallHarness = perCallHarnessType !== undefined || perCallHarnessConfigRaw !== undefined;
+    let effectiveHarnessSelection: HarnessSelection = harnessSelection;
+    let effectiveHarnessExpansion: HarnessExpansion = harnessExpansion;
+    let effectiveHarnessCtxReadGuardrail: WorkflowCtxReadGuardrailOptions | undefined = harnessCtxReadGuardrail;
+    if (hasPerCallHarness) {
+      // Resolve the per-call config. "none" = explicit clear; a real id must resolve to
+      // a known, valid descriptor or we keep the run-level selection (reject typos/invalid).
+      let resolvedConfig: string = harnessSelection.harness_config;
+      let rejectOverride = false;
+      if (perCallHarnessConfigRaw === "none") {
+        resolvedConfig = "none";
+      } else if (perCallHarnessConfigRaw !== undefined) {
+        const descriptor = harnessConfigRegistry.get(perCallHarnessConfigRaw);
+        if (!descriptor || descriptor.invalid) {
+          log(
+            `per-call harness_config "${perCallHarnessConfigRaw}" is ${descriptor?.invalid ? "invalid" : "unknown"}; using run-level harness`,
+          );
+          rejectOverride = true;
+        } else {
+          resolvedConfig = descriptor.id;
+        }
+      }
+      // Resolve the per-call type. When the per-call harness_config resolves to a
+      // known, valid descriptor, that descriptor's runtime wins (so a config that
+      // declares an unwired runtime like opencode is NOT forced through Pi by a bare
+      // `harness_type: "pi"`); a conflicting explicit `harness_type` is a mismatch and
+      // the whole override is rejected (keep run-level). With no descriptor, a bare
+      // valid `harness_type` applies.
+      let resolvedType: HarnessType = harnessSelection.harness_type;
+      let typeMismatch = false;
+      const configDescriptor =
+        resolvedConfig !== "none" && resolvedConfig !== harnessSelection.harness_config
+          ? harnessConfigRegistry.get(resolvedConfig)
+          : undefined;
+      if (configDescriptor && !configDescriptor.invalid) {
+        resolvedType = configDescriptor.harness_type;
+        if (perCallHarnessType && perCallHarnessType !== configDescriptor.harness_type) {
+          typeMismatch = true;
+        }
+      } else if (perCallHarnessType && (HARNESS_TYPES as readonly string[]).includes(perCallHarnessType)) {
+        resolvedType = perCallHarnessType as HarnessType;
+      }
+      if (typeMismatch) {
+        log(
+          `per-call harness_type "${perCallHarnessType}" conflicts with harness_config "${resolvedConfig}" runtime; using run-level harness`,
+        );
+        rejectOverride = true;
+      }
+      if (!rejectOverride) {
+        const candidateSelection: HarnessSelection = {
+          harness_type: resolvedType,
+          harness_config: resolvedConfig,
+          source: "explicit",
+          detectorVersion: 1,
+        };
+        const candidateExpansion = expandHarnessConfig({
+          harness_type: resolvedType,
+          harness_config: resolvedConfig,
+          registry: harnessConfigRegistry,
+          readOnly: effectiveReadOnly,
+        });
+        if (candidateExpansion.wired) {
+          effectiveHarnessSelection = candidateSelection;
+          // Narrow tool policy (a step config may only SELECT/NARROW, never widen).
+          // Intersect the per-step allowlist with the run-level allowlist and keep the
+          // result even when empty: `applyToolPolicy` treats an explicit empty allowlist
+          // as deny-all, so a disjoint per-step/run-level policy denies tools rather than
+          // widening to the run-level set. `resolvedConfig === "none"` (candidateTools
+          // undefined) falls through to the run-level allowlist (Pi defaults would be
+          // broader). The read-path guardrail below is cleared for "none" (reads are not
+          // mutation authority).
+          const candidateTools = candidateExpansion.tools;
+          const runLevelTools = harnessExpansion.tools;
+          let narrowedTools: string[] | undefined;
+          if (candidateTools && runLevelTools) {
+            narrowedTools = candidateTools.filter((tool) => runLevelTools.includes(tool));
+          } else {
+            narrowedTools = candidateTools ?? runLevelTools;
+          }
+          const narrowedDisallowed = [
+            ...(candidateExpansion.disallowedTools ?? []),
+            ...(harnessExpansion.disallowedTools ?? []),
+          ];
+          // Preserve run-level context fences: a per-step config that only defines tools
+          // (or guardrail) must NOT clear run-level contextMode/inherit* settings. Inherit
+          // any context/inheritance field the candidate leaves undefined from the run-level.
+          effectiveHarnessExpansion = {
+            ...candidateExpansion,
+            contextMode: candidateExpansion.contextMode ?? harnessExpansion.contextMode,
+            inheritProjectContext: candidateExpansion.inheritProjectContext ?? harnessExpansion.inheritProjectContext,
+            inheritSkills: candidateExpansion.inheritSkills ?? harnessExpansion.inheritSkills,
+            inheritMainRules: candidateExpansion.inheritMainRules ?? harnessExpansion.inheritMainRules,
+            systemPromptMode: candidateExpansion.systemPromptMode ?? harnessExpansion.systemPromptMode,
+            tools: narrowedTools,
+            disallowedTools: narrowedDisallowed.length > 0 ? narrowedDisallowed : undefined,
+          };
+          effectiveHarnessCtxReadGuardrail =
+            candidateExpansion.componentExtensions !== undefined ||
+            candidateExpansion.indexExtensions !== undefined ||
+            candidateExpansion.directoryModuleSelfFile !== undefined ||
+            candidateExpansion.frontendPathTriggers !== undefined
+              ? {
+                  componentExtensions: candidateExpansion.componentExtensions,
+                  indexExtensions: candidateExpansion.indexExtensions,
+                  directoryModuleSelfFile: candidateExpansion.directoryModuleSelfFile,
+                  frontendPathTriggers: candidateExpansion.frontendPathTriggers,
+                }
+              : undefined;
+        } else {
+          log(
+            `per-call harness (type=${perCallHarnessType ?? "-"}, config=${resolvedConfig}) is not wired to this runtime; using run-level harness`,
+          );
+        }
+      }
+    }
+
     // Resolve the context-inheritance posture once: the harness expansion is the
     // lowest-precedence layer, agentType frontmatter is mid, agent() call options highest.
     // The result is passed to run() as explicit primitives (which win over any bare
@@ -779,11 +935,11 @@ export async function runWorkflow<T = unknown>(
       [
         // Lowest precedence: harness expansion (from expandHarnessConfig).
         {
-          contextMode: harnessExpansion.contextMode,
-          inheritProjectContext: harnessExpansion.inheritProjectContext,
-          systemPromptMode: harnessExpansion.systemPromptMode as SystemPromptMode | undefined,
-          inheritSkills: harnessExpansion.inheritSkills,
-          inheritMainRules: harnessExpansion.inheritMainRules,
+          contextMode: effectiveHarnessExpansion.contextMode,
+          inheritProjectContext: effectiveHarnessExpansion.inheritProjectContext,
+          systemPromptMode: effectiveHarnessExpansion.systemPromptMode as SystemPromptMode | undefined,
+          inheritSkills: effectiveHarnessExpansion.inheritSkills,
+          inheritMainRules: effectiveHarnessExpansion.inheritMainRules,
         },
         // Next: run-level default (e.g. a `--mode` flag).
         {
@@ -896,12 +1052,12 @@ export async function runWorkflow<T = unknown>(
     // selection is serialized in full, so a harness_type/harness_config change (or
     // a newly detected selection) busts every cached agent result on resume.
     const harnessSelectionHashKey = harnessSelectionKey(
-      harnessSelection.source === "default" ? undefined : harnessSelection,
+      effectiveHarnessSelection.source === "default" ? undefined : effectiveHarnessSelection,
     );
     const legacyNoHarnessSelectionHashKey =
       options.harness_type === "none" &&
-      harnessSelection.source === "explicit" &&
-      harnessSelection.harness_config === "none"
+      effectiveHarnessSelection.source === "explicit" &&
+      effectiveHarnessSelection.harness_config === "none"
         ? '{"detectorVersion":1,"harness_config":"none","harness_type":"none","source":"explicit"}'
         : null;
     const harnessHashKey =
@@ -910,10 +1066,10 @@ export async function runWorkflow<T = unknown>(
         : JSON.stringify({
             selection: harnessSelectionHashKey,
             toolPolicy: {
-              tools: harnessExpansion.tools ?? null,
-              disallowedTools: harnessExpansion.disallowedTools ?? null,
+              tools: effectiveHarnessExpansion.tools ?? null,
+              disallowedTools: effectiveHarnessExpansion.disallowedTools ?? null,
             },
-            ctxReadGuardrail: harnessCtxReadGuardrail ?? null,
+            ctxReadGuardrail: effectiveHarnessCtxReadGuardrail ?? null,
           });
     const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(
@@ -1154,13 +1310,20 @@ export async function runWorkflow<T = unknown>(
                   instructions: agentInstructions,
                   model: modelSpec,
                   tier: agentOptions.tier,
-                  // Tool policy: harness adds (lowest) < per-call/agentType overrides;
-                  // fence still wins when readOnly is set.
-                  toolNames: agentOptions.tools ?? agentDef?.tools ?? harnessExpansion.tools,
+                  // Tool policy: an explicit per-call `tools`/`disallowedTools` override wins
+                  // (it is part of the resume call-hash, so it is safe to widen a single call).
+                  // Otherwise narrow: intersect the agentType allowlist with the harness
+                  // allowlist (an agentType may only narrow the harness authority, never mask
+                  // it), and union the denylists. A disjoint intersection yields deny-all
+                  // (applyToolPolicy honors []). This keeps resume hashes sound: the same
+                  // effective harness + agentType produce the same narrowed policy.
+                  toolNames:
+                    agentOptions.tools ?? intersectToolAllowlists([agentDef?.tools, effectiveHarnessExpansion.tools]),
                   disallowedToolNames:
-                    agentOptions.disallowedTools ?? agentDef?.disallowedTools ?? harnessExpansion.disallowedTools,
-                  readOnly: options.readOnly,
-                  ctxReadGuardrail: harnessCtxReadGuardrail,
+                    agentOptions.disallowedTools ??
+                    unionToolDenylists([agentDef?.disallowedTools, effectiveHarnessExpansion.disallowedTools]),
+                  readOnly: effectiveReadOnly,
+                  ctxReadGuardrail: effectiveHarnessCtxReadGuardrail,
                   // The workflow layer is the single resolution authority: it passes
                   // the fully-resolved primitives, so the raw mode name is intentionally
                   // NOT forwarded (a project-mode name would be unknown to agent.ts's

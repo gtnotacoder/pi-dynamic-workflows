@@ -169,6 +169,21 @@ describe("applyToolPolicy", () => {
       ["read"],
     );
   });
+  it("treats an explicit empty allowlist as deny-all (not all tools)", () => {
+    // A disjoint per-step harness intersection produces []; that must NOT widen to
+    // "all tools" (the old `allow?.length` check skipped filtering for []).
+    assert.deepEqual(
+      applyToolPolicy(tools, []).map((t) => t.name),
+      [],
+      "empty allowlist ⇒ deny-all",
+    );
+    // undefined still means no restriction.
+    assert.deepEqual(
+      applyToolPolicy(tools, undefined).map((t) => t.name),
+      ["read", "write", "bash", "edit"],
+      "undefined allowlist ⇒ no restriction",
+    );
+  });
 });
 
 describe("agentDefinitionKey", () => {
