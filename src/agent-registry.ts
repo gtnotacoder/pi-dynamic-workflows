@@ -181,7 +181,10 @@ export function resolveAgentType(name: string | undefined, registry: AgentRegist
 
 /**
  * Apply a definition's tool policy to a tool list: keep only allowlisted names
- * (when an allowlist is given), then drop any denylisted names. When
+ * (when an allowlist is given), then drop any denylisted names. An **explicit**
+ * allowlist (even empty) is a fence — an empty allowlist means deny-all (no tools),
+ * while `undefined` means no restriction. This matters for per-step harness
+ * intersections: a disjoint allowlist must never widen to "all tools". When
  * `opts.readOnly` is true, strip every write-capable tool as the final step —
  * this fence is unconditional and applied AFTER allow/deny so a harness_config
  * allowlist can never re-grant a write tool.
@@ -196,7 +199,10 @@ export function applyToolPolicy<T extends { name: string }>(
   opts?: { readOnly?: boolean },
 ): T[] {
   let out = tools;
-  if (allow?.length) {
+  // An explicit allowlist (even empty) is a fence: empty ⇒ deny-all. `undefined`
+  // ⇒ no restriction. Prevents a disjoint per-step intersection from widening to
+  // "all tools" (an empty allowlist must not be treated as "no allowlist").
+  if (allow !== undefined) {
     const allowSet = new Set(allow);
     out = out.filter((t) => allowSet.has(t.name));
   }

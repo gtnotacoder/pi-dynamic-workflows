@@ -36,6 +36,8 @@ const THINKER_SCHEMA = {
           file: { type: 'string', description: 'Target file path relative to project root.' },
           instructions: { type: 'string', description: 'Extremely focused, explicit instructions for the Worker. State what to edit/write.' },
           expectedOutput: { type: 'string', description: 'Concrete code signature or functionality added.' },
+          harness_type: { type: 'string', description: 'Optional per-step harness runtime selector (e.g. "pi", "opencode", "hermes"). Omit to inherit the run-level selection.' },
+          harness_config: { type: 'string', description: 'Optional per-step harness_config id (the capability bundle, e.g. "frontend-react-shadcn"). Omit to inherit the run-level selection.' },
           dependencies: {
             type: 'array',
             description: 'Step IDs that MUST be completed and verified BEFORE this step can start. Touch the same file? Sequentially depend them to avoid git conflict. Touch different files? Keep dependencies empty so they run in parallel.',
@@ -273,7 +275,8 @@ const plan = await agent(
   'Guidelines for DAG mapping:\\n' +
   '1. Steps touching the SAME file MUST depend on each other sequentially (e.g. step-2 depends on step-1) to avoid Git merge conflicts.\\n' +
   '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n' +
-  '3. Keep each Worker step narrow enough for one focused edit pass.\\n\\n' +
+    '3. Keep each Worker step narrow enough for one focused edit pass.\\n' +
+  '4. Optionally set step.harness_type/step.harness_config to route a Worker to a specific harness (e.g. a step touching components/ui/** should use harness_type "pi" and harness_config "frontend-react-shadcn"; a backend step may omit both to inherit the run-level selection). Only set them when the step clearly maps to a known harness_config; otherwise omit.\\n\\n' +
   'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
   {
     label: 'issue-thinker',
@@ -465,7 +468,9 @@ while (Object.keys(completed).length < selectedSteps.length) {
         return await agent(prompt, {
           label: 'issue-worker:' + step.id,
           tier: workerTier,
-          agentType: 'specialized-worker'
+          agentType: 'specialized-worker',
+          harness_type: step.harness_type,
+          harness_config: step.harness_config
         })
       },
 
@@ -509,7 +514,10 @@ while (Object.keys(completed).length < selectedSteps.length) {
           {
             label: 'issue-verifier:' + step.id,
             tier: VERIFIER_TIER,
-            schema: VERIFIER_SCHEMA
+            schema: VERIFIER_SCHEMA,
+            harness_type: step.harness_type,
+            harness_config: step.harness_config,
+            readOnly: true
           }
         )
 
