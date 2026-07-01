@@ -71,7 +71,15 @@ export function validateDag<T>(nodes: ReadonlyArray<DagNode<T>>): void {
   for (const n of nodes) {
     if (!n || typeof n.id !== "string" || n.id.length === 0)
       throw new DagValidationError("each dag node needs a non-empty string id");
+    if (isReservedDagId(n.id)) throw new DagValidationError(`reserved dag node id "${n.id}"`);
     if (typeof n.run !== "function") throw new DagValidationError(`dag node "${n.id}" needs a run() function`);
+    if (n.dependsOn !== undefined) {
+      if (!Array.isArray(n.dependsOn)) throw new DagValidationError(`dag node "${n.id}" dependsOn must be an array`);
+      for (const dep of n.dependsOn) {
+        if (typeof dep !== "string" || dep.length === 0)
+          throw new DagValidationError(`dag node "${n.id}" dependsOn entries must be non-empty strings`);
+      }
+    }
     if (ids.has(n.id)) throw new DagValidationError(`duplicate dag node id "${n.id}"`);
     ids.add(n.id);
   }
@@ -79,6 +87,10 @@ export function validateDag<T>(nodes: ReadonlyArray<DagNode<T>>): void {
     for (const dep of n.dependsOn ?? [])
       if (!ids.has(dep)) throw new DagValidationError(`dag node "${n.id}" depends on unknown id "${dep}"`);
   detectCycle(nodes);
+}
+
+function isReservedDagId(id: string): boolean {
+  return id === "__proto__" || id === "prototype" || id === "constructor";
 }
 
 function detectCycle<T>(nodes: ReadonlyArray<DagNode<T>>): void {
@@ -108,9 +120,9 @@ export async function runDag<T = unknown>(
   validateDag(nodes);
 
   const status = new Map<string, DagNodeStatus>(nodes.map((n) => [n.id, "pending"]));
-  const results: Record<string, T> = {};
-  const errors: Record<string, string> = {};
-  const skipped: Record<string, string> = {};
+  const results: Record<string, T> = Object.create(null);
+  const errors: Record<string, string> = Object.create(null);
+  const skipped: Record<string, string> = Object.create(null);
 
   const isDead = (id: string): boolean => status.get(id) === "failed" || status.get(id) === "skipped";
 

@@ -78,7 +78,7 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 | `agent(prompt, opts)` | Spawn one sub-agent. Returns its result (or `null` on recoverable failure). |
 | `parallel(thunks)` | Fan-out. **Pass functions, not promises:** `items.map(x => () => agent(...))`. Results in input order; recoverable failures become `null`. |
 | `pipeline(items, ...stages)` | Each item flows through stages sequentially; different items run concurrently. Stage gets `(prev, original, index)`. |
-| `dag(nodes)` | Dependency-aware fan-out. Nodes are `{ id, dependsOn?, run(deps) }`; dependency-ready nodes run in deterministic waves, failed nodes cascade-skip dependents, and independent branches continue. |
+| `dag(nodes)` | Dependency-aware execution. Nodes are `{ id, dependsOn?, run(deps) }`; dependency-ready nodes run in deterministic declaration-order waves, failed nodes cascade-skip dependents, and independent branches continue in later waves. Use `parallel()` for concurrent independent fan-out. |
 | `phase(title)` | Group agents under a phase (matches `meta.phases`). Optional `{ budget }` sub-budget. |
 | `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
 | `args`, `runId` / `workflowRunId`, `cwd`, `budget` | Run inputs, current workflow run id, cwd, and `budget.remaining()` / `budget.total`. |
@@ -89,7 +89,7 @@ return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', 
 
 ### Dependency-aware `dag()`
 
-Use `dag()` when work has real dependencies instead of a flat `parallel()` wave. Each node has a stable `id`, optional `dependsOn`, and a `run(deps)` thunk. The scheduler runs all currently-ready nodes in declaration order, waits for that wave to settle, then promotes the next wave. This preserves the stable `agent()` call sequence required for resume replay.
+Use `dag()` when work has real dependencies instead of a flat `parallel()` wave. Each node has a stable `id`, optional `dependsOn`, and a `run(deps)` thunk. The scheduler executes currently-ready nodes in declaration order, waits for that wave to settle, then promotes the next wave. Ready-node thunks are intentionally serialized (agent calls still use the shared run limits) so `agent()` call sequence stays stable even if a node awaits before calling `agent()`. Use `parallel()` inside a node or outside `dag()` for truly concurrent independent fan-out.
 
 ```js
 const out = await dag([
@@ -101,7 +101,7 @@ if (!out.ok) log(JSON.stringify({ status: out.status, errors: out.errors, skippe
 return out.results.report;
 ```
 
-Invalid graphs (duplicate ids, missing dependencies, cycles) fail script validation. Ordinary node failures are contained: that node becomes `failed`, its dependents become `skipped`, and independent branches keep running. Run-level failures such as token-budget exhaustion, agent-limit exhaustion, or abort still stop the whole workflow.
+Invalid graphs (duplicate ids, reserved object-prototype ids, malformed `dependsOn`, missing dependencies, cycles) fail script validation. Ordinary node failures are contained: that node becomes `failed`, its dependents become `skipped`, and independent branches keep running in later waves. Recoverable `agent()` exhaustion inside a node is treated as that node failing instead of returning `null`; intentional `null` data returned by non-agent node logic remains valid. Non-recoverable run-level failures such as provider usage limits, context-window caps, token-budget exhaustion, agent-limit exhaustion, or abort still stop the whole workflow.
 
 ### Quality helpers
 
@@ -118,7 +118,7 @@ Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic t
 
 ### Run-level loop guard
 
-Repeated identical `agent()` calls are often a runaway script loop. The run-level `loopGuard` option detects repeated call identities (`phase` + `label` + `model` + `prompt`). It is **warn-only by default** so legitimate identical-prompt fan-out such as reviewer panels is not aborted. To hard-stop a runaway loop, pass for example:
+Repeated identical `agent()` calls are often a runaway script loop. The run-level `loopGuard` option detects repeated call identities (`phase` + `label` + effective `model`/`tier` + `prompt`; ignored tiers are excluded when an explicit model wins). It is **warn-only by default** so legitimate identical-prompt fan-out such as reviewer panels is not aborted. To hard-stop a runaway loop, pass for example:
 
 ```jsonc
 {

@@ -74,6 +74,8 @@ export interface PersistedRunState {
   agentContextReserveTokens?: number | null;
   /** Effective run-level compaction policy captured at start. */
   compactionPolicy?: WorkflowRunOptions["compactionPolicy"];
+  /** Effective run-level loop-guard policy captured at start/resume. */
+  loopGuard?: WorkflowRunOptions["loopGuard"];
   /** Snapshot of the harness selection detected at run start.
    *
    *  Persisted as a canonical serialized string (via serializeHarnessSelection)

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { runWorkflow } from "../src/workflow.js";
 import { type DagNode, runDag, validateDag, type WaveResult } from "../src/workflow-dag.js";
 
@@ -15,7 +16,7 @@ const runWaveSafe = async <T>(batch: ReadonlyArray<{ node: DagNode<T>; deps: Rec
     }),
   );
 
-test("validateDag: rejects duplicate ids, missing deps, and cycles", () => {
+test("validateDag: rejects duplicate ids, missing deps, reserved ids, invalid dependsOn, and cycles", () => {
   assert.throws(
     () =>
       validateDag([
@@ -25,6 +26,11 @@ test("validateDag: rejects duplicate ids, missing deps, and cycles", () => {
     /duplicate/,
   );
   assert.throws(() => validateDag([{ id: "a", dependsOn: ["x"], run: () => 1 }]), /unknown id/);
+  assert.throws(() => validateDag([{ id: "__proto__", run: () => 1 }]), /reserved/);
+  assert.throws(
+    () => validateDag([{ id: "a", dependsOn: "b" as unknown as string[], run: () => 1 }]),
+    /dependsOn must be an array/,
+  );
   assert.throws(
     () =>
       validateDag([
@@ -194,6 +200,192 @@ return { ok: out.ok, status: out.status, skipped: out.skipped }`;
   assert.equal(res.result.status.bad, "failed");
   assert.equal(res.result.status.after, "skipped");
   assert.equal(res.result.skipped.after, "bad");
+});
+
+test("dag(): recoverable agent exhaustion fails the node and skips dependents", async () => {
+  const script = `export const meta = { name: 'dn', description: 'dag null' }
+const out = await dag([
+  { id: 'agent_node', run: async () => await agent('recoverable-empty') },
+  { id: 'after', dependsOn: ['agent_node'], run: async () => 'unreached' },
+])
+return { ok: out.ok, status: out.status, skipped: out.skipped, errors: out.errors }`;
+  const res = await runWorkflow<{
+    ok: boolean;
+    status: Record<string, string>;
+    skipped: Record<string, string>;
+    errors: Record<string, string>;
+  }>(script, {
+    agent: {
+      async run() {
+        return "";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(res.result.ok, false);
+  assert.equal(res.result.status.agent_node, "failed");
+  assert.equal(res.result.status.after, "skipped");
+  assert.match(res.result.errors.agent_node, /Subagent produced no assistant output/);
+});
+
+test("dag(): intentional null node data remains valid", async () => {
+  const script = `export const meta = { name: 'dnull', description: 'dag null data' }
+const out = await dag([
+  { id: 'optional', run: async () => null },
+  { id: 'after', dependsOn: ['optional'], run: async (deps) => deps.optional === null ? 'saw-null' : 'bad' },
+])
+return { ok: out.ok, result: out.results.after }`;
+  const res = await runWorkflow<{ ok: boolean; result: string }>(script, {
+    agent: {
+      async run() {
+        return "unused";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(res.result.ok, true);
+  assert.equal(res.result.result, "saw-null");
+});
+
+test("dag(): nested parallel recoverable agent exhaustion fails the node after sibling thunks settle", async () => {
+  let slowCompleted = false;
+  const script = `export const meta = { name: 'dp', description: 'dag parallel exhaustion' }
+const out = await dag([
+  { id: 'parallel_node', run: async () => await parallel([() => agent('empty'), () => agent('slow')]) },
+  { id: 'after', dependsOn: ['parallel_node'], run: async () => 'unreached' },
+])
+return { ok: out.ok, status: out.status, skipped: out.skipped, errors: out.errors }`;
+  const res = await runWorkflow<{
+    ok: boolean;
+    status: Record<string, string>;
+    skipped: Record<string, string>;
+    errors: Record<string, string>;
+  }>(script, {
+    agent: {
+      async run(prompt: string) {
+        if (prompt === "slow") {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          slowCompleted = true;
+          return "ok";
+        }
+        return "";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(slowCompleted, true);
+  assert.equal(res.result.ok, false);
+  assert.equal(res.result.status.parallel_node, "failed");
+  assert.equal(res.result.status.after, "skipped");
+  assert.match(res.result.errors.parallel_node, /Subagent produced no assistant output/);
+});
+
+test("dag(): generic recoverable parallel errors inside a node remain null slots", async () => {
+  const script = `export const meta = { name: 'dopt', description: 'dag optional parallel' }
+const out = await dag([
+  { id: 'optional', run: async () => await parallel([() => { throw new Error('optional') }, () => 'ok']) },
+  { id: 'after', dependsOn: ['optional'], run: async (deps) => deps.optional },
+])
+return { ok: out.ok, optional: out.results.optional, after: out.results.after }`;
+  const res = await runWorkflow<{ ok: boolean; optional: unknown[]; after: unknown[] }>(script, {
+    agent: {
+      async run() {
+        return "unused";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(res.result.ok, true);
+  assert.deepEqual(res.result.optional, [null, "ok"]);
+  assert.deepEqual(res.result.after, [null, "ok"]);
+});
+
+test("dag(): nested pipeline recoverable agent exhaustion fails the node after sibling items settle", async () => {
+  let slowCompleted = false;
+  const script = `export const meta = { name: 'dpipe', description: 'dag pipeline exhaustion' }
+const out = await dag([
+  { id: 'pipeline_node', run: async () => await pipeline(['empty', 'slow'], async (item) => await agent(item)) },
+  { id: 'after', dependsOn: ['pipeline_node'], run: async () => 'unreached' },
+])
+return { ok: out.ok, status: out.status, skipped: out.skipped, errors: out.errors }`;
+  const res = await runWorkflow<{
+    ok: boolean;
+    status: Record<string, string>;
+    skipped: Record<string, string>;
+    errors: Record<string, string>;
+  }>(script, {
+    agent: {
+      async run(prompt: string) {
+        if (prompt === "slow") {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          slowCompleted = true;
+          return "ok";
+        }
+        return "";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(slowCompleted, true);
+  assert.equal(res.result.ok, false);
+  assert.equal(res.result.status.pipeline_node, "failed");
+  assert.equal(res.result.status.after, "skipped");
+  assert.match(res.result.errors.pipeline_node, /Subagent produced no assistant output/);
+});
+
+test("dag(): node failure scope does not leak to overlapping non-DAG branches", async () => {
+  const script = `export const meta = { name: 'dscope', description: 'dag scope' }
+const result = await parallel([
+  () => dag([{ id: 'hold', run: async () => { await Promise.resolve(); return 'ok' } }]),
+  () => agent('empty outside dag'),
+])
+return { dagOk: result[0].ok, outside: result[1] }`;
+  const res = await runWorkflow<{ dagOk: boolean; outside: unknown }>(script, {
+    agent: {
+      async run() {
+        return "";
+      },
+    },
+    persistLogs: false,
+  });
+  assert.equal(res.result.dagOk, true);
+  assert.equal(res.result.outside, null);
+});
+
+test("dag(): non-recoverable workflow errors propagate", async () => {
+  const script = `export const meta = { name: 'df', description: 'dag fatal' }
+return await dag([{ id: 'fatal', run: async () => await agent('fatal') }])`;
+  await assert.rejects(
+    runWorkflow(script, {
+      agent: {
+        async run() {
+          throw new WorkflowError("quota", WorkflowErrorCode.PROVIDER_USAGE_LIMIT, { recoverable: false });
+        },
+      },
+      persistLogs: false,
+    }),
+    /quota/,
+  );
+});
+
+test("dag(): wave nodes execute in declaration order even when one awaits before agent", async () => {
+  const prompts: string[] = [];
+  const script = `export const meta = { name: 'do', description: 'dag order' }
+const out = await dag([
+  { id: 'first', run: async () => { await Promise.resolve(); return await agent('first') } },
+  { id: 'second', run: async () => await agent('second') },
+])
+return out.ok`;
+  await runWorkflow(script, {
+    agent: {
+      async run(prompt: string) {
+        prompts.push(prompt);
+        return prompt;
+      },
+    },
+    persistLogs: false,
+  });
+  assert.deepEqual(prompts, ["first", "second"]);
 });
 
 test("dag(): invalid graph surfaces as a validation error", async () => {
