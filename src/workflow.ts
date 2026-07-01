@@ -42,7 +42,7 @@ import {
   resolveContextModeLayers,
   type SystemPromptMode,
 } from "./context-mode.js";
-import { checkEngineFloor, parseSemver, readEngineVersionFromFile, type Semver } from "./engine-compat.js";
+import { checkEngineFloor, readEngineVersionFromFile } from "./engine-compat.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import {
   expandHarnessConfig,
@@ -777,7 +777,39 @@ export async function runWorkflow<T = unknown>(
   const stageCheck = async (stageOptions: StageCheckOptions = {}): Promise<StageCheckResult> => {
     throwIfAborted();
     const input = stageOptions && typeof stageOptions === "object" ? stageOptions : {};
-    const stageCheckDefaults = harnessExpansion.stageCheckDefaults ?? {};
+    // Per-step harness: when the caller passes `harness_config` (e.g. issue-delivery's
+    // LocalChecks for a step), resolve that config's stageCheckDefaults so mechanical
+    // checks run in the step's package/cwd, not the run-level default. Mirror agent()'s
+    // per-call accept conditions: only use the per-step config when agent() would ACCEPT
+    // it (known, valid, not skipped, no harness_type/runtime mismatch); otherwise fall
+    // back to run-level defaults so LocalChecks runs in the SAME package the worker did
+    // (worker uses run-level when its per-call override is rejected).
+    const perStepHarnessConfigRaw = typeof input.harness_config === "string" ? input.harness_config : undefined;
+    const perStepHarnessType =
+      typeof input.harness_type === "string" && input.harness_type !== "none" ? input.harness_type : undefined;
+    let perStepStageCheckDefaults: Record<string, unknown> | undefined;
+    if (perStepHarnessConfigRaw === "none") {
+      // Explicit clear (mirrors agent()): use empty defaults (baseCwd), NOT the run-level
+      // package cwd, so LocalChecks runs where the worker did (root).
+      perStepStageCheckDefaults = {};
+    } else if (perStepHarnessConfigRaw) {
+      const descriptor = harnessConfigRegistry.get(perStepHarnessConfigRaw);
+      const typeMatches = !perStepHarnessType || perStepHarnessType === descriptor?.harness_type;
+      if (descriptor && !descriptor.invalid && !descriptor.skipped && typeMatches) {
+        // Reject unwired runtimes (mirrors agent() throwing HARNESS_NOT_WIRED): only apply
+        // the per-step stageCheckDefaults when the resolved runtime is wired.
+        const expansion = expandHarnessConfig({
+          harness_type: descriptor.harness_type,
+          harness_config: perStepHarnessConfigRaw,
+          registry: harnessConfigRegistry,
+          readOnly: options.readOnly,
+        });
+        // An accepted per-step config (even with no stageCheck block) uses its own
+        // defaults ({} ⇒ baseCwd), NOT the run-level package cwd.
+        if (expansion.wired) perStepStageCheckDefaults = expansion.stageCheckDefaults ?? {};
+      }
+    }
+    const stageCheckDefaults = perStepStageCheckDefaults ?? harnessExpansion.stageCheckDefaults ?? {};
     let defaultCwd = baseCwd;
     if (typeof stageCheckDefaults.cwd === "string" && stageCheckDefaults.cwd.length > 0) {
       defaultCwd = isAbsolute(stageCheckDefaults.cwd)
@@ -809,9 +841,10 @@ export async function runWorkflow<T = unknown>(
         }
       }
     }
+    const { harness_config: _perStepHarnessConfig, harness_type: _perStepHarnessType, ...inputWithoutHarness } = input;
     const result = await (options.stageCheck ?? runStageCheck)({
       ...stageCheckDefaults,
-      ...input,
+      ...inputWithoutHarness,
       cwd: effectiveCwd,
       targetFile: effectiveTargetFile,
       signal: runSignal,
@@ -935,14 +968,21 @@ export async function runWorkflow<T = unknown>(
       // valid `harness_type` applies.
       let resolvedType: HarnessType = harnessSelection.harness_type;
       let typeMismatch = false;
-      const configDescriptor =
-        resolvedConfig !== "none" && resolvedConfig !== harnessSelection.harness_config
-          ? harnessConfigRegistry.get(resolvedConfig)
-          : undefined;
-      if (configDescriptor && !configDescriptor.invalid) {
-        resolvedType = configDescriptor.harness_type;
-        if (perCallHarnessType && perCallHarnessType !== configDescriptor.harness_type) {
-          typeMismatch = true;
+      // Look up the descriptor even when the per-call config equals the run-level config:
+      // a conflicting `harness_type` against the same config is still a mismatch (keep
+      // run-level) rather than letting the unwired type throw HARNESS_NOT_WIRED.
+      const perCallConfigSupplied = perCallHarnessConfigRaw !== undefined && perCallHarnessConfigRaw !== "none";
+      const configDescriptor = perCallConfigSupplied ? harnessConfigRegistry.get(resolvedConfig) : undefined;
+      if (configDescriptor && !configDescriptor.invalid && !configDescriptor.skipped) {
+        const descriptorType = configDescriptor.harness_type;
+        if (perCallHarnessType) {
+          if (perCallHarnessType !== descriptorType) {
+            typeMismatch = true;
+          } else {
+            resolvedType = perCallHarnessType as HarnessType;
+          }
+        } else if (resolvedConfig !== harnessSelection.harness_config) {
+          resolvedType = descriptorType;
         }
       } else if (perCallHarnessType && (HARNESS_TYPES as readonly string[]).includes(perCallHarnessType)) {
         resolvedType = perCallHarnessType as HarnessType;
@@ -1014,8 +1054,14 @@ export async function runWorkflow<T = unknown>(
                 }
               : undefined;
         } else {
-          log(
-            `per-call harness (type=${perCallHarnessType ?? "-"}, config=${resolvedConfig}) is not wired to this runtime; using run-level harness`,
+          // Clean failure: a per-call selection of an unwired runtime (e.g. opencode/hermes)
+          // must NOT fall back to the run-level (pi) harness and mutate under the wrong
+          // runtime. Throw a non-recoverable error so the step fails fast. (The run-level
+          // path clean-skips unwired harnesses; this mirrors that for per-call selections.)
+          throw new WorkflowError(
+            `Per-call harness (type=${perCallHarnessType ?? "-"}, config=${resolvedConfig}) is not wired to this runtime; refusing to run under a different harness.`,
+            WorkflowErrorCode.HARNESS_NOT_WIRED,
+            { recoverable: false, agentLabel: requestedLabel },
           );
         }
       }

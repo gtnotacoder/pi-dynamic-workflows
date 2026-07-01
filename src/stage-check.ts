@@ -37,6 +37,10 @@ export type StageCheckRunner = (
 ) => Promise<StageCheckCommandResult>;
 
 export interface StageCheckOptions {
+  /** Optional per-step harness_config id: when set, stageCheck resolves that config's stageCheckDefaults (package cwd/target) instead of the run-level default. Consumed by the workflow layer; not forwarded to runStageCheck. */
+  harness_config?: string;
+  /** Optional per-step harness_type; used with `harness_config` to detect a type/runtime mismatch (mirror agent()'s per-call accept conditions). Not forwarded to runStageCheck. */
+  harness_type?: string;
   cwd?: string;
   targetFile?: string;
   commands?: StageCheckCommand[];

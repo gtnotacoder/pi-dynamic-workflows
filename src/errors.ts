@@ -11,6 +11,8 @@ export enum WorkflowErrorCode {
   WORKFLOW_TIMEOUT = "WORKFLOW_TIMEOUT",
   /** Agent limit exceeded. */
   AGENT_LIMIT_EXCEEDED = "AGENT_LIMIT_EXCEEDED",
+  /** A selected harness runtime/config is not wired to this runtime (e.g. opencode/hermes). */
+  HARNESS_NOT_WIRED = "HARNESS_NOT_WIRED",
   /** Token budget exhausted. */
   TOKEN_BUDGET_EXHAUSTED = "TOKEN_BUDGET_EXHAUSTED",
   /** Subagent exceeded its configured/effective context-window guardrail. */
