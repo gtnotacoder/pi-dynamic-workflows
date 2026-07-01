@@ -6,10 +6,9 @@ harness's own telemetry (persisted run state + Langfuse traces). It is deliberat
 generic so it can grow to cover other behaviors (throughput, JSON-mode, context-window
 pressure, compaction) without new plumbing.
 
-The canonical test is `harness_cache_benchmark`, installed machine-locally as a saved
-workflow at `~/.pi/workflows/saved/harness_cache_benchmark.json` and invoked as
-`/harness_cache_benchmark`. The script is version-controlled below so the test is
-reproducible across machines.
+The canonical test fixture is `harness_cache_benchmark`. It is **not bundled as a shipped
+slash command**; install it manually as a machine-local saved workflow before invoking it.
+The script is version-controlled below so the test is reproducible across machines.
 
 ## What it measures
 
@@ -58,16 +57,25 @@ mode as part of the cache-equivalence key.
 | `models` | `openai-codex/gpt-5.5,meridian/claude-opus-4-8:high` | Comma-separated `provider/modelId` specs to compare. |
 | `repeats` | `3` | Reuse calls per model after the prime (1–10). |
 | `contextBlocks` | `140` | Size of the stable reference prefix (20–4000; 140 ≈ a few thousand tokens). |
-| `readMode` | `sequential` | `sequential`, or `parallel` (prime once, then fan out readers — the prime-then-fan-out idiom). |
+| `readMode` | `sequential` | `sequential`, or `parallel` (prime once, then fan out readers). Use `sequential` for strict per-agent row inspection; see the parallel caveat below. |
 | `tag` | `default` | Baked into the prefix. Separate runs sharing the same `tag` share a provider cache. |
 
-Pass params through the saved slash command:
+Install and run it locally:
+
+1. Copy the canonical script below into `~/.pi/workflows/saved/harness_cache_benchmark.json`
+   using the saved-workflow JSON shape supported by `WorkflowStorage` (for example,
+   `{ "name": "harness_cache_benchmark", "description": "Provider cache benchmark", "script": "..." }`).
+2. Restart/reload Pi so startup registration discovers the copied saved workflow file.
+3. Run the saved slash command with params:
 
 ```text
 /harness_cache_benchmark models=openai-codex/gpt-5.5,meridian/claude-opus-4-8:high repeats=3 readMode=parallel tag=ttl-10m
 ```
 
-## TTL probe (5-min default vs 1-hour extended)
+If the JSON file is not installed locally and the session has not been restarted after
+copying it, `/harness_cache_benchmark` is not a guaranteed repo-shipped command.
+
+## TTL probe (effective bridge cache lifetime)
 
 The workflow VM has no timer (determinism realm), so the cache TTL is probed across
 **separate runs** rather than with an in-script sleep:
@@ -78,9 +86,10 @@ The workflow VM has no timer (determinism realm), so the cache TTL is probed acr
 4. If the second run's **prime** call shows `cacheRead > 0`, the prefix was still warm →
    effective TTL ≥ N. If it is cold (cacheWrite, no read), TTL < N.
 
-Bracket the gap (e.g. 2 min, 10 min, 30 min) to distinguish Anthropic's 5-minute default
-from the 1-hour extended TTL (`cache_control: {ttl:"1h"}` + `extended-cache-ttl-2025-04-11`),
-including whether the Meridian SDK bridge honors the extended header.
+Bracket the gap (e.g. 2 min, 10 min, 30 min) to estimate the effective cache lifetime of
+the currently configured provider bridge. This fixture does **not** set Anthropic's
+extended-cache headers; it cannot prove the 1-hour extended TTL unless the runtime/bridge
+adds an explicit extended-cache option and the fixture is updated to enable it.
 
 ## How to read the results
 
@@ -109,13 +118,15 @@ Cross-run (shared prefix):
 - **2.5-min gap:** the later run's *prime* call read cache (`cacheRead`≈39,276) → prefix
   still warm across separate runs.
 - **67-min gap:** prime was cold (fresh `cacheWrite`) → expired.
-- ⇒ Cross-run caching is confirmed; effective TTL is bracketed between 2.5 min (warm) and
-  67 min (cold). A ~10–30-min spaced re-run is needed to pin 5-min vs 1-hour.
+- ⇒ Cross-run caching is confirmed; the observed bridge/provider cache lifetime is bracketed
+  between 2.5 min (warm) and 67 min (cold). A ~10–30-min spaced re-run can narrow that
+  effective-lifetime bracket, but it does not prove Anthropic extended-cache mode was
+  requested or honored.
 
 Takeaways for routing:
 
-- **Anthropic/Opus (explicit `cache_control`)** caches reliably across *discrete* calls →
-  best for **fan-out with shared context**.
+- **Anthropic/Opus via the current bridge** caches reliably across *discrete* calls in the
+  observed setup → best for **fan-out with shared context**.
 - **OpenAI/GPT-5.5 (automatic prefix cache)** is unreliable across discrete short calls but
   strong **within one long multi-turn agent** (≈81% in production) → best for **iterative**
   single agents.
@@ -129,7 +140,7 @@ export const meta = {
   name: 'harness_cache_benchmark',
   description:
     'Provider-behavior benchmark: prompt caching (prime vs reuse), sequential vs prime-then-fan-out reuse, and context handling across pinned models via a large stable prefix.',
-  phases: [{ title: 'Prime' }, { title: 'Reuse' }, { title: 'Summary' }],
+  phases: [{ title: 'Probe' }, { title: 'Summary' }],
 };
 
 const input = args || {};
@@ -155,27 +166,32 @@ const SHARED =
   'Keep it in context and rely on it.\n' +
   '=== REFERENCE START ===\n' + reference + '=== REFERENCE END ===\n';
 
-function ask(model, tail, label) {
-  return agent(SHARED + '\n' + tail, { model, label });
+function ask(model, tail) {
+  // Keep workflow phase and task label identical across prime/reuse calls: Pi prepends
+  // both before the user prompt, so varying them would break the measured stable prefix.
+  // In readMode=parallel, duplicate labels make per-agent task-panel rows ambiguous until
+  // manager completion matching is call-id-based; use aggregate usage/Langfuse or sequential
+  // mode when inspecting individual rows.
+  return agent(SHARED + '\n' + tail, { model, label: 'cache probe :: ' + model });
 }
 
 for (const model of models) {
-  phase('Prime');
-  await ask(model, 'Task: In ONE short sentence, state the overall topic of the reference. Do not quote it.', 'prime :: ' + model);
+  phase('Probe');
+  await ask(model, 'Task: In ONE short sentence, state the overall topic of the reference. Do not quote it.');
 
-  phase('Reuse');
+  phase('Probe');
   if (readMode === 'parallel') {
     const thunks = [];
     for (let r = 1; r <= reps; r++) {
       const n = r;
       thunks.push(() =>
-        ask(model, 'Follow-up #' + n + ': In ONE short sentence, mention reference item [' + n + '] only.', 'reuse ' + n + ' :: ' + model),
+        ask(model, 'Follow-up #' + n + ': In ONE short sentence, mention reference item [' + n + '] only.'),
       );
     }
     await parallel(thunks);
   } else {
     for (let r = 1; r <= reps; r++) {
-      await ask(model, 'Follow-up #' + r + ': In ONE short sentence, mention reference item [' + r + '] only.', 'reuse ' + r + ' :: ' + model);
+      await ask(model, 'Follow-up #' + r + ': In ONE short sentence, mention reference item [' + r + '] only.');
     }
   }
 }
