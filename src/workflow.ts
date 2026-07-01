@@ -534,7 +534,9 @@ export async function runWorkflow<T = unknown>(
 
   let harnessSelection: HarnessSelection;
   if (options.persistedRunState) {
-    harnessSelection = loadHarnessSelection(options.persistedRunState) ?? selectHarness(baseCwd);
+    harnessSelection =
+      loadHarnessSelection(options.persistedRunState) ??
+      selectHarness(baseCwd, options.harnessConfigRegistry ? { registry: harnessConfigRegistry } : undefined);
   } else if (options.harness_type || options.harness_config) {
     harnessSelection = {
       harness_type: explicitType,
@@ -543,7 +545,10 @@ export async function runWorkflow<T = unknown>(
       detectorVersion: 1,
     } satisfies HarnessSelection;
   } else {
-    harnessSelection = selectHarness(baseCwd);
+    harnessSelection = selectHarness(
+      baseCwd,
+      options.harnessConfigRegistry ? { registry: harnessConfigRegistry } : undefined,
+    );
   }
 
   options.onHarnessSelection?.(harnessSelection);
@@ -1401,7 +1406,9 @@ export async function runWorkflow<T = unknown>(
         worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
         if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
       }
-      const runCwd = worktree?.isolated ? worktree.cwd : undefined;
+      // Fall back to the run-level baseCwd (run-level isolation) so the agent receives the
+      // worktree cwd and rebuilds coding tools for it (agent.ts), not primary-cwd tools.
+      const runCwd = worktree?.isolated ? worktree.cwd : baseCwd;
 
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0). Usage is reset
