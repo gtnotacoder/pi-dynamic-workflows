@@ -693,6 +693,461 @@ test("buildWorkflowTelemetryReport reports cache impact around compaction bounda
   assert.match(rendered, /warm before compaction/);
 });
 
+test("buildWorkflowTelemetryReport treats the active agent spanning compaction as the post sample", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "active compaction agent",
+      prompt: "a",
+      status: "done",
+      model: "meridian/claude-opus-4-8:high",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:02:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "active",
+      result: "active",
+      label: "active compaction agent",
+      model: "meridian/claude-opus-4-8:high",
+      usage: { input: 100_000, output: 10, total: 100_010, cacheRead: 0, cacheWrite: 40_000, cost: 0.1 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:02:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      {
+        type: "compaction_result",
+        workflowRunId: "run-abc",
+        timestamp: "2026-06-27T00:01:00Z",
+        beforeTokens: 400_000,
+        afterTokens: 220_000,
+      },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 1);
+  assert.equal(report.compactionCacheImpact.recent[0].afterAgentLabel, "active compaction agent");
+  assert.equal(report.compactionCacheImpact.coldStartsAfterCompaction, 1);
+});
+
+test("buildWorkflowTelemetryReport prefers the compaction event phase among active overlapping agents", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "older long sibling",
+      phase: "Scout",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+    {
+      id: 2,
+      label: "later active compactor",
+      phase: "Worker",
+      prompt: "b",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:04:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "older",
+      result: "older",
+      label: "older long sibling",
+      phase: "Scout",
+      model: "m/cache",
+      usage: { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+    {
+      index: 1,
+      hash: "later",
+      result: "later",
+      label: "later active compactor",
+      phase: "Worker",
+      model: "m/cache",
+      usage: { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:04:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      {
+        type: "compaction_result",
+        workflowRunId: "run-abc",
+        timestamp: "2026-06-27T00:03:00Z",
+        phase: "Scout",
+        beforeTokens: 400_000,
+      },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.recent[0].afterAgentLabel, "older long sibling");
+  assert.equal(report.compactionCacheImpact.coldStartsAfterCompaction, 0);
+});
+
+test("buildWorkflowTelemetryReport skips active overlaps that do not match the event phase", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "worker active",
+      phase: "Worker",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "worker",
+      result: "worker",
+      label: "worker active",
+      phase: "Worker",
+      model: "m/cache",
+      usage: { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      { type: "compaction_result", workflowRunId: "run-abc", timestamp: "2026-06-27T00:03:00Z", phase: "Scout" },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 0);
+});
+
+test("buildWorkflowTelemetryReport skips ambiguous same-phase active overlaps", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "older active sibling",
+      phase: "Worker",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+    {
+      id: 2,
+      label: "later active sibling",
+      phase: "Worker",
+      prompt: "b",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:04:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "older",
+      result: "older",
+      label: "older active sibling",
+      phase: "Worker",
+      model: "m/cache",
+      usage: { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:05:00Z",
+    },
+    {
+      index: 1,
+      hash: "later",
+      result: "later",
+      label: "later active sibling",
+      phase: "Worker",
+      model: "m/cache",
+      usage: { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:04:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      { type: "compaction_result", workflowRunId: "run-abc", timestamp: "2026-06-27T00:03:00Z", phase: "Worker" },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.compactionEvents, 1);
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 0);
+});
+
+test("buildWorkflowTelemetryReport treats agent end timestamps as exclusive handoff boundaries", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "ending warm agent",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      id: 2,
+      label: "starting cold agent",
+      prompt: "b",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:01:00Z",
+      endedAt: "2026-06-27T00:02:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "ending",
+      result: "ending",
+      label: "ending warm agent",
+      model: "m/cache",
+      usage: { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      index: 1,
+      hash: "starting",
+      result: "starting",
+      label: "starting cold agent",
+      model: "m/cache",
+      usage: { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:01:00Z",
+      endedAt: "2026-06-27T00:02:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [{ type: "compaction_result", workflowRunId: "run-abc", timestamp: "2026-06-27T00:01:00Z" }],
+  });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 1);
+  assert.equal(report.compactionCacheImpact.recent[0].afterAgentLabel, "starting cold agent");
+});
+
+test("buildWorkflowTelemetryReport falls back to the next future sample across phase boundaries", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "thinker after scout compaction",
+      phase: "Thinker",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "thinker",
+      result: "thinker",
+      label: "thinker after scout compaction",
+      phase: "Thinker",
+      model: "m/cache",
+      usage: { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    compactionEvents: [
+      { type: "compaction_result", workflowRunId: "run-abc", timestamp: "2026-06-27T00:01:30Z", phase: "Scout" },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 1);
+  assert.equal(report.compactionCacheImpact.recent[0].afterAgentLabel, "thinker after scout compaction");
+});
+
+test("buildWorkflowTelemetryReport scans all compaction boundaries for anomalies, not just recent", () => {
+  const run = sampleRun();
+  run.agents = [];
+  run.journal = [];
+  const events = [];
+  for (let i = 0; i < 11; i++) {
+    const baseMinute = i * 3;
+    const beforeStart = `2026-06-27T00:${String(baseMinute).padStart(2, "0")}:00Z`;
+    const beforeEnd = `2026-06-27T00:${String(baseMinute + 1).padStart(2, "0")}:00Z`;
+    const eventTime = `2026-06-27T00:${String(baseMinute + 1).padStart(2, "0")}:30Z`;
+    const afterStart = `2026-06-27T00:${String(baseMinute + 2).padStart(2, "0")}:00Z`;
+    const afterEnd = `2026-06-27T00:${String(baseMinute + 3).padStart(2, "0")}:00Z`;
+    run.agents.push(
+      {
+        id: i * 2 + 1,
+        label: `warm-${i}`,
+        prompt: "before",
+        status: "done",
+        model: "m/cache",
+        startedAt: beforeStart,
+        endedAt: beforeEnd,
+      },
+      {
+        id: i * 2 + 2,
+        label: `after-${i}`,
+        prompt: "after",
+        status: "done",
+        model: "m/cache",
+        startedAt: afterStart,
+        endedAt: afterEnd,
+      },
+    );
+    run.journal.push(
+      {
+        index: i * 2,
+        hash: `warm-${i}`,
+        result: "before",
+        label: `warm-${i}`,
+        model: "m/cache",
+        usage: { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+        startedAt: beforeStart,
+        endedAt: beforeEnd,
+      },
+      {
+        index: i * 2 + 1,
+        hash: `after-${i}`,
+        result: "after",
+        label: `after-${i}`,
+        model: "m/cache",
+        usage:
+          i === 0
+            ? { input: 100_000, output: 1, total: 100_001, cacheRead: 0, cacheWrite: 0, cost: 0 }
+            : { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+        startedAt: afterStart,
+        endedAt: afterEnd,
+      },
+    );
+    events.push({ type: "compaction_result", workflowRunId: "run-abc", timestamp: eventTime, beforeTokens: 1 });
+  }
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({ runs: [run], compactionEvents: events });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 11);
+  assert.equal(report.compactionCacheImpact.recent.length, 10);
+  assert.equal(
+    report.compactionCacheImpact.recent.some((boundary) => boundary.afterAgentLabel === "after-0"),
+    false,
+  );
+  assert.ok(
+    report.anomalies.some(
+      (anomaly) => anomaly.kind === "compaction_cache_disruption" && anomaly.agentLabel === "after-0",
+    ),
+  );
+});
+
+test("buildWorkflowTelemetryReport does not flag tiny cache-drop samples as compaction anomalies", () => {
+  const run = sampleRun();
+  run.agents = [
+    {
+      id: 1,
+      label: "large warm before",
+      prompt: "a",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      id: 2,
+      label: "tiny uncached after",
+      prompt: "b",
+      status: "done",
+      model: "m/cache",
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.journal = [
+    {
+      index: 0,
+      hash: "before",
+      result: "before",
+      label: "large warm before",
+      model: "m/cache",
+      usage: { input: 2, output: 1, total: 100_003, cacheRead: 100_000, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt: "2026-06-27T00:01:00Z",
+    },
+    {
+      index: 1,
+      hash: "after",
+      result: "after",
+      label: "tiny uncached after",
+      model: "m/cache",
+      usage: { input: 25, output: 1, total: 26, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      startedAt: "2026-06-27T00:02:00Z",
+      endedAt: "2026-06-27T00:03:00Z",
+    },
+  ];
+  run.tokenUsage = undefined;
+
+  const report = buildWorkflowTelemetryReport({
+    runs: [run],
+    lowCacheInputThreshold: 1_000,
+    compactionEvents: [
+      {
+        type: "compaction_result",
+        workflowRunId: "run-abc",
+        timestamp: "2026-06-27T00:01:30Z",
+        beforeTokens: 400_000,
+      },
+    ],
+  });
+
+  assert.equal(report.compactionCacheImpact.boundariesAnalyzed, 1);
+  assert.equal(report.compactionCacheImpact.cacheDropsAfterCompaction, 0);
+  assert.equal(report.compactionCacheImpact.recent[0].cacheDrop, false);
+  assert.equal(report.compactionCacheImpact.maxDropPct, undefined);
+  assert.equal(report.compactionCacheImpact.avgDeltaPct, undefined);
+  assert.equal(report.compactionCacheImpact.avgPreCacheReadPct, undefined);
+  assert.equal(report.compactionCacheImpact.avgPostCacheReadPct, undefined);
+  assert.equal(
+    report.anomalies.some((anomaly) => anomaly.kind === "compaction_cache_disruption"),
+    false,
+  );
+});
+
 test("buildWorkflowTelemetryReport leaves compaction cache impact empty without timestamped adjacent samples", () => {
   const report = buildWorkflowTelemetryReport({
     runs: [sampleRun()],

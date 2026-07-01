@@ -79,6 +79,9 @@ export interface CompactionCacheImpactSummary {
   avgPostCacheReadPct?: number;
   avgDeltaPct?: number;
   maxDropPct?: number;
+  /** All analyzed boundaries, used for anomaly detection. */
+  boundaries: CompactionCacheImpactBoundary[];
+  /** Display-truncated tail of analyzed boundaries. */
   recent: CompactionCacheImpactBoundary[];
 }
 
@@ -178,6 +181,7 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
         workflowName: run.workflowName,
         label,
         model,
+        phase: agent.phase ?? journal?.phase,
         index,
         usage: rollupUsage,
         cacheReadPct: usageCacheReadPct(rollupUsage),
@@ -222,7 +226,7 @@ export function buildWorkflowTelemetryReport(options: WorkflowTelemetryReportOpt
     agentUsageObservations,
     lowCacheInputThreshold,
   );
-  for (const boundary of compactionCacheImpact.recent) {
+  for (const boundary of compactionCacheImpact.boundaries) {
     if (!boundary.coldStart && !boundary.cacheDrop) continue;
     anomalies.push({
       kind: "compaction_cache_disruption",
@@ -411,6 +415,7 @@ interface AgentUsageObservation {
   workflowName: string;
   label: string;
   model: string;
+  phase?: string;
   index: number;
   usage: AgentUsage;
   cacheReadPct: number;
@@ -437,13 +442,14 @@ function summarizeCompactionCacheImpact(
     if (!runObservations.length) continue;
 
     const before = latestObservationBefore(runObservations, ts);
-    const after = earliestObservationAfter(runObservations, ts);
+    const after = earliestObservationAfter(runObservations, ts, event.phase);
     if (!after) continue;
 
     const deltaPct = before ? after.cacheReadPct - before.cacheReadPct : undefined;
     const afterCacheableInput = cacheableInput(after.usage);
-    const coldStart = afterCacheableInput >= lowCacheInputThreshold && after.cacheReadPct < 0.05;
-    const cacheDrop = deltaPct !== undefined && deltaPct <= -0.2;
+    const hasMaterialPostSample = afterCacheableInput >= lowCacheInputThreshold;
+    const coldStart = hasMaterialPostSample && after.cacheReadPct < 0.05;
+    const cacheDrop = hasMaterialPostSample && deltaPct !== undefined && deltaPct <= -0.2;
     boundaries.push({
       runId: event.workflowRunId,
       workflowName: after.workflowName ?? before?.workflowName,
@@ -465,11 +471,14 @@ function summarizeCompactionCacheImpact(
     });
   }
 
-  const deltas = boundaries.flatMap((boundary) => (boundary.deltaPct === undefined ? [] : [boundary.deltaPct]));
-  const pre = boundaries.flatMap((boundary) =>
+  const materialBoundaries = boundaries.filter(
+    (boundary) => boundaryCacheableInput(boundary) >= lowCacheInputThreshold,
+  );
+  const deltas = materialBoundaries.flatMap((boundary) => (boundary.deltaPct === undefined ? [] : [boundary.deltaPct]));
+  const pre = materialBoundaries.flatMap((boundary) =>
     boundary.beforeCacheReadPct === undefined ? [] : [boundary.beforeCacheReadPct],
   );
-  const post = boundaries.flatMap((boundary) =>
+  const post = materialBoundaries.flatMap((boundary) =>
     boundary.afterCacheReadPct === undefined ? [] : [boundary.afterCacheReadPct],
   );
 
@@ -482,6 +491,7 @@ function summarizeCompactionCacheImpact(
     avgPostCacheReadPct: average(post),
     avgDeltaPct: average(deltas),
     maxDropPct: deltas.length ? Math.min(...deltas) : undefined,
+    boundaries,
     recent: boundaries.slice(-10),
   };
 }
@@ -508,7 +518,13 @@ function latestObservationBefore(
 function earliestObservationAfter(
   observations: AgentUsageObservation[],
   timestamp: number,
+  phase: string | undefined,
 ): AgentUsageObservation | undefined {
+  const activeCandidates = observations.filter((observation) => observationContainsTimestamp(observation, timestamp));
+  const activePool = phase ? activeCandidates.filter((observation) => observation.phase === phase) : activeCandidates;
+  if (activePool.length > 1) return undefined;
+  if (activePool.length === 1) return activePool[0];
+
   return observations
     .map((observation) => ({ observation, time: observationStartOrEndMs(observation) }))
     .filter((entry) => entry.time !== undefined && entry.time >= timestamp)
@@ -521,6 +537,16 @@ function observationEndOrStartMs(observation: AgentUsageObservation): number | u
 
 function observationStartOrEndMs(observation: AgentUsageObservation): number | undefined {
   return parseIsoMs(observation.startedAt) ?? parseIsoMs(observation.endedAt);
+}
+
+function observationContainsTimestamp(observation: AgentUsageObservation, timestamp: number): boolean {
+  const start = parseIsoMs(observation.startedAt);
+  const end = parseIsoMs(observation.endedAt);
+  return start !== undefined && end !== undefined && start <= timestamp && timestamp < end;
+}
+
+function boundaryCacheableInput(boundary: CompactionCacheImpactBoundary): number {
+  return (boundary.afterInput ?? 0) + (boundary.afterCacheRead ?? 0);
 }
 
 function timestampMs(event: CompactionTelemetryEvent): number {
