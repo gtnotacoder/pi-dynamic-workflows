@@ -262,3 +262,17 @@ test("validate-harness API is exported from the package entry point", () => {
   assert.equal(typeof exportedRunValidateHarness, "function");
   assert.equal(typeof parseSemver, "function");
 });
+
+test("validate-harness CLI bin exits 0 on a valid descriptor and non-zero on a missing one", async () => {
+  const { spawnSync } = await import("node:child_process");
+  // Run the SOURCE CLI via the tsx loader (dist/ is gitignored and not built by targeted test:unit).
+  const cli = join(process.cwd(), "src", "validate-harness-cli.ts");
+  const run = (args: string[]) => spawnSync(process.execPath, ["--import", "tsx", cli, ...args], { encoding: "utf-8" });
+  const dir = mkdtempSync(join(tmpdir(), "vh-cli-"));
+  const valid = writeDescriptor(dir, "valid.json", { schemaVersion: 1, id: "valid", harness_type: "pi" });
+  const ok = run([valid]);
+  assert.equal(ok.status, 0, "CLI exits 0 on a valid descriptor");
+  const bad = run([join(dir, "missing.json")]);
+  assert.equal(bad.status, 1, "CLI exits non-zero on a missing descriptor");
+  assert.match(bad.stdout ?? "", /FAIL/, "CLI prints a FAIL line for the missing descriptor");
+});
