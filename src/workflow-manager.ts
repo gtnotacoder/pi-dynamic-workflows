@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
-import { type AgentRegistry, loadAgentRegistry } from "./agent-registry.js";
+import { loadAgentRegistry } from "./agent-registry.js";
 import {
   CONDUCTOR_STATE_ENV_PATHS,
   ISSUE_DELIVERY_STATUS_PATH,
@@ -18,7 +18,7 @@ import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
-import { type HarnessConfigRegistry, loadHarnessConfigRegistry } from "./harness-config.js";
+import { HARNESS_RUNTIME_INFO, HARNESS_TYPES, loadHarnessConfigRegistry } from "./harness-config.js";
 import type { HarnessSelection } from "./harness-selector.js";
 import {
   assertValidRunId,
@@ -613,7 +613,54 @@ export class WorkflowManager extends EventEmitter {
     // (complete/failed/aborted); a PAUSED run keeps its worktree so resume can
     // continue in the same tree with its edits intact. Finalization delivers a PR
     // from this worktree.
-    const wantWorktree = !!(isolation?.worktree || worktreeRequired);
+    // Harness-descriptor `worktreeRequired` auto-isolation: a harness may demand
+    // run-level isolation. For an explicit `--harness-config <id>`, consult that
+    // descriptor (auto-detected harnesses are resolved inside runWorkflow; their
+    // worktreeRequired is a deeper follow-up). Load the registry once when needed
+    // (including on resume, so a reused isolated run keeps the primary's descriptors).
+    const needsRegistry = !!(isolation?.worktree || worktreeRequired || reuseWorktree || harness_config);
+    const harnessRegistry = needsRegistry ? loadHarnessConfigRegistry(this.cwd) : undefined;
+    const harnessDescriptor = harness_config ? harnessRegistry?.get(harness_config) : undefined;
+    // The EFFECTIVE runtime is the caller's `harness_type` override (if valid) else
+    // the descriptor's runtime — so an opencode descriptor launched with `--harness-type pi`
+    // is wired (pi) and CAN demand isolation, while an unwired descriptor with no override
+    // reaches runWorkflow's clean-skip.
+    const effectiveHarnessType =
+      harness_type && (HARNESS_TYPES as readonly string[]).includes(harness_type)
+        ? harness_type
+        : harnessDescriptor?.harness_type;
+    const effectiveWired = effectiveHarnessType
+      ? HARNESS_RUNTIME_INFO[effectiveHarnessType as keyof typeof HARNESS_RUNTIME_INFO].wired
+      : true;
+    // A valid caller `harness_type` override redeems an invalid descriptor runtime
+    // (the effective runtime is the override, not the descriptor's typo), so only block
+    // on `invalid` when there is no valid override.
+    const validOverride = !!harness_type && (HARNESS_TYPES as readonly string[]).includes(harness_type);
+    const descriptorUsable =
+      !!harnessDescriptor &&
+      !harnessDescriptor.skipped &&
+      (!harnessDescriptor.invalid || validOverride) &&
+      effectiveWired;
+    const descriptorRequiresWorktree = !!harnessDescriptor?.worktreeRequired && descriptorUsable;
+    // A harness that REQUIRES isolation cannot be satisfied when the caller also supplied
+    // an explicit `tools` policy: isolation drops those (primary-cwd-bound) tools, which
+    // would silently strip a read-only fence from a review workflow. Fail closed so the
+    // conflict is surfaced (a cwd-bound tool factory that preserves policy under
+    // isolation is #93) instead of silently running unisolated or dropping the fence.
+    if (descriptorRequiresWorktree && tools) {
+      const conflict = new WorkflowError(
+        `Harness '${harness_config}' requires worktree isolation but an explicit tools policy cannot be preserved under isolation; drop tools or use a cwd-bound tool factory (#93)`,
+        WorkflowErrorCode.WORKFLOW_ABORTED,
+        { recoverable: false },
+      );
+      managed.status = "failed";
+      managed.error = conflict;
+      this.persistRun(managed);
+      this.releaseRunLease(managed);
+      this.emit("error", { runId: managed.runId, error: conflict });
+      throw conflict;
+    }
+    const wantWorktree = !!(isolation?.worktree || worktreeRequired || descriptorRequiresWorktree);
     let runWorktree: Worktree | undefined;
     let runCwd = this.cwd;
     if (reuseWorktree && existsSync(reuseWorktree.cwd)) {
@@ -652,9 +699,9 @@ export class WorkflowManager extends EventEmitter {
         );
         managed.status = "failed";
         managed.error = failError;
-        this.emit("error", { runId: managed.runId, error: failError });
         this.persistRun(managed);
         this.releaseRunLease(managed);
+        this.emit("error", { runId: managed.runId, error: failError });
         throw failError;
       }
     }
@@ -692,7 +739,7 @@ export class WorkflowManager extends EventEmitter {
       const result = await runWorkflow(script, {
         cwd: runCwd,
         agentRegistry: runWorktree?.isolated ? loadAgentRegistry(this.cwd) : undefined,
-        harnessConfigRegistry: runWorktree?.isolated ? loadHarnessConfigRegistry(this.cwd) : undefined,
+        harnessConfigRegistry: runWorktree?.isolated ? harnessRegistry : undefined,
         tools: runWorktree?.isolated ? undefined : tools,
         args,
         runId: managed.runId,

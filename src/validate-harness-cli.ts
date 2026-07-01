@@ -8,7 +8,6 @@ import { runValidateHarness } from "./validate-harness.js";
 
 const result = runValidateHarness(process.argv.slice(2));
 if (result.report) {
-  // biome-ignore lint/suspicious/noConsole: CLI entry point
   console.log(result.report);
 }
 process.exit(result.exitCode);

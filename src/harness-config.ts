@@ -37,6 +37,10 @@ export interface HarnessConfig {
   id: string;
   harness_type: HarnessType;
   wired: boolean;
+  /** When true, a run resolving this harness demands run-level git-worktree isolation (auto-isolate even without an explicit `isolation`/`worktreeRequired` run option). */
+  worktreeRequired?: boolean;
+  /** `worktreeRequired` was present but not a boolean (loader warns; treated as not-required). */
+  worktreeRequiredMalformed?: boolean;
   engineMin?: string;
   engineMinMalformed?: boolean;
   /** Loader skipped this descriptor (e.g. engine.min above the running engine); kept in the registry so an explicit `--harness-config <id>` can clean-skip with the reason instead of silently falling back to pi. */
@@ -172,6 +176,8 @@ export function parseHarnessConfigDescriptor(
     id: identity.id,
     harness_type,
     wired: invalidReason ? false : HARNESS_RUNTIME_INFO[harness_type].wired,
+    worktreeRequired: booleanField(raw.worktreeRequired) === true,
+    worktreeRequiredMalformed: "worktreeRequired" in raw && typeof raw.worktreeRequired !== "boolean",
     engineMin,
     engineMinMalformed,
     displayName: stringField(raw.displayName) ?? stringField(raw.name),
@@ -237,6 +243,9 @@ function readConfigsFromDir(
           wired: false,
         });
         continue;
+      }
+      if (config.worktreeRequiredMalformed) {
+        onWarning?.(`Harness_config descriptor ${path}: worktreeRequired must be a boolean (ignoring).`);
       }
       if (config.engineMin) {
         if (!engineVersion) {

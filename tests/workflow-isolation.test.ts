@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -173,7 +173,7 @@ test("isolation: preserves the caller's subdirectory inside the worktree", async
       .split("\n")
       .forEach((line) => {
         const m = line.match(/^(\S+)\s+/);
-        if (m && m[1].includes(".pi/worktrees/")) execSync(`git worktree remove --force "${m[1]}"`, { cwd: repo });
+        if (m?.[1].includes(".pi/worktrees/")) execSync(`git worktree remove --force "${m[1]}"`, { cwd: repo });
       });
     rmSync(repo, { recursive: true, force: true });
     rmSync(fakeHome, { recursive: true, force: true });
@@ -321,5 +321,125 @@ throw new Error('top-level boom')`;
       execSync(`git worktree remove --force "${wtCwd}" 2>/dev/null; git branch -D "pi/wf/run-${runId}" 2>/dev/null`, {
         cwd,
       });
+  });
+});
+
+function writeHarnessDescriptor(dir: string, id: string, raw: Record<string, unknown>) {
+  const harnessDir = join(dir, ".pi", "workflows", "harnesses");
+  mkdirSync(harnessDir, { recursive: true });
+  writeFileSync(join(harnessDir, `${id}.json`), JSON.stringify({ schemaVersion: 1, id, harness_type: "pi", ...raw }));
+}
+
+test("isolation: a harness descriptor with worktreeRequired: true auto-isolates (no explicit isolation option)", async () => {
+  await withGitRepo(async (cwd) => {
+    writeHarnessDescriptor(cwd, "auto-iso", { worktreeRequired: true, tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { runId, promise } = manager.startInBackground(cwdScript, undefined, { harness_config: "auto-iso" });
+    const result = await promise;
+    const runCwd = (result.result as string).replaceAll("\\", "/");
+    assert.match(
+      runCwd,
+      /\/\.pi\/worktrees\/run-/,
+      "auto-isolated into a worktree from the descriptor's worktreeRequired",
+    );
+    const managed = manager.getRun(runId);
+    assert.equal(managed?.harnessSelection?.harness_config, "auto-iso", "the harness_config was honored");
+    manager.deleteRun(runId);
+  });
+});
+
+test("isolation: a harness descriptor WITHOUT worktreeRequired does NOT auto-isolate", async () => {
+  await withGitRepo(async (cwd) => {
+    writeHarnessDescriptor(cwd, "plain", { tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, { harness_config: "plain" });
+    const result = await promise;
+    assert.equal(result.result, cwd, "a descriptor without worktreeRequired runs in the primary checkout");
+  });
+});
+
+test("isolation: a SKIPPED harness (engine.min above engine) with worktreeRequired does NOT force isolation (reaches the clean-skip)", async () => {
+  await withGitRepo(async (cwd) => {
+    // engine.min 99.0.0 is above the running engine → loader retains it as `skipped`.
+    writeHarnessDescriptor(cwd, "too-new", { engine: { min: "99.0.0" }, worktreeRequired: true, tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, { harness_config: "too-new" });
+    const result = await promise;
+    // A skipped harness clean-skips (harness-not-wired), not an "isolation required" failure:
+    assert.equal((result.result as { status?: string }).status, "harness-not-wired", "skipped harness clean-skips");
+    assert.equal(result.agentCount, 0, "no agents spawned");
+    assert.ok(!existsSync(join(cwd, ".pi", "worktrees")), "no worktree created for a skipped harness");
+  });
+});
+
+test("isolation: descriptor worktreeRequired + an explicit tools policy FAILS CLOSED (no silent fence drop)", async () => {
+  await withGitRepo(async (cwd) => {
+    writeHarnessDescriptor(cwd, "auto-iso", { worktreeRequired: true, tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, {
+      harness_config: "auto-iso",
+      tools: ["read"],
+    });
+    await assert.rejects(
+      promise,
+      (err: unknown) =>
+        err instanceof Error &&
+        /requires worktree isolation but an explicit tools policy cannot be preserved/i.test(err.message),
+      "worktreeRequired + explicit tools fails closed",
+    );
+    assert.ok(!existsSync(join(cwd, ".pi", "worktrees")), "no worktree created on the fail-closed path");
+  });
+});
+
+test("isolation: descriptor worktreeRequired is honored with a harness_type runtime override (opencode descriptor + --harness-type pi)", async () => {
+  await withGitRepo(async (cwd) => {
+    writeHarnessDescriptor(cwd, "oc-cfg", { harness_type: "opencode", worktreeRequired: true, tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, {
+      harness_config: "oc-cfg",
+      harness_type: "pi",
+    });
+    const result = await promise;
+    const runCwd = (result.result as string).replaceAll("\\", "/");
+    assert.match(runCwd, /\/\.pi\/worktrees\/run-/, "worktreeRequired honored with the pi runtime override → isolated");
+    const wtDir = join(cwd, ".pi", "worktrees");
+    if (existsSync(wtDir)) {
+      for (const d of execSync(`ls -1 "${wtDir}"`, { encoding: "utf-8" }).trim().split("\n").filter(Boolean)) {
+        execSync(`git worktree remove --force "${join(wtDir, d)}"`, { cwd });
+        execSync(`git branch -D "pi/wf/${d}"`, { cwd });
+      }
+    }
+  });
+});
+
+test("isolation: an invalid-runtime descriptor with worktreeRequired + a valid --harness-type override auto-isolates", async () => {
+  await withGitRepo(async (cwd) => {
+    // Invalid harness_type 'unknown' (descriptor.invalid), but a valid --harness-type pi
+    // override redeems it: the effective runtime is pi (wired) → worktreeRequired honored.
+    writeHarnessDescriptor(cwd, "badrt", { harness_type: "unknown", worktreeRequired: true, tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, {
+      harness_config: "badrt",
+      harness_type: "pi",
+    });
+    const result = await promise;
+    const runCwd = (result.result as string).replaceAll("\\", "/");
+    assert.match(runCwd, /\/\.pi\/worktrees\/run-/, "valid override redeems the invalid descriptor runtime → isolated");
+    const wtDir = join(cwd, ".pi", "worktrees");
+    if (existsSync(wtDir))
+      for (const d of execSync(`ls -1 "${wtDir}"`, { encoding: "utf-8" }).trim().split("\n").filter(Boolean)) {
+        execSync(`git worktree remove --force "${join(wtDir, d)}"`, { cwd });
+        execSync(`git branch -D "pi/wf/${d}"`, { cwd });
+      }
+  });
+});
+
+test("isolation: a malformed (non-boolean) worktreeRequired is treated as not-required (no auto-isolation)", async () => {
+  await withGitRepo(async (cwd) => {
+    writeHarnessDescriptor(cwd, "malformed-wtr", { worktreeRequired: "yes", tools: ["read"] });
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const { promise } = manager.startInBackground(cwdScript, undefined, { harness_config: "malformed-wtr" });
+    const result = await promise;
+    assert.equal(result.result, cwd, "malformed worktreeRequired ignored → runs in primary (not auto-isolated)");
   });
 });
