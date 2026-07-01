@@ -96,6 +96,13 @@ export interface PersistedRunState {
   };
   /** Cached agent results and replay metadata, keyed by deterministic call index. */
   journal?: JournalEntry[];
+  /**
+   * Run-level isolation worktree (when the run was launched with
+   * `isolation: { worktree: true }`/`worktreeRequired`). Persisted so a paused
+   * run keeps its worktree across a resume (edits live in the worktree, not the
+   * primary checkout); resume reuses it via `reuseWorktree`.
+   */
+  worktree?: { cwd: string; branch?: string; repoRoot?: string };
 }
 
 export interface RunPersistence {

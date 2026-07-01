@@ -126,14 +126,20 @@ the cell `0/4 → 4/4` then cleared, with the result delivered back to chat.
 
 ---
 
-## 4. Tier 1 — conductor runs become real herdr cells (DESIGNED)
+## 4. Tier 1 — conductor runs become real herdr cells (FOUNDATION SHIPPED; pane spawn pending)
 
 **Goal:** instead of one enriched pi cell, give each *conductor run* its own
 herdr cell — attachable, focusable, with native agent detection. herdr's tab grid
 becomes the fan-out dashboard, and `herdr worktree list` replaces ad-hoc worktree
 bookkeeping.
 
-**Mechanism** — where the conductor would `spawn` a run:
+**Shipped foundation (#85): run-level worktree isolation is wired at the `WorkflowManager` launch layer — `startInBackground`/`runSync` accept `isolation: { worktree: true }` (or the first-class `worktreeRequired: true`), which creates a run-owned git worktree on `pi/wf/<runId>`, runs the whole workflow there (never the primary checkout's working branch), and lets finalization deliver a PR from that worktree. This is the (a) worktree + (c) never-touch-primary + (d) PR-from-worktree leg.
+
+> Run worktrees live under `<repoRoot>/.pi/worktrees/<runId>`; gitignore `.pi/` (the convention) so a kept worktree doesn't show as untracked in the primary checkout. The worktree is KEPT on completed/failed/paused runs (outputs/edits preserved for inspection/PR/resume) and removed only on abort or explicit `deleteRun()`; finalization removes a delivered worktree. `ExecOptions.tools` are dropped for an isolated run (they're primary-cwd-bound); a cwd-bound tool factory for custom tool policy under isolation is tracked in #93.
+
+**Still pending (tracked follow-up, validated against the admin-portal worked example):** the (b) tmux/herdr **pane spawn** — `herdr agent start wf-<run> --cwd <worktree> -- pi …` so each run is a real, focusable herdr cell with live status — plus a memory/concurrency cap (spawning real `pi` per run multiplies VM memory) and harness-descriptor `worktreeRequired` auto-isolation. The spawn mechanism below is the spec for that follow-up.
+
+**Mechanism (for the pane-spawn follow-up) — where the conductor would `spawn` a run:
 
 ```
 herdr worktree create --branch wf/<run> --base <ref> --json   # herdr owns the worktree

@@ -3,9 +3,10 @@
  */
 
 import { EventEmitter } from "node:events";
-import { mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import type { WorkflowAgent } from "./agent.js";
+import { type AgentRegistry, loadAgentRegistry } from "./agent-registry.js";
 import {
   CONDUCTOR_STATE_ENV_PATHS,
   ISSUE_DELIVERY_STATUS_PATH,
@@ -17,6 +18,7 @@ import { PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT } from "./config.js";
 import type { ContextModeRegistry } from "./context-mode.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { type HarnessConfigRegistry, loadHarnessConfigRegistry } from "./harness-config.js";
 import type { HarnessSelection } from "./harness-selector.js";
 import {
   assertValidRunId,
@@ -40,6 +42,7 @@ import {
 } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 import { loadWorkflowSettings, type WorkflowSettings } from "./workflow-settings.js";
+import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface ManagedRun {
   runId: string;
@@ -98,6 +101,8 @@ export interface ManagedRun {
   harnessSelection?: HarnessSelection;
   /** Persisted run state used only to resume deterministic harness selection snapshots. */
   persistedRunState?: PersistedRunState;
+  /** Run-level isolation worktree (persisted so resume reuses it; undefined when not isolated). */
+  worktree?: { cwd: string; branch?: string; repoRoot?: string };
   /** Optional conductor-level semantic status, layered on top of the engine
    *  `status` above. Older runs may omit this. */
   semanticStatus?: ConductorRunStatus;
@@ -146,6 +151,38 @@ export interface ExecOptions {
    * Overrides the manager's default (computed from the run id) when set.
    */
   transcriptDir?: string;
+  /**
+   * Run-level isolation: when `worktree` is true, the run executes in its own git
+   * worktree (branch `pi/wf/<runId>`) and never touches the primary checkout's
+   * working branch; the worktree is removed when the run settles. The conductor's
+   * finalization then delivers a PR from that worktree. (Tier-1 isolation seam.)
+   */
+  isolation?: RunIsolationOptions;
+  /** First-class alias for `isolation: { worktree: true }` (demand an isolated run). */
+  worktreeRequired?: boolean;
+  /**
+   * Resume reuse: when set, executeRun reuses this existing worktree (from a
+   * paused run's persisted state) instead of creating a new one, so a resumed
+   * run continues in the same isolated tree with its edits intact.
+   */
+  reuseWorktree?: { cwd: string; branch?: string; repoRoot?: string };
+}
+
+/**
+ * Run-level isolation options for {@link WorkflowManager.startInBackground}/
+ * {@link WorkflowManager.runSync}. The foundation of the Tier-1 conductor seam
+ * (see docs/herdr-integration.md §4): a run gets its own git worktree so it never
+ * touches the primary checkout, and finalization delivers a PR from it.
+ *
+ * The tmux/herdr pane spawn (a real `pi` per run) is a tracked follow-up validated
+ * against the admin-portal worked example; this option delivers the worktree
+ * isolation + PR-from-worktree leg today.
+ */
+export interface RunIsolationOptions {
+  /** Create + run in a git worktree (branch `pi/wf/<runId>`); removed on settle. */
+  worktree?: boolean;
+  /** Base cwd/repo to add the worktree to (defaults to the manager's cwd). */
+  base?: string;
 }
 
 export interface WorkflowManagerOptions {
@@ -523,11 +560,14 @@ export class WorkflowManager extends EventEmitter {
       loopGuard,
       concurrency,
       agentRetries,
-      tools,
       confirm,
       contextMode,
+      tools,
       harness_type,
       harness_config,
+      isolation,
+      worktreeRequired,
+      reuseWorktree,
     } = exec;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     // Effective run-wide timeout precedence:
@@ -567,9 +607,93 @@ export class WorkflowManager extends EventEmitter {
       if (externalSignal.aborted) managed.controller.abort();
       else externalSignal.addEventListener("abort", () => managed.controller.abort(), { once: true });
     }
+    // Tier-1 run-level isolation: optionally run the whole workflow in its own git
+    // worktree so it never touches the primary checkout's working branch. The
+    // worktree is removed in the finally below when the run settles TERMINALLY
+    // (complete/failed/aborted); a PAUSED run keeps its worktree so resume can
+    // continue in the same tree with its edits intact. Finalization delivers a PR
+    // from this worktree.
+    const wantWorktree = !!(isolation?.worktree || worktreeRequired);
+    let runWorktree: Worktree | undefined;
+    let runCwd = this.cwd;
+    if (reuseWorktree && existsSync(reuseWorktree.cwd)) {
+      // Resume reuses the paused run's worktree (its edits live there, not primary).
+      runWorktree = {
+        isolated: true,
+        cwd: reuseWorktree.cwd,
+        branch: reuseWorktree.branch,
+        repoRoot: reuseWorktree.repoRoot,
+      };
+    } else if (reuseWorktree) {
+      // A persisted worktree was required for resume but is gone (the failed run's
+      // tree was removed on terminal settle). Refuse to resume in the primary
+      // checkout — that would violate isolation and the prior edits are lost anyway.
+      const goneError = new WorkflowError(
+        `Cannot resume isolated run: worktree no longer exists at ${reuseWorktree.cwd}`,
+        WorkflowErrorCode.WORKFLOW_ABORTED,
+        { recoverable: false },
+      );
+      managed.status = "failed";
+      managed.error = goneError;
+      this.emit("error", { runId: managed.runId, error: goneError });
+      this.persistRun(managed);
+      this.releaseRunLease(managed);
+      throw goneError;
+    } else if (wantWorktree) {
+      runWorktree = await createWorktree(isolation?.base ?? this.cwd, `run-${managed.runId}`);
+      if (!runWorktree.isolated) {
+        // Fail closed: isolation was demanded but the worktree is unavailable (not a
+        // git repo, git error, …). Refuse to run in the primary checkout — that would
+        // violate the isolation contract and risk edits to the user's working branch.
+        const failError = new WorkflowError(
+          `Run isolation required but worktree unavailable (${runWorktree.reason ?? "unknown"})`,
+          WorkflowErrorCode.WORKFLOW_ABORTED,
+          { recoverable: false },
+        );
+        managed.status = "failed";
+        managed.error = failError;
+        this.emit("error", { runId: managed.runId, error: failError });
+        this.persistRun(managed);
+        this.releaseRunLease(managed);
+        throw failError;
+      }
+    }
+    if (runWorktree?.isolated) {
+      runCwd = runWorktree.cwd;
+      // Preserve the caller's subdirectory: if the manager is bound to a subdirectory
+      // of the repo (e.g. packages/foo), run inside that subdir within the worktree,
+      // not the worktree root.
+      if (runWorktree.repoRoot) {
+        const sub = relative(runWorktree.repoRoot, this.cwd);
+        if (sub && !sub.startsWith("..") && !isAbsolute(sub)) runCwd = join(runWorktree.cwd, sub);
+      }
+      // Explicit ExecOptions.tools were built for the primary checkout's cwd and can't
+      // be relocated; they are DROPPED below (runWorkflow receives undefined) so the
+      // agent builds coding tools bound to the worktree cwd. A restricted tool policy
+      // is therefore not preserved under isolation — a cwd-bound tool factory is the
+      // #93 follow-up. Warn so callers know.
+      if (tools) {
+        this.emit("log", {
+          runId: managed.runId,
+          message:
+            "[isolation] explicit ExecOptions.tools dropped (primary-cwd bound); the agent builds worktree-cwd tools. Use a cwd-bound factory for custom policy (#93)",
+        });
+      }
+    }
+    // Stash the worktree ROOT (not the subdir-adjusted runCwd) so resume re-derives
+    // the subdir cleanly instead of appending it twice.
+    managed.worktree = runWorktree?.isolated
+      ? { cwd: runWorktree.cwd, branch: runWorktree.branch, repoRoot: runWorktree.repoRoot }
+      : undefined;
+    // Persist the worktree immediately so a crash between `git worktree add` and the
+    // first journal callback still leaves the isolation target on disk for resume.
+    if (managed.worktree) this.persistRun(managed);
     try {
       const result = await runWorkflow(script, {
-        cwd: this.cwd,
+        cwd: runCwd,
+        agentRegistry: runWorktree?.isolated ? loadAgentRegistry(this.cwd) : undefined,
+        harnessConfigRegistry: runWorktree?.isolated ? loadHarnessConfigRegistry(this.cwd) : undefined,
+        tools: runWorktree?.isolated ? undefined : tools,
         args,
         runId: managed.runId,
         agent: this.agent,
@@ -577,7 +701,6 @@ export class WorkflowManager extends EventEmitter {
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,
-        tools,
         contextModeRegistry: this.contextModeRegistry,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
@@ -724,6 +847,23 @@ export class WorkflowManager extends EventEmitter {
       this.releaseRunLease(managed);
 
       throw workflowError;
+    } finally {
+      // Tear down the run-level worktree only when the run is TRULY terminal AND not
+      // resumable/repairable. resume() accepts paused AND failed runs, so both keep
+      // their worktree (edits live there). A `completed` run whose conductor semantic
+      // status is a human-attention state (needs-human/needs-finalize/
+      // workflow-complete-pane-open) also keeps its worktree for the operator to
+      // repair/finalize. Only clean completion and abort remove it; explicit
+      // stop()/deleteRun() handle the rest.
+      // Auto-remove the run worktree ONLY on abort: the run unwound, so its agents
+      // have exited (no race), and an abort is an explicit terminal stop. Completed,
+      // failed, and paused runs KEEP their worktree — completed/failed runs may hold
+      // outputs/edits the operator needs to inspect, push, or PR (discard risk), and
+      // failed/paused runs are resumable (resume() reuses the worktree). Human-attention
+      // semantic statuses (needs-human/needs-finalize) are the issue-delivery
+      // repair/finalize handoff and must keep their worktree. Explicit deleteRun()
+      // cleans up the rest; finalization removes a delivered worktree.
+      if (runWorktree?.isolated && managed.status === "aborted") await removeWorktree(runWorktree);
     }
   }
 
@@ -788,6 +928,7 @@ export class WorkflowManager extends EventEmitter {
         loopGuard: managed.loopGuard,
         harnessSelection: saveHarnessSelection(managed.harnessSelection),
         semanticStatus: managed.semanticStatus,
+        worktree: managed.worktree,
       });
     } catch (err) {
       // Persistence is best-effort: the run is still healthy in memory.
@@ -876,7 +1017,10 @@ export class WorkflowManager extends EventEmitter {
     const resumeJournal = new Map(managed.journal.map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
-    void this.executeRun(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
+    void this.executeRun(managed, persisted.script, persisted.args, {
+      resumeJournal,
+      reuseWorktree: persisted.worktree,
+    }).catch(() => {});
     return true;
   }
 
@@ -892,6 +1036,8 @@ export class WorkflowManager extends EventEmitter {
     this.emit("stopped", { runId });
     this.persistRun(managed);
     this.releaseRunLease(managed);
+    // The worktree is torn down by executeRun's finally once the aborted run's agents
+    // unwind (no race with in-flight tool processes); stop() just signals the abort.
     return true;
   }
 
@@ -956,7 +1102,16 @@ export class WorkflowManager extends EventEmitter {
   deleteRun(runId: string): boolean {
     if (!isValidRunId(runId)) return false;
     const managed = this.runs.get(runId);
+    // Reject deleting an actively-running ISOLATED run: tearing down its worktree
+    // mid-flight would strand its in-process agents. Stop/await it first.
+    if (managed?.worktree && managed.status === "running") return false;
     if (managed) this.releaseRunLease(managed);
+    // Tear down an isolated run's worktree (in-memory or persisted-only) so a
+    // deleted run doesn't leave a .pi/worktrees/<id> + pi/wf branch behind. Best-effort.
+    const wt = managed?.worktree ?? this.persistence.load(runId)?.worktree;
+    if (wt) {
+      void removeWorktree({ isolated: true, cwd: wt.cwd, branch: wt.branch, repoRoot: wt.repoRoot });
+    }
     this.runs.delete(runId);
     return this.persistence.delete(runId);
   }
