@@ -94,7 +94,10 @@ test("loader warns + skips a descriptor whose engine.min is above the running en
     onWarning: (message) => warnings.push(message),
   });
   assert.ok(registry.has("ok"), "descriptor within floor loads");
-  assert.equal(registry.has("below"), false, "below-floor descriptor is skipped");
+  // #87: a below-floor descriptor is retained as skipped (so an explicit --harness-config
+  // can clean-skip with the reason) rather than dropped from the registry.
+  assert.ok(registry.get("below")?.skipped, "below-floor descriptor is retained as skipped");
+  assert.equal(registry.get("below")?.skipped && registry.get("below")?.harness_type === "pi", true);
   assert.ok(
     warnings.some((message) => message.includes("below declared engine.min")),
     "below-floor skip is warned",
@@ -193,7 +196,7 @@ test("loader warns + skips a descriptor whose engine.min is a non-string value",
     engineVersion: sem("0.1.7"),
     onWarning: (message) => warnings.push(message),
   });
-  assert.equal(registry.has("malformed"), false, "malformed engine.min descriptor is skipped");
+  assert.ok(registry.get("malformed")?.skipped, "malformed engine.min descriptor is retained as skipped");
   assert.ok(
     warnings.some((message) => /engine\.min must be a semver string/.test(message)),
     "malformed engine.min is warned",

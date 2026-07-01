@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import type { Node } from "acorn";
 import { parse } from "acorn";
@@ -41,6 +42,7 @@ import {
   resolveContextModeLayers,
   type SystemPromptMode,
 } from "./context-mode.js";
+import { checkEngineFloor, parseSemver, readEngineVersionFromFile, type Semver } from "./engine-compat.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import {
   expandHarnessConfig,
@@ -52,6 +54,9 @@ import {
   loadHarnessConfigRegistry,
 } from "./harness-config.js";
 import { type HarnessSelection, harnessSelectionKey, selectHarness } from "./harness-selector.js";
+
+const ENGINE_PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
+
 import { createWorkflowLogger } from "./logger.js";
 import { LoopDetector, type LoopGuardOptions } from "./loop-detector.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -591,6 +596,91 @@ export async function runWorkflow<T = unknown>(
         }
       : undefined;
 
+  // Engine floor: a workflow script may declare `export const meta = { ..., engine:
+  // { min: "<semver>" } }`. Enforce it on the production run path (not only via
+  // validate-harness): if the running engine is below the floor, OR the declared floor
+  // is present but malformed (non-string), clean-skip the run.
+  // A present `engine.min` key (even null) is a declared floor; a non-string value
+  // is malformed and clean-skips (matching validate-harness). An absent `min` key or
+  // no `engine` object means no floor is declared and the run proceeds.
+  const metaEngineRaw = (meta as unknown as { engine?: unknown }).engine;
+  const metaEngineHasMin = metaEngineRaw && typeof metaEngineRaw === "object" ? "min" in metaEngineRaw : false;
+  const metaEngineMinRaw = metaEngineHasMin ? (metaEngineRaw as { min?: unknown }).min : undefined;
+  let metaFloorReason: string | undefined;
+  if (metaEngineHasMin) {
+    if (typeof metaEngineMinRaw !== "string") {
+      // A present non-string min (null/number/object) is malformed.
+      metaFloorReason = "Workflow meta engine.min must be a semver string";
+    } else {
+      // A string (including "") is forwarded to checkEngineFloor, which treats an
+      // empty/missing floor as optional (no floor) — mirroring validate-harness so a
+      // workflow that passes validation also runs.
+      const engineVersion = readEngineVersionFromFile(ENGINE_PACKAGE_JSON);
+      if (engineVersion) {
+        const metaFloor = checkEngineFloor(metaEngineMinRaw, engineVersion);
+        if (!metaFloor.ok) {
+          metaFloorReason = `Workflow meta engine.min '${metaEngineMinRaw}' is incompatible with the running engine ${metaFloor.engineVersion ? `${metaFloor.engineVersion.major}.${metaFloor.engineVersion.minor}.${metaFloor.engineVersion.patch}` : "?"}: ${metaFloor.reason}`;
+        }
+      }
+    }
+  }
+  if (metaFloorReason) {
+    const skip = harnessNotWiredSkip({ harness_config: "none", reason: metaFloorReason });
+    state.logs.push(`[engine-floor-skip] ${skip.reason}`);
+    logger.log(`[engine-floor-skip] ${skip.reason}`);
+    return {
+      meta,
+      result: skip as T,
+      logs: state.logs,
+      phases: state.phases,
+      agentCount: 0,
+      durationMs: Date.now() - started,
+      runId,
+      tokenUsage: options.sharedRuntime?.tokenUsage ?? {
+        input: 0,
+        output: 0,
+        total: 0,
+        cost: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      harnessSelection,
+    };
+  }
+
+  // Explicit below-floor harness config clean-skip: `--harness-config <id>` that the
+  // loader skipped (engine.min above the running engine) must NOT silently fall back
+  // to pi defaults. The skipped descriptor is retained in the registry with a reason.
+  if (explicitDescriptor?.skipped) {
+    const reason =
+      explicitDescriptor.skipReason ?? `Harness config '${explicitConfig ?? "?"}' was skipped by the loader.`;
+    const skip = harnessNotWiredSkip({
+      harness_type: explicitDescriptor.harness_type,
+      harness_config: explicitConfig ?? "none",
+      reason,
+    });
+    state.logs.push(`[harness-skip] ${skip.reason}`);
+    logger.log(`[harness-skip] ${skip.reason}`);
+    return {
+      meta,
+      result: skip as T,
+      logs: state.logs,
+      phases: state.phases,
+      agentCount: 0,
+      durationMs: Date.now() - started,
+      runId,
+      tokenUsage: options.sharedRuntime?.tokenUsage ?? {
+        input: 0,
+        output: 0,
+        total: 0,
+        cost: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      harnessSelection,
+    };
+  }
+
   // Harness-not-wired clean-skip: when the resolved harness type is not wired to
   // the current runtime, short-circuit to a structured skip result instead of
   // executing the script body.
@@ -598,7 +688,9 @@ export async function runWorkflow<T = unknown>(
     const skip = harnessNotWiredSkip({
       harness_type: harnessExpansion.harness_type,
       harness_config: harnessExpansion.harness_config,
-      reason: `Harness '${harnessExpansion.harness_type}' is not wired to the current runtime.`,
+      reason:
+        harnessExpansion.skipReason ??
+        `Harness '${harnessExpansion.harness_type}' is not wired to the current runtime.`,
     });
     state.logs.push(`[harness-skip] ${skip.reason}`);
     logger.log(`[harness-skip] ${skip.reason}`);
@@ -824,9 +916,11 @@ export async function runWorkflow<T = unknown>(
         resolvedConfig = "none";
       } else if (perCallHarnessConfigRaw !== undefined) {
         const descriptor = harnessConfigRegistry.get(perCallHarnessConfigRaw);
-        if (!descriptor || descriptor.invalid) {
+        if (!descriptor || descriptor.invalid || descriptor.skipped) {
           log(
-            `per-call harness_config "${perCallHarnessConfigRaw}" is ${descriptor?.invalid ? "invalid" : "unknown"}; using run-level harness`,
+            `per-call harness_config "${perCallHarnessConfigRaw}" is ${
+              descriptor?.skipped ? "skipped" : descriptor?.invalid ? "invalid" : "unknown"
+            }; using run-level harness`,
           );
           rejectOverride = true;
         } else {

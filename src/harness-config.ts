@@ -39,6 +39,9 @@ export interface HarnessConfig {
   wired: boolean;
   engineMin?: string;
   engineMinMalformed?: boolean;
+  /** Loader skipped this descriptor (e.g. engine.min above the running engine); kept in the registry so an explicit `--harness-config <id>` can clean-skip with the reason instead of silently falling back to pi. */
+  skipped?: boolean;
+  skipReason?: string;
   displayName?: string;
   description?: string;
   trigger?: string;
@@ -226,6 +229,13 @@ function readConfigsFromDir(
       }
       if (config.engineMinMalformed) {
         onWarning?.(`Skipping harness_config descriptor ${path}: engine.min must be a semver string.`);
+        configs.push({
+          ...config,
+          path,
+          skipped: true,
+          skipReason: "engine.min must be a semver string",
+          wired: false,
+        });
         continue;
       }
       if (config.engineMin) {
@@ -235,6 +245,7 @@ function readConfigsFromDir(
           const floor = checkEngineFloor(config.engineMin, engineVersion);
           if (!floor.ok) {
             onWarning?.(`Skipping harness_config descriptor ${path}: ${floor.reason}.`);
+            configs.push({ ...config, path, skipped: true, skipReason: floor.reason, wired: false });
             continue;
           }
         }
@@ -401,6 +412,8 @@ export interface HarnessExpansion {
   harness_type: HarnessType;
   harness_config: string;
   wired: boolean;
+  /** When not-wired due to a loader-skipped descriptor (e.g. engine.min), the specific reason; surfaced by the run-level clean-skip instead of the generic "not wired" message. */
+  skipReason?: string;
   contextMode?: string;
   inheritProjectContext?: boolean;
   inheritSkills?: boolean;
@@ -450,6 +463,19 @@ export function expandHarnessConfig(opts: {
       harness_type: isHarnessType(harness_type) ? harness_type : "pi",
       harness_config,
       wired: HARNESS_RUNTIME_INFO[isHarnessType(harness_type) ? harness_type : "pi"].wired,
+    };
+  }
+
+  // Loader-skipped descriptor (e.g. engine.min above the running engine): not usable.
+  // Report not-wired so the run-level/per-call clean-skip fires instead of applying
+  // an incompatible config's tools/context. (An explicit `--harness-config <skipped-id>`
+  // is clean-skipped earlier in runWorkflow with the specific skipReason.)
+  if (descriptor.skipped) {
+    return {
+      harness_type: isHarnessType(harness_type) ? harness_type : descriptor.harness_type,
+      harness_config,
+      wired: false,
+      skipReason: descriptor.skipReason,
     };
   }
 
