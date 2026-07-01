@@ -135,6 +135,15 @@ export {
   registerEffortCommand,
 } from "./effort-command.js";
 export {
+  checkEngineFloor,
+  compareSemver,
+  type EngineFloorResult,
+  parseSemver,
+  readEngineVersionFromFile,
+  type Semver,
+  stringifySemver,
+} from "./engine-compat.js";
+export {
   isAbortError,
   isTimeoutError,
   isWorkflowError,
@@ -144,6 +153,8 @@ export {
 } from "./errors.js";
 export { generateFuguWorkflow } from "./fugu.js";
 export {
+  DEFAULT_DEPRECATED_SCHEMA_VERSIONS,
+  DEFAULT_SUPPORTED_SCHEMA_VERSIONS,
   extractHarnessConfigFlag,
   extractHarnessTypeFlag,
   HARNESS_RUNTIME_INFO,
@@ -155,6 +166,7 @@ export {
   type HarnessType,
   listHarnessConfigs,
   loadHarnessConfigRegistry,
+  type ParseHarnessConfigDescriptorOptions,
   parseHarnessConfigDescriptor,
   registerHarnessConfigsCommand,
   renderHarnessConfigs,
@@ -244,6 +256,13 @@ export {
   type TelemetryProcessRole,
   type TelemetryRuntime,
 } from "./telemetry-env.js";
+export {
+  type HarnessValidationResult,
+  runValidateHarness,
+  type ValidateHarnessOptions,
+  type ValidateHarnessRunResult,
+  validateHarnessFile,
+} from "./validate-harness.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,

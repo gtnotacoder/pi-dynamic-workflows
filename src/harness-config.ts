@@ -1,9 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { WRITE_TOOL_NAMES } from "./agent-registry.js";
 import { HARNESSES_DIR } from "./config.js";
+import { checkEngineFloor, readEngineVersionFromFile, type Semver } from "./engine-compat.js";
+
+const ENGINE_PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
 
 export const HARNESS_TYPES = ["pi", "opencode", "hermes"] as const;
 export type HarnessType = (typeof HARNESS_TYPES)[number];
@@ -19,11 +23,22 @@ export const HARNESS_RUNTIME_INFO: Record<HarnessType, HarnessRuntimeInfo> = {
   hermes: { harness_type: "hermes", wired: false },
 };
 
+/**
+ * Supported harness descriptor schema versions. Additive only across minors; an old
+ * version is dropped only at a major bump paired with a `schemaVersion` bump.
+ */
+export const DEFAULT_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [1];
+
+/** Schema versions still loadable but deprecated; the loader warns and continues. */
+export const DEFAULT_DEPRECATED_SCHEMA_VERSIONS: readonly number[] = [];
+
 export interface HarnessConfig {
-  schemaVersion: 1;
+  schemaVersion: number;
   id: string;
   harness_type: HarnessType;
   wired: boolean;
+  engineMin?: string;
+  engineMinMalformed?: boolean;
   displayName?: string;
   description?: string;
   trigger?: string;
@@ -42,6 +57,12 @@ export interface LoadHarnessConfigRegistryOptions {
   projectDir?: string;
   userDir?: string;
   onWarning?: (message: string) => void;
+  /** Running engine version for the `engine.min` floor check. Defaults to this package's version. */
+  engineVersion?: Semver;
+  /** Schema versions the loader accepts; defaults to DEFAULT_SUPPORTED_SCHEMA_VERSIONS. */
+  supportedSchemaVersions?: readonly number[];
+  /** Schema versions that still load but emit a deprecation warning. */
+  deprecatedSchemaVersions?: readonly number[];
 }
 
 const LEGACY_HARNESS_TYPE_IDS: Record<string, string> = {
@@ -108,10 +129,15 @@ function triggerSummary(raw: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+export interface ParseHarnessConfigDescriptorOptions {
+  supportedSchemaVersions?: readonly number[];
+}
+
 export function parseHarnessConfigDescriptor(
   content: string,
   source: "project" | "user",
   fileName = "harness-config.json",
+  opts: ParseHarnessConfigDescriptorOptions = {},
 ): HarnessConfig | null {
   let raw: unknown;
   try {
@@ -119,7 +145,10 @@ export function parseHarnessConfigDescriptor(
   } catch {
     return null;
   }
-  if (!isRecord(raw) || raw.schemaVersion !== 1) return null;
+  const supported = opts.supportedSchemaVersions ?? DEFAULT_SUPPORTED_SCHEMA_VERSIONS;
+  if (!isRecord(raw) || typeof raw.schemaVersion !== "number" || !supported.includes(raw.schemaVersion)) {
+    return null;
+  }
 
   const identity = canonicalId(raw, fileName);
   if (!identity) return null;
@@ -131,12 +160,17 @@ export function parseHarnessConfigDescriptor(
       : undefined;
   const harness_type: HarnessType = invalidReason ? "pi" : isHarnessType(rawHarnessType) ? rawHarnessType : "pi";
   const triggerRules = isRecord(raw.triggerRules) ? raw.triggerRules : undefined;
+  const rawEngineMin = isRecord(raw.engine) ? raw.engine.min : undefined;
+  const engineMin = typeof rawEngineMin === "string" && rawEngineMin.trim() ? rawEngineMin.trim() : undefined;
+  const engineMinMalformed = isRecord(raw.engine) && "min" in raw.engine && typeof rawEngineMin !== "string";
 
   return {
-    schemaVersion: 1,
+    schemaVersion: raw.schemaVersion,
     id: identity.id,
     harness_type,
     wired: invalidReason ? false : HARNESS_RUNTIME_INFO[harness_type].wired,
+    engineMin,
+    engineMinMalformed,
     displayName: stringField(raw.displayName) ?? stringField(raw.name),
     description: stringField(raw.description),
     trigger: triggerSummary(raw),
@@ -153,6 +187,9 @@ function readConfigsFromDir(
   dir: string,
   source: "project" | "user",
   onWarning?: (message: string) => void,
+  engineVersion?: Semver,
+  supportedSchemaVersions: readonly number[] = DEFAULT_SUPPORTED_SCHEMA_VERSIONS,
+  deprecatedSchemaVersions: readonly number[] = DEFAULT_DEPRECATED_SCHEMA_VERSIONS,
 ): HarnessConfig[] {
   if (!existsSync(dir)) return [];
   let files: string[];
@@ -166,7 +203,9 @@ function readConfigsFromDir(
   for (const file of files.sort((a, b) => a.localeCompare(b))) {
     const path = join(dir, file);
     try {
-      const config = parseHarnessConfigDescriptor(readFileSync(path, "utf-8"), source, file);
+      const config = parseHarnessConfigDescriptor(readFileSync(path, "utf-8"), source, file, {
+        supportedSchemaVersions,
+      });
       if (!config) {
         onWarning?.(`Skipping invalid or unsupported harness_config descriptor ${path}.`);
         continue;
@@ -174,11 +213,31 @@ function readConfigsFromDir(
       if (config.invalidReason) {
         onWarning?.(`Skipping invalid harness_config descriptor ${path}: ${config.invalidReason}.`);
       }
+      if (deprecatedSchemaVersions.includes(config.schemaVersion)) {
+        onWarning?.(
+          `Deprecated schemaVersion ${config.schemaVersion} in harness_config descriptor ${path}; will be removed at a future major bump.`,
+        );
+      }
       if ("profile" in config.raw) {
         onWarning?.(`Deprecated harness_config descriptor field 'profile' used in ${path}; prefer 'id'.`);
       }
       if ("harness" in config.raw) {
         onWarning?.(`Deprecated harness_config descriptor field 'harness' used in ${path}; prefer 'harness_type'.`);
+      }
+      if (config.engineMinMalformed) {
+        onWarning?.(`Skipping harness_config descriptor ${path}: engine.min must be a semver string.`);
+        continue;
+      }
+      if (config.engineMin) {
+        if (!engineVersion) {
+          onWarning?.(`Could not verify engine.min '${config.engineMin}' for ${path}; engine version unavailable.`);
+        } else {
+          const floor = checkEngineFloor(config.engineMin, engineVersion);
+          if (!floor.ok) {
+            onWarning?.(`Skipping harness_config descriptor ${path}: ${floor.reason}.`);
+            continue;
+          }
+        }
       }
       configs.push({ ...config, path });
     } catch (error) {
@@ -196,9 +255,19 @@ export function loadHarnessConfigRegistry(
 ): HarnessConfigRegistry {
   const projectDir = opts.projectDir ?? join(cwd, HARNESSES_DIR);
   const userDir = opts.userDir ?? join(homedir(), HARNESSES_DIR);
+  const engineVersion = opts.engineVersion ?? readEngineVersionFromFile(ENGINE_PACKAGE_JSON) ?? undefined;
+  const supportedSchemaVersions = opts.supportedSchemaVersions ?? DEFAULT_SUPPORTED_SCHEMA_VERSIONS;
+  const deprecatedSchemaVersions = opts.deprecatedSchemaVersions ?? DEFAULT_DEPRECATED_SCHEMA_VERSIONS;
   const registry: HarnessConfigRegistry = new Map();
 
-  for (const config of readConfigsFromDir(projectDir, "project", opts.onWarning)) {
+  for (const config of readConfigsFromDir(
+    projectDir,
+    "project",
+    opts.onWarning,
+    engineVersion,
+    supportedSchemaVersions,
+    deprecatedSchemaVersions,
+  )) {
     if (registry.has(config.id)) {
       opts.onWarning?.(`Duplicate project harness_config id '${config.id}' ignored from ${config.path ?? projectDir}.`);
       continue;
@@ -207,7 +276,14 @@ export function loadHarnessConfigRegistry(
   }
 
   if (userDir !== projectDir) {
-    for (const config of readConfigsFromDir(userDir, "user", opts.onWarning)) {
+    for (const config of readConfigsFromDir(
+      userDir,
+      "user",
+      opts.onWarning,
+      engineVersion,
+      supportedSchemaVersions,
+      deprecatedSchemaVersions,
+    )) {
       if (registry.has(config.id)) {
         opts.onWarning?.(`User harness_config id '${config.id}' ignored because a project descriptor wins.`);
         continue;
