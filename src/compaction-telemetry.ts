@@ -78,6 +78,7 @@ const DEFAULT_LIMIT = 500;
 type Listener = (event: CompactionTelemetryEvent) => void;
 
 const listeners = new Set<Listener>();
+let lastRuntimeTimestampMs = 0;
 
 export function onCompactionTelemetry(listener: Listener): () => void {
   listeners.add(listener);
@@ -85,7 +86,7 @@ export function onCompactionTelemetry(listener: Listener): () => void {
 }
 
 export function emitCompactionTelemetry(raw: unknown, source = "runtime-api"): CompactionTelemetryEvent | null {
-  const event = normalizeCompactionEvent(raw, source);
+  const event = normalizeCompactionEvent(withRuntimeTimestamp(raw), source);
   if (!event) return null;
   for (const listener of listeners) {
     try {
@@ -95,6 +96,20 @@ export function emitCompactionTelemetry(raw: unknown, source = "runtime-api"): C
     }
   }
   return event;
+}
+
+function withRuntimeTimestamp(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const value = raw as Record<string, unknown>;
+  if (value.ts !== undefined || value.timestamp !== undefined || value.time !== undefined) return raw;
+  return { ...value, timestamp: nextRuntimeTimestamp() };
+}
+
+function nextRuntimeTimestamp(): string {
+  const now = Date.now();
+  const timestampMs = now <= lastRuntimeTimestampMs ? lastRuntimeTimestampMs + 1 : now;
+  lastRuntimeTimestampMs = timestampMs;
+  return new Date(timestampMs).toISOString();
 }
 
 export function normalizeCompactionEvent(raw: unknown, source = "unknown"): CompactionTelemetryEvent | null {

@@ -169,6 +169,7 @@ test("emitCompactionTelemetry notifies subscribers with normalized events", () =
   try {
     const event = emitCompactionTelemetry({ type: "monitor_eval", workflowRunId: "run-1" });
     assert.equal(event?.workflowRunId, "run-1");
+    assert.ok(event?.timestamp, "runtime-emitted events receive a correlation timestamp");
     assert.equal(seen.length, 1);
   } finally {
     unsubscribe();
