@@ -479,7 +479,7 @@ while (Object.keys(completed).length < selectedSteps.length) {
         phase('LocalChecks')
         log('[IssueDelivery:LocalChecks] Running host-side stageCheck on ' + step.file + ' (zero LLM tokens)...')
 
-        const localChecks = await stageCheck({ targetFile: step.file })
+        const localChecks = await stageCheck({ targetFile: step.file, harness_config: step.harness_config, harness_type: step.harness_type })
         executionState.localChecks = summarizeIssueLocalChecks(localChecks)
         await writeIssueDeliveryState('issue-state-local:' + step.id)
         if (!localChecks.ok) {
