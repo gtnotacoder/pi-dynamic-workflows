@@ -11,8 +11,10 @@ flowchart TD
   U["User types a slash command"] --> CMD{"Command source"}
   CMD -->|"builtin"| BC["pi.registerCommand<br/>src/builtin-commands.ts<br/>src/issue-delivery.ts<br/>src/workflow-telemetry-command.ts"]
   CMD -->|"saved workflow"| SW["Saved-workflow command<br/>src/saved-commands.ts<br/>~/.pi/workflows/saved/*.json"]
-  BC --> WM
-  SW --> WM
+  BC -->|"/deep-research, /code-review<br/>(foreground)"| RUN
+  BC -->|"/issue-delivery, /adversarial-review<br/>(when manager present)"| WM
+  SW -->|"manager present"| WM
+  SW -->|"fallback (no manager)"| RUN
   WM["WorkflowManager.startInBackground<br/>src/workflow-manager.ts"] --> WT{"worktreeRequired /<br/>isolation.worktree?"}
   WT -->|"yes"| ISO["createWorktree<br/>src/worktree.ts<br/>branch pi/wf/runId"]
   WT -->|"no"| HB
@@ -36,17 +38,23 @@ flowchart TD
 
 The entry point is a user typing a slash command in the Pi TUI. Commands fall into two categories that both funnel into the same `WorkflowManager`:
 
-- **Builtin commands** — registered via `pi.registerCommand` in `src/builtin-commands.ts`. This covers bundled workflows like `/deep-research`, `/adversarial-review`, `/code-review`, and `/issue-delivery`; `/issue-delivery`'s workflow script lives in `src/issue-delivery.ts` while its `pi.registerCommand` call lives in `src/builtin-commands.ts` (alongside the others). Only `/workflow-telemetry-report` registers from a separate file (`src/workflow-telemetry-command.ts`). Each builtin command constructs the workflow script inline and calls into the manager.
-- **Saved-workflow commands** — defined as JSON files under `~/.pi/workflows/saved/*.json` and registered at extension load by `src/saved-commands.ts`. `registerSavedWorkflow()` creates a `pi.registerCommand` wrapper that parses the `key=value` argument syntax, resolves tool policy for review-vs-mutation workflows, and hands off to the same `WorkflowManager`.
+- **Builtin commands** — registered via `pi.registerCommand` in `src/builtin-commands.ts`. This covers bundled workflows like `/deep-research`, `/adversarial-review`, `/code-review`, and `/issue-delivery`; `/issue-delivery`'s workflow script lives in `src/issue-delivery.ts` while its `pi.registerCommand` call lives in `src/builtin-commands.ts` (alongside the others). Only `/workflow-telemetry-report` registers from a separate file (`src/workflow-telemetry-command.ts`). Each builtin command constructs its workflow script inline; routing to the manager vs. inline `runWorkflow()` is per-command (see the dispatch note below).
+- **Saved-workflow commands** — defined as JSON files under `~/.pi/workflows/saved/*.json` and registered at extension load by `src/saved-commands.ts`. `registerSavedWorkflow()` creates a `pi.registerCommand` wrapper that parses the `key=value` argument syntax, resolves tool policy for review-vs-mutation workflows, and hands off to the same `WorkflowManager` when present (else inline `runWorkflow()`).
 
-Both paths converge on `WorkflowManager.startInBackground()` — saved workflows always start in the background, and `/issue-delivery` passes unrecognized tokens to `buildIssueDeliveryArgs()` rather than interpreting a `--foreground` flag. (`WorkflowManager.runSync()` exists as an internal/programmatic entry point for inline tool runs, but no shipped command handler selects it via a CLI flag.)
+The two paths do not all converge on one entry point — builtins split by command, and saved workflows share the same split as `/issue-delivery`:
+
+- `/deep-research` and `/code-review` run **foreground** via `runWorkflow()` directly (`src/builtin-commands.ts`); they never go through the manager and return their result inline to the TUI.
+- `/adversarial-review` and `/issue-delivery` (and its `/fugu` alias) go through `WorkflowManager.startInBackground()` when a manager is available, and fall back to inline `runWorkflow()` otherwise. `/issue-delivery` passes unrecognized tokens to `buildIssueDeliveryArgs()` rather than interpreting a `--foreground` flag (no such flag exists).
+- Saved-workflow commands (`src/saved-commands.ts`) likewise prefer `startInBackground()` when a manager is provided, falling back to inline `runWorkflow()` (foreground, no TUI tracking).
+
+(`WorkflowManager.runSync()` exists as an internal/programmatic entry point for inline tool runs; no shipped command handler selects it via a CLI flag.)
 
 ### 2. Worktree isolation
 
 Before the harness is selected, the manager evaluates whether the run requires a throwaway git worktree. Three signals trigger isolation:
 
 - `isolation.worktree` — an explicit per-agent or per-run isolation flag.
-- `worktreeRequired` — a run-level flag (Issue Delivery sets it for prototype/dry-run lanes; normal delivery runs default to `false` unless overridden).
+- `worktreeRequired` — a run-level flag. The `/issue-delivery` command handler does **not** set it: it passes only `contextMode`, `harness_type`, and `harness_config` to `startInBackground()` (`src/builtin-commands.ts`). Run-level worktree isolation for Issue Delivery, when it occurs, comes from the `harness_config` descriptor's `worktreeRequired` (resolved by the manager, see §3). Separately, the Issue Delivery workflow script (`src/issue-delivery.ts`) computes a `WORKTREE_REQUIRED` value for prototype lanes and passes it to the in-workflow `prototypeSafetyCheck()` gate, which verifies the run is in a clean worktree before allowing prototype execution — that is a safety gate, not the manager's run-level isolation.
 - `harness_config` descriptor — if the harness descriptor (looked up from the `harness_config` registry key) sets `worktreeRequired: true`, the run auto-isolates.
 
 When any signal is true, `createWorktree()` in `src/worktree.ts` creates a branch `pi/wf/<runId>` under `<repoRoot>/.pi/worktrees/<slug>`. The `runId` is used (not wall-clock time) so that the worktree name is deterministic and resume can locate it. The `Worktree` object carries `isolated`, `cwd`, `branch`, and `repoRoot` — when isolation cannot be created, it returns a no-op with `isolated: false` and a `reason` string.
@@ -149,7 +157,7 @@ Issue Delivery (`src/issue-delivery.ts`) is the only workflow that performs deli
 1. After the Worker subagent completes and the Verifier passes, the workflow generates a branch, commits, pushes, and opens a draft PR.
 2. `checkFinalization()` runs a deterministic gate that verifies:
    - The worktree is on a clean committed-and-pushed state.
-   - All dirty paths are intentional (not transient/legacy paths like `.fugu/`).
+   - All dirty paths are intentional. The gate ignores only the transient `.issue-delivery/` prefix (`TRANSIENT_IGNORE_PREFIXES` in `src/conductor-finalization.ts`); legacy `.fugu/` is retired and **not** ignored, so a worktree still containing it blocks finalization until cleaned.
    - Pending CI checks are not in a failing state.
 
    The gate does **not** verify GitHub mergeability (e.g. merge-conflict state); a PR with merge conflicts is not rejected by `checkFinalization()`.
