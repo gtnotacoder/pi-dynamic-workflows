@@ -39,14 +39,14 @@ The entry point is a user typing a slash command in the Pi TUI. Commands fall in
 - **Builtin commands** — registered via `pi.registerCommand` in `src/builtin-commands.ts`. This covers bundled workflows like `/deep-research`, `/adversarial-review`, `/code-review`, and `/issue-delivery`; `/issue-delivery`'s workflow script lives in `src/issue-delivery.ts` while its `pi.registerCommand` call lives in `src/builtin-commands.ts` (alongside the others). Only `/workflow-telemetry-report` registers from a separate file (`src/workflow-telemetry-command.ts`). Each builtin command constructs the workflow script inline and calls into the manager.
 - **Saved-workflow commands** — defined as JSON files under `~/.pi/workflows/saved/*.json` and registered at extension load by `src/saved-commands.ts`. `registerSavedWorkflow()` creates a `pi.registerCommand` wrapper that parses the `key=value` argument syntax, resolves tool policy for review-vs-mutation workflows, and hands off to the same `WorkflowManager`.
 
-Both paths converge on `WorkflowManager.startInBackground()` or `WorkflowManager.runSync()` depending on whether the command is launched with `--foreground` or the default background mode.
+Both paths converge on `WorkflowManager.startInBackground()` — saved workflows always start in the background, and `/issue-delivery` passes unrecognized tokens to `buildIssueDeliveryArgs()` rather than interpreting a `--foreground` flag. (`WorkflowManager.runSync()` exists as an internal/programmatic entry point for inline tool runs, but no shipped command handler selects it via a CLI flag.)
 
 ### 2. Worktree isolation
 
 Before the harness is selected, the manager evaluates whether the run requires a throwaway git worktree. Three signals trigger isolation:
 
 - `isolation.worktree` — an explicit per-agent or per-run isolation flag.
-- `worktreeRequired` — a run-level flag (used by Issue Delivery for all delivery runs).
+- `worktreeRequired` — a run-level flag (Issue Delivery sets it for prototype/dry-run lanes; normal delivery runs default to `false` unless overridden).
 - `harness_config` descriptor — if the harness descriptor (looked up from the `harness_config` registry key) sets `worktreeRequired: true`, the run auto-isolates.
 
 When any signal is true, `createWorktree()` in `src/worktree.ts` creates a branch `pi/wf/<runId>` under `<repoRoot>/.pi/worktrees/<slug>`. The `runId` is used (not wall-clock time) so that the worktree name is deterministic and resume can locate it. The `Worktree` object carries `isolated`, `cwd`, `branch`, and `repoRoot` — when isolation cannot be created, it returns a no-op with `isolated: false` and a `reason` string.
@@ -86,7 +86,7 @@ Each `agent()` call is assigned a stable call index (deterministic call-sequence
 
 `src/agent-registry.ts` hosts the agent-type system:
 
-- `loadAgentRegistry()` — loads the default agent-type definitions (e.g., `adversarial-evidence-reviewer`, `fastcontext-scout`, `specialized-worker`, `trace-analyst`).
+- `loadAgentRegistry()` — loads agent-type definitions by scanning project (`.pi/agents/`-equivalent) and user (`~/.pi/agents/`) directories for `.md` files. No defaults are shipped in the extension source; names like `adversarial-evidence-reviewer`, `fastcontext-scout`, `specialized-worker`, and `trace-analyst` are runtime-installed definitions, not built-ins.
 - `resolveAgentType(name, registry)` — returns the `AgentDefinition` (role prompt, tool policy, model hints) for a named agent type.
 - `applyToolPolicy()` — merges explicit `tools`/`disallowedTools` with the agentType's policy and read-only fences.
 
@@ -107,7 +107,7 @@ The actual subagent spawn lives in `src/agent.ts`:
 
 1. **Session creation** — `createAgentSession()` (from the Pi SDK) creates the Pi session for the subagent with the resolved model, harness, tool set, and context mode.
 2. **Tool policy** — `applyToolPolicy()` from the agent registry merges the final tool list, applying read-only restrictions when `readOnly: true` or the agentType mandates it.
-3. **Context mode** — governed by `contextMode` (`focused` default, `legacy`, `replace`). See [context-modes.md](context-modes.md) for how the four prompt channels are assembled.
+3. **Context mode** — governed by `contextMode` (valid modes: `focused` default, `isolated`, `scoped`, `legacy`). `replace` is a `systemPromptMode` value on a mode, not a context mode itself. See [context-modes.md](context-modes.md) for how the four prompt channels are assembled.
 4. **Transcript persistence** — when `persistSubagentTranscripts` is enabled (default), each subagent writes an NDJSON transcript to `transcriptDir` for post-mortem debugging.
 
 ### 8. Conductor status lifecycle
@@ -150,11 +150,12 @@ Issue Delivery (`src/issue-delivery.ts`) is the only workflow that performs deli
 2. `checkFinalization()` runs a deterministic gate that verifies:
    - The worktree is on a clean committed-and-pushed state.
    - All dirty paths are intentional (not transient/legacy paths like `.fugu/`).
-   - The PR is in a mergeable state.
    - Pending CI checks are not in a failing state.
+
+   The gate does **not** verify GitHub mergeability (e.g. merge-conflict state); a PR with merge conflicts is not rejected by `checkFinalization()`.
 3. If the gate passes, the status transitions to `completed`. If it fails, the status becomes `needs-human` with a suggested `nextAction` and the handoff artifact is written.
 
-The `--finish` flag re-runs only the finalization gate (useful after manual repair). The `--prototype` flag runs a bounded dry-run that stops before PR creation.
+The `--finish` flag is a delivery path for an already-repaired failed run: it runs LocalChecks, then a Worker delivery agent that commits/pushes/opens the draft PR, then the finalization gate — it does not re-run Scout/Thinker/Verifier planning. The `--prototype` flag runs a bounded dry-run that stops before PR creation.
 
 ---
 
