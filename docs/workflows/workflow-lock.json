@@ -1,6 +1,6 @@
 {
   "schema": "pi-dynamic-workflows.workflow-lock.v1",
-  "generatedAt": "2026-06-28",
+  "generatedAt": "2026-07-02",
   "mode": "warning",
   "collisionPolicy": {
     "registrationOrder": ["builtin-command", "saved-workflow"],
@@ -22,6 +22,17 @@
       "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },
     {
+      "canonicalName": "issue_delivery",
+      "command": "/issue_delivery",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/issue_delivery.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "supportsPrototypeLane": true,
+      "notes": "Saved implementation engine promoted from issue-delivery-lc (which remains installed as a local variant). Invoked inline by closed_loop_issue_delivery via workflow('issue_delivery'). Low-cost model routing by default."
+    },
+    {
       "canonicalName": "closed_loop_issue_delivery",
       "command": "/closed_loop_issue_delivery",
       "kind": "saved-workflow",
@@ -31,7 +42,7 @@
       "replaces": ["fugu_closed_loop"],
       "channel": "active",
       "supportsPrototypeLane": true,
-      "notes": "Canonical saved workflow is installed. prototype=true is reserved for explicit harness smoke runs. Normal use remains issue/plan driven."
+      "notes": "Canonical saved workflow is installed. Implementation delegates to the saved issue_delivery engine; no dependence on the deprecated /fugu alias. prototype=true is reserved for explicit harness smoke runs. Normal use remains issue/plan driven."
     },
     {
       "canonicalName": "surgical_pr_repair",
