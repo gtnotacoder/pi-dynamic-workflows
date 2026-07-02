@@ -425,3 +425,175 @@ return a`,
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── Round-3 finding 1: per-agent worktree isolation uses the agent's REAL tool base
+//    (createCodingTools output), not the possibly-custom run-level options.tools.
+//    When isolation:"worktree" rebuilds coding tools for the worktree cwd, any custom
+//    run-level options.tools override is DROPPED — the harness check must not treat
+//    those dropped tools as still available. ──
+
+test("round-3 finding 1: worktree isolation drops a custom run-level tool from the available base (required tool only in options.tools fails under isolation)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f1-"));
+  try {
+    // Run-level options.tools supplies a custom tool "custom_x" that is NOT in the default
+    // coding tool set. A harness requires "custom_x". Without worktree isolation the
+    // run-level base includes custom_x (from options.tools), so the check passes. With
+    // per-agent isolation:"worktree" the agent rebuilds via createCodingTools(runCwd),
+    // dropping custom_x — the required tool is now absent and the agent call must fail
+    // closed (clean failure), not silently run.
+    const harnessDir = writeHarness(dir, "needs-custom.json", {
+      schemaVersion: 1,
+      id: "needs-custom",
+      harness_type: "pi",
+      requiredTools: ["custom_x"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f1-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'r3f1', description: 'worktree drops custom tool' }
+const a = await agent('step', { label: 'step', isolation: 'worktree' })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-custom",
+          tools: [
+            { name: "custom_x", description: "x", schema: {}, run: async () => "ok" },
+            { name: "read", description: "r", schema: {}, run: async () => "ok" },
+          ],
+          harnessConfigRegistry: registry,
+          cwd: dir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(calls.length, 0, "the agent must NOT run when worktree isolation drops the required custom tool");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /custom_x/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round-3 finding 2: the default availability set is derived from the actual base
+//    constructor (createCodingTools → read, bash, edit, write), NOT the read-only
+//    factories. A required read-only tool (grep/find/ls) must clean-skip on the default
+//    path because those tools are never built by createCodingTools. ──
+
+test("round-3 finding 2: a required read-only tool (grep) clean-skips on the default path (not in createCodingTools output)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f2-"));
+  try {
+    const harnessDir = writeHarness(dir, "needs-grep.json", {
+      schemaVersion: 1,
+      id: "needs-grep",
+      harness_type: "pi",
+      requiredTools: ["grep"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f2-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const result = await runWorkflow(
+      `export const meta = { name: 'r3f2', description: 'required grep absent from default base' }
+return 'ran'`,
+      {
+        agent: capturingRunner([]),
+        harness_config: "needs-grep",
+        harnessConfigRegistry: registry,
+        cwd: dir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    // grep is NOT created by createCodingTools(cwd) — the default path only builds
+    // read/bash/edit/write — so requiring it must clean-skip rather than silently pass.
+    assert.equal((result.result as { status?: string }).status, "harness-not-wired");
+    assert.match(JSON.stringify(result.logs), /Missing required tool\(s\): grep/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round-3 finding 3: run-level requiredTools are preserved across an explicit
+//    per-call harness_config:"none" (or any narrowing config that does not declare its
+//    own requiredTools). A per-step tools allowlist that drops the run-level required
+//    tool must fail, not silently pass because the per-call "none" cleared the requirement. ──
+
+test("round-3 finding 3: per-call harness_config:'none' carries run-level requiredTools through (narrowing that drops the required tool fails)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f3-"));
+  try {
+    // Run-level config requires bash (present in the default coding tool set, so the
+    // run-level gate passes). A per-call harness_config:"none" resolves to a candidate
+    // expansion with undefined requiredTools; without carrying the run-level requirement
+    // through, a per-call tools:['read'] allowlist would silently drop bash. The fix
+    // inherits run-level requiredTools so the narrowing re-check still catches the drop.
+    const harnessDir = writeHarness(dir, "needs-bash-rl.json", {
+      schemaVersion: 1,
+      id: "needs-bash-rl",
+      harness_type: "pi",
+      requiredTools: ["bash"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f3-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'r3f3', description: 'none carries run-level required' }
+const a = await agent('step', { label: 'step', harness_config: 'none', tools: ['read'] })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-bash-rl",
+          harnessConfigRegistry: registry,
+          cwd: dir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(calls.length, 0, "the agent must NOT run when 'none' + narrowing drops the run-level required tool");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /bash/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("round-3 finding 3: per-call harness_config:'none' with a satisfying narrowing runs the agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f3-ok-"));
+  try {
+    const harnessDir = writeHarness(dir, "needs-read-rl.json", {
+      schemaVersion: 1,
+      id: "needs-read-rl",
+      harness_type: "pi",
+      requiredTools: ["read"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f3-ok-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    await runWorkflow(
+      `export const meta = { name: 'r3f3ok', description: 'none + narrowing keeps required' }
+const a = await agent('step', { label: 'step', harness_config: 'none', tools: ['read', 'bash'] })
+return a`,
+      {
+        agent: capturingRunner(calls),
+        harness_config: "needs-read-rl",
+        harnessConfigRegistry: registry,
+        cwd: dir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    assert.equal(calls.length, 1, "the agent runs when 'none' + narrowing still contains the run-level required tool");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

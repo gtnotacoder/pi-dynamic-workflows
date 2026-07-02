@@ -475,14 +475,19 @@ function unionToolDenylists(lists: ReadonlyArray<readonly string[] | undefined>)
 }
 
 /**
- * Canonical names of the default coding tools `createCodingTools(cwd)` returns
- * (read, bash, edit, write) plus the read-only set (grep, find, ls) the agent
- * also exposes. When `runWorkflow` is called without an explicit `options.tools`,
+ * Canonical names of the tools `createCodingTools(cwd)` actually returns: read,
+ * bash, edit, write. The read-only tools (grep, find, ls) are NOT created by the
+ * default `createCodingTools(cwd)` constructor — they come from the separate
+ * `createReadOnlyTools` / `createAllTools` factories, which the run-level default
+ * path does NOT use. Deriving this set from the actual base constructor (PR #108
+ * round-3 finding 2) means a required/preferred tool-requirement check enforced
+ * against the default path cannot be silently satisfied by a read-only tool that
+ * was never built. When `runWorkflow` is called without an explicit `options.tools`,
  * the WorkflowAgent builds exactly these, so required/preferred tool-requirement
  * checks must run against this set (intersected with the harness tool policy)
  * rather than skipping enforcement (the old `undefined` availableTools path).
  */
-const DEFAULT_CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const DEFAULT_CODING_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
 
 /**
  * Compute the effective set of tool names an agent will actually receive, by
@@ -1124,6 +1129,27 @@ export async function runWorkflow<T = unknown>(
           // Preserve run-level context fences: a per-step config that only defines tools
           // (or guardrail) must NOT clear run-level contextMode/inherit* settings. Inherit
           // any context/inheritance field the candidate leaves undefined from the run-level.
+          //
+          // PR #108 round-3 finding 3: also carry run-level requiredTools/preferredTools
+          // through explicit "none"/narrowing. When the per-call config resolves to "none"
+          // (or any config that does not declare its own requiredTools/preferredTools), the
+          // candidate expansion leaves them `undefined`. Without inheriting the run-level
+          // requirements here, a per-step narrowing (tools allowlist) could silently drop a
+          // run-level required tool — the per-call/per-agent re-check below would see no
+          // requiredTools and pass. Inherit so the run-level requirement still binds the
+          // narrowed set. A per-call config that DOES declare requiredTools/preferredTools
+          // overrides (narrows) the run-level list, mirroring the tools narrowing policy:
+          // intersect so a step can only tighten, never widen, the run-level requirement.
+          const narrowedRequiredTools = candidateExpansion.requiredTools
+            ? harnessExpansion.requiredTools
+              ? candidateExpansion.requiredTools.filter((tool) => harnessExpansion.requiredTools!.includes(tool))
+              : candidateExpansion.requiredTools
+            : harnessExpansion.requiredTools;
+          const narrowedPreferredTools = candidateExpansion.preferredTools
+            ? harnessExpansion.preferredTools
+              ? candidateExpansion.preferredTools.filter((tool) => harnessExpansion.preferredTools!.includes(tool))
+              : candidateExpansion.preferredTools
+            : harnessExpansion.preferredTools;
           effectiveHarnessExpansion = {
             ...candidateExpansion,
             contextMode: candidateExpansion.contextMode ?? harnessExpansion.contextMode,
@@ -1133,6 +1159,8 @@ export async function runWorkflow<T = unknown>(
             systemPromptMode: candidateExpansion.systemPromptMode ?? harnessExpansion.systemPromptMode,
             tools: narrowedTools,
             disallowedTools: narrowedDisallowed.length > 0 ? narrowedDisallowed : undefined,
+            requiredTools: narrowedRequiredTools,
+            preferredTools: narrowedPreferredTools,
           };
           effectiveHarnessCtxReadGuardrail =
             candidateExpansion.componentExtensions !== undefined ||
@@ -1169,8 +1197,19 @@ export async function runWorkflow<T = unknown>(
     // throw a non-recoverable error (clean failure: the step cannot run under this config
     // without the tool); on a preferred-miss, log a degradation warning and mark the
     // expansion degraded so the missing-tool state folds into the resume hash (finding 4).
+    //
+    // PR #108 round-3 finding 1: use the per-agent REAL tool base, not the run-level base.
+    // When `agentOptions.isolation === "worktree"`, the agent rebuilds coding tools for
+    // the worktree cwd via `createCodingTools(runCwd)` (see agent.ts), which DROPS any
+    // run-level `options.tools` override — the harness check must not treat those dropped
+    // tools as still available. The worktree base is exactly the default coding tool names
+    // (the createCodingTools output), regardless of `options.tools`. Fail closed: an
+    // unknown isolation base falls back to the default coding tools too, never to the
+    // (possibly custom) run-level base.
+    const perAgentBaseToolNames =
+      agentOptions.isolation === "worktree" ? [...DEFAULT_CODING_TOOL_NAMES] : runLevelBaseToolNames;
     const perCallAvailableTools = effectiveAvailableToolNames(
-      runLevelBaseToolNames,
+      perAgentBaseToolNames,
       effectiveHarnessExpansion.tools,
       effectiveHarnessExpansion.disallowedTools,
       effectiveReadOnly,
@@ -1218,8 +1257,11 @@ export async function runWorkflow<T = unknown>(
     const narrowedAgentDeny =
       agentOptions.disallowedTools ??
       unionToolDenylists([agentDef?.disallowedTools, effectiveHarnessExpansion.disallowedTools]);
+    // PR #108 round-3 finding 1: mirror the same per-agent worktree base as the per-call
+    // re-check above. A worktree-isolated agent's base is the default coding tools
+    // (createCodingTools output), not the possibly-custom run-level `options.tools`.
     const narrowedAvailableTools = effectiveAvailableToolNames(
-      runLevelBaseToolNames,
+      perAgentBaseToolNames,
       narrowedAgentAllow,
       narrowedAgentDeny,
       effectiveReadOnly,
