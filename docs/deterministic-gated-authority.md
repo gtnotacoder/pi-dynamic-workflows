@@ -1,6 +1,6 @@
 # Deterministic Gated Authority Research
 
-> **Status:** Design rationale (2026-06, issue #12) — the StageCheck/LocalChecks gate described here is implemented; details may lag the code.
+> **Status:** Design rationale (2026-06, issue #12) — the StageCheck/LocalChecks gate is implemented as the `stageCheck()` workflow VM global (`src/workflow.ts`) called from Issue Delivery's `LocalChecks` phase (`src/issue-delivery.ts`). The "Integration options" / "Recommendation" sections below were updated to match shipped v0.2.0; other design rationale may lag the code.
 
 ## Goal
 
@@ -157,20 +157,20 @@ Verifier policy:
 
 ## Integration options
 
-1. **Workflow helper**
-   - Add a built-in `stageCheck()` workflow global.
-   - Issue Delivery calls it from the `LocalChecks` phase.
-   - Best developer experience, but expands the workflow VM API.
+These were the three candidate integration surfaces evaluated during design. Option 1 was the one shipped.
 
-2. **Host tool**
-   - Expose a restricted `stage_check` tool only to Issue Delivery/local-check phases.
-   - Easier to audit and sandbox than arbitrary bash.
+1. **Workflow helper** ✅ shipped
+   - A built-in `stageCheck()` workflow global, exposed to the trusted-code VM (`src/workflow.ts`) and injected as `stageCheck` in the run globals (`src/workflow.ts`).
+   - Issue Delivery calls it directly from the `LocalChecks` phase (`src/issue-delivery.ts`).
+   - Best developer experience; it does expand the workflow VM API, but keeps the gate inside the Node orchestration boundary rather than exposing a model-callable tool.
 
-3. **Manager pre-verification hook**
+2. **Host tool** (not shipped)
+   - A restricted `stage_check` tool exposed only to Issue Delivery/local-check phases.
+   - Easier to audit and sandbox than arbitrary bash, but no such tool is registered.
+
+3. **Manager pre-verification hook** (not shipped)
    - Let `WorkflowManager` run StageCheck after selected agents complete.
    - Most deterministic, but least flexible for arbitrary generated workflows.
-
-A good first implementation is option 2: a host-owned `stage_check` tool with a tiny allowlist for `npm run build` and `npm run check`, returning `StageCheckResult` JSON.
 
 ## Open questions
 
@@ -181,4 +181,4 @@ A good first implementation is option 2: a host-owned `stage_check` tool with a 
 
 ## Recommendation
 
-Implement deterministic StageCheck as a restricted host tool first. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks. This preserves the Thinker-Worker-Verifier control model while moving hard compiler/linter authority out of the model loop and into deterministic orchestration code.
+The shipped implementation is the workflow-helper option: a `stageCheck()` VM global that Issue Delivery's `LocalChecks` phase calls directly. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks via the `StageCheckResult` returned by `stageCheck()`. This preserves the Thinker-Worker-Verifier control model while keeping hard compiler/linter authority in deterministic orchestration code rather than the model loop.

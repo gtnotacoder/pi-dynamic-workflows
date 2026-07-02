@@ -51,9 +51,9 @@ The two paths do not all converge on one entry point — builtins split by comma
 
 ### 2. Worktree isolation
 
-Before the harness is selected, the manager evaluates whether the run requires a throwaway git worktree. Three signals trigger isolation:
+Before the harness is selected, the manager evaluates whether the run requires a throwaway git worktree. Three run-level signals trigger isolation (a per-agent `agentOptions.isolation === "worktree"` is separate and handled later inside `runWorkflow()`, see below):
 
-- `isolation.worktree` — an explicit per-agent or per-run isolation flag.
+- `isolation.worktree` — a run-level flag on the manager's `ExecOptions`. (Per-agent `agentOptions.isolation === "worktree"` is a separate signal handled later inside `runWorkflow()` at `src/workflow.ts:1403-1407` and is best-effort: it only logs if worktree creation fails, unlike the fail-closed, resumable run-level path.)
 - `worktreeRequired` — a run-level flag. The `/issue-delivery` command handler does **not** set it: it passes only `contextMode`, `harness_type`, and `harness_config` to `startInBackground()` (`src/builtin-commands.ts`). Run-level worktree isolation for Issue Delivery, when it occurs, comes from the `harness_config` descriptor's `worktreeRequired` (resolved by the manager, see §3). Separately, the Issue Delivery workflow script (`src/issue-delivery.ts`) computes a `WORKTREE_REQUIRED` value for prototype lanes and passes it to the in-workflow `prototypeSafetyCheck()` gate, which verifies the run is in a clean worktree before allowing prototype execution — that is a safety gate, not the manager's run-level isolation.
 - `harness_config` descriptor — if the harness descriptor (looked up from the `harness_config` registry key) sets `worktreeRequired: true`, the run auto-isolates.
 
@@ -63,8 +63,8 @@ When any signal is true, `createWorktree()` in `src/worktree.ts` creates a branc
 
 The harness layer determines which coding-agent runtime the workflow subagents use. `src/harness-selector.ts` provides:
 
-- `selectHarness()` — picks the harness type (`pi`, `opencode`, or `hermes`) from the explicit `harness_type` flag, the `harness_config` descriptor, or the runtime default. These three types are the canonical `HARNESS_TYPES` constant in `src/harness-config.ts`.
-- `resolveHarnessLayers()` — validates that the resolved `HarnessSelection` is not a `skipped` or `invalid` descriptor (unless overridden).
+- `selectHarness()` — picks the harness type (`pi`, `opencode`, or `hermes`) from the explicit `harness_type` flag, the `harness_config` descriptor, or the runtime default (auto-selection skips `invalid` descriptors, `src/harness-selector.ts`). These three types are the canonical `HARNESS_TYPES` constant in `src/harness-config.ts`.
+- `resolveHarnessLayers()` — folds override layers (`harness_type`/`harness_config`) by precedence only (`src/harness-config.ts`); it does **not** validate skipped or invalid descriptors. Skipped/invalid handling lives in the descriptor loader and `expandHarnessConfig()` (`src/harness-config.ts`), and an explicit `--harness-config` that resolves to a skipped or not-wired descriptor is clean-skipped in the manager/runWorkflow path (see the `descriptorUsable`/`descriptorRequiresWorktree` logic in §2 and `src/workflow-manager.ts`).
 
 A `harness_config` descriptor is a named configuration (registered in `src/harness-config.ts`) that bundles a `harness_type`, optional tool policy, and optional `worktreeRequired` flag. When `harness_config` is supplied on the command line, the manager looks up the descriptor and applies its settings. See [repo-harness-bootstrapping.md](repo-harness-bootstrapping.md) for the full bootstrapping and registry mechanics.
 

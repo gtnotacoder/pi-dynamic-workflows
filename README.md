@@ -95,7 +95,7 @@ flowchart TD
   CS --> DEL["Delivery — branch + commit + push + draft PR<br/>checkFinalization gate<br/>src/issue-delivery.ts"]
 ```
 
-A slash command (built-in or saved) funnels through the `WorkflowManager`, which optionally spins up a git worktree for isolation, resolves the harness config, and hands off to the workflow engine. Inside the trusted-code VM, `agent()` calls are routed through the agent-type registry and model-tier config, then executed as subagent sessions with tool policies applied. Conductor status propagates to the herdr pane, task panel, and — for Issue Delivery — through PR delivery and the finalization gate. The full architecture diagram with expanded detail lives in [docs/architecture.md](./docs/architecture.md).
+Slash commands split by command: `/deep-research` and `/code-review` run **foreground** via `runWorkflow()` directly (no `WorkflowManager`, no task-panel/background delivery, inline result to the TUI), while `/adversarial-review` and `/issue-delivery` (and saved-workflow commands) route through `WorkflowManager.startInBackground()` when a manager is available (falling back to inline `runWorkflow()`), so the manager can spin up a git worktree for isolation, resolve the harness config, and hand off to the workflow engine. Inside the trusted-code VM, `agent()` calls are routed through the agent-type registry and model-tier config, then executed as subagent sessions with tool policies applied. Conductor status propagates to the herdr pane, task panel, and — for Issue Delivery — through PR delivery and the finalization gate. The full architecture diagram with expanded detail lives in [docs/architecture.md](./docs/architecture.md).
 
 ---
 
