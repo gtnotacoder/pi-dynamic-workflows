@@ -220,6 +220,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
         try {
           const result = await runWorkflow(generateDeepResearchWorkflow(), {
+            // Route tier/phase models against the host session registry (upstream #49 port).
+            modelRegistry: ctx.modelRegistry,
             cwd,
             args: { question },
             // Research agents need real web access on top of the coding tools.
@@ -292,6 +294,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           }
 
           const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
+            modelRegistry: ctx.modelRegistry,
             cwd,
             args: workflowArgs,
             tools,
@@ -354,6 +357,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           }
 
           const result = await runWorkflow(generateIssueDeliveryWorkflow(), {
+            modelRegistry: ctx.modelRegistry,
             cwd,
             args: workflowArgs,
             tools: createCodingTools(cwd),
@@ -389,6 +393,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           // read-only tools, so prompt text is not the security boundary.
           const prepared = await prepareCodeReviewArgs(rest, cwd);
           const result = await runWorkflow(generateCodeReviewWorkflow(), {
+            modelRegistry: ctx.modelRegistry,
             cwd,
             args: prepared,
             tools: createReadOnlyTools(cwd),

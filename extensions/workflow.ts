@@ -73,6 +73,11 @@ export default function extension(pi: ExtensionAPI) {
   let editorInstalled = false;
 
   pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+    // Share the host session's ModelRegistry with workflow subagents and the
+    // workflow tool's model-routing guideline BEFORE (re)activating the tool, so
+    // tier/phase routing and the advertised model list include providers
+    // registered dynamically by extensions (upstream #49 port).
+    manager.setModelRegistry(ctx.modelRegistry);
     workflowTracing ??= installWorkflowLangfuseTracing(manager, { cwd });
     const active = pi.getActiveTools();
     if (!active.includes(workflowTool.name)) {

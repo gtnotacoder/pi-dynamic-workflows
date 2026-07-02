@@ -5,6 +5,7 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { WorkflowAgent } from "./agent.js";
 import { loadAgentRegistry } from "./agent-registry.js";
 import {
@@ -194,6 +195,8 @@ export interface WorkflowManagerOptions {
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   mainModel?: string;
+  /** Host session ModelRegistry shared with workflow subagents (upstream #49 port). */
+  modelRegistry?: ModelRegistry;
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
@@ -225,6 +228,8 @@ export class WorkflowManager extends EventEmitter {
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
+  /** Host session ModelRegistry shared with workflow subagents (see setModelRegistry). */
+  private modelRegistry?: ModelRegistry;
   /** True once installTaskPanel() has registered the below-editor panel — lets the
    *  workflow tool suppress redundant chat streaming only when a panel will show
    *  live progress (see workflow-tool.ts). Set by installTaskPanel in task-panel.ts. */
@@ -249,6 +254,7 @@ export class WorkflowManager extends EventEmitter {
     this.loadSavedWorkflow = options.loadSavedWorkflow;
     this.agent = options.agent;
     this.mainModel = options.mainModel;
+    this.modelRegistry = options.modelRegistry;
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     // Preserve undefined (runtime constant applies) vs null (explicit disable).
@@ -397,6 +403,21 @@ export class WorkflowManager extends EventEmitter {
   /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
   setMainModel(spec: string | undefined): void {
     this.mainModel = spec;
+  }
+
+  /**
+   * Share the host session's ModelRegistry with workflow subagents (upstream #49
+   * port). Set on session_start; runs started afterwards resolve tier/phase/model
+   * routing against the same registry as the main Pi session, so extension-
+   * registered providers are routable instead of silently falling back.
+   */
+  setModelRegistry(registry: ModelRegistry | undefined): void {
+    this.modelRegistry = registry;
+  }
+
+  /** The shared host ModelRegistry, when one has been set (see setModelRegistry). */
+  getModelRegistry(): ModelRegistry | undefined {
+    return this.modelRegistry;
   }
 
   /**
@@ -745,6 +766,7 @@ export class WorkflowManager extends EventEmitter {
         runId: managed.runId,
         agent: this.agent,
         mainModel: this.mainModel,
+        modelRegistry: this.modelRegistry,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,
