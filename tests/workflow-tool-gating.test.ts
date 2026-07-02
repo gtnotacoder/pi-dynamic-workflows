@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { loadHarnessConfigRegistry } from "../src/harness-config.js";
-import { runWorkflow } from "../src/workflow.js";
+import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
 interface CapturedCall {
   label: string | undefined;
@@ -23,6 +23,18 @@ function capturingRunner(calls: CapturedCall[]) {
       return `ran:${prompt}`;
     },
   };
+}
+
+/** Create a real git repo at `dir` with an initial commit so worktree add has a HEAD. */
+function initGitRepoForGating(dir: string) {
+  execFileSync("git", ["init", "-q", "-b", "__seed__"], { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["config", "user.email", "t@t.t"], { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: dir, stdio: "pipe" });
+  writeFileSync(join(dir, ".gitignore"), ".pi/\n");
+  writeFileSync(join(dir, "file.txt"), "base\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["commit", "--no-verify", "-q", "-m", "init"], { cwd: dir, stdio: "pipe" });
+  execFileSync("git", ["branch", "-m", "main"], { cwd: dir, stdio: "pipe" });
 }
 
 function writeHarness(dir: string, file: string, payload: Record<string, unknown>) {
@@ -745,6 +757,297 @@ return a`,
     assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
     assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
     assert.match((thrown as Error).message, /web_search/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round-5 finding 1: the isolated required-tool fail-closed throw must NOT leak the
+//    worktree. The check now runs INSIDE the try/finally that calls removeWorktree, so a
+//    missing-required-tool failure on an isolated worktree tears the worktree down and
+//    emits a matching onAgentEnd (onAgentStart already fired). ──
+
+test("round-5 finding 1: an isolated worktree that fails the isolated required-tool re-check removes the worktree (no leak) and emits onAgentEnd", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "wf-gating-r5-f1-"));
+  initGitRepoForGating(repo);
+  try {
+    // Real git repo: createWorktree succeeds (isolated === true). The harness requires a
+    // custom tool supplied only via run-level options.tools, which isolation DROPS, so the
+    // inside-limiter isolated re-check must fail closed. The throw must NOT leak the
+    // worktree: the cleanup finally must remove it.
+    const harnessDir = writeHarness(repo, "needs-custom-r5f1.json", {
+      schemaVersion: 1,
+      id: "needs-custom-r5f1",
+      harness_type: "pi",
+      requiredTools: ["custom_x"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f1-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    const endEvents: Array<{ error?: string; errorCode?: string }> = [];
+    let thrown: unknown;
+    const worktreesDir = join(repo, ".pi", "worktrees");
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'r5f1', description: 'isolated fail-closed must clean up worktree' }
+const a = await agent('step', { label: 'step', isolation: 'worktree' })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-custom-r5f1",
+          tools: [
+            { name: "custom_x", description: "x", schema: {}, run: async () => "ok" },
+            { name: "read", description: "r", schema: {}, run: async () => "ok" },
+          ],
+          harnessConfigRegistry: registry,
+          cwd: repo,
+          concurrency: 1,
+          persistLogs: false,
+          onAgentEnd: (event) => endEvents.push({ error: event.error, errorCode: event.errorCode }),
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(calls.length, 0, "the agent must NOT run when isolated worktree drops the required custom tool");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /custom_x/);
+    // The worktree must be removed (no leak): either the worktrees dir is absent, or it
+    // holds no worktree subdirectory for this run.
+    const leaked = existsSync(worktreesDir)
+      ? readdirSync(worktreesDir).filter((entry) => !entry.startsWith(".")).length > 0
+      : false;
+    assert.equal(leaked, false, "the isolated fail-closed path must NOT leak a .pi/worktrees/ checkout");
+    // A matching onAgentEnd (with the error) must follow onAgentStart — no dangling start.
+    assert.equal(endEvents.length, 1, "exactly one onAgentEnd fires for the fail-closed isolated call");
+    assert.equal(endEvents[0]?.errorCode, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match(endEvents[0]?.error ?? "", /custom_x/);
+  } finally {
+    execFileSync("git", ["worktree", "prune"], { cwd: repo, stdio: "pipe" });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ── Round-5 finding 2: the worktree isolation PRECONDITION (git-repo vs fallback) is
+//    folded into the resume identity. A cached result produced under the fallback base
+//    (non-git cwd, run-level options.tools retained) must NOT replay after the cwd becomes
+//    a git repo and isolation would rebuild coding tools (dropping the custom tool) — the
+//    cache must bust so the inside-limiter isolated re-check fails closed instead. ──
+
+test("round-5 finding 2: a fallback-produced isolated result does NOT replay on resume after the cwd becomes a git repo (precondition in resume identity)", async () => {
+  // Phase 1: NON-git cwd → createWorktree falls back (isolated === false). The harness
+  // requires a custom tool supplied via run-level options.tools, which the fallback RETAINS,
+  // so the per-call re-check passes and the agent runs. The result is journaled.
+  const nonGitCwd = mkdtempSync(join(tmpdir(), "wf-gating-r5-f2-nongit-"));
+  const harnessDir = writeHarness(nonGitCwd, "needs-custom-r5f2.json", {
+    schemaVersion: 1,
+    id: "needs-custom-r5f2",
+    harness_type: "pi",
+    requiredTools: ["custom_x"],
+  });
+  const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f2-user-"));
+  const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+  const script = `export const meta = { name: 'r5f2', description: 'isolation precondition resume' }
+const a = await agent('step', { label: 'step', isolation: 'worktree' })
+return a`;
+  const tools = [
+    { name: "custom_x", description: "x", schema: {}, run: async () => "ok" },
+    { name: "read", description: "r", schema: {}, run: async () => "ok" },
+  ];
+  const journal: JournalEntry[] = [];
+  const firstCalls: CapturedCall[] = [];
+  await runWorkflow(script, {
+    agent: capturingRunner(firstCalls),
+    harness_config: "needs-custom-r5f2",
+    tools,
+    harnessConfigRegistry: registry,
+    cwd: nonGitCwd,
+    concurrency: 1,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  } as Record<string, unknown>);
+  assert.equal(firstCalls.length, 1, "phase 1: the agent runs under worktree fallback (custom tool retained)");
+
+  // Phase 2: same script + journal, but now the cwd IS a git repo. createWorktree would
+  // succeed and rebuild coding tools as DEFAULT_CODING_TOOL_NAMES — dropping custom_x.
+  // The precondition changed (fallback → git-repo), so the cache MUST bust: the call runs
+  // live, the isolated re-check fails closed, and the agent must NOT run.
+  const gitRepo = mkdtempSync(join(tmpdir(), "wf-gating-r5-f2-git-"));
+  initGitRepoForGating(gitRepo);
+  // Re-create the harness descriptor in the git repo so the registry resolves the same id.
+  writeHarness(gitRepo, "needs-custom-r5f2.json", {
+    schemaVersion: 1,
+    id: "needs-custom-r5f2",
+    harness_type: "pi",
+    requiredTools: ["custom_x"],
+  });
+  const gitRegistry = loadHarnessConfigRegistry("/unused", {
+    projectDir: join(gitRepo, ".pi", "workflows", "harnesses"),
+    userDir,
+  });
+  const resumeCalls: CapturedCall[] = [];
+  let thrown: unknown;
+  try {
+    await runWorkflow(script, {
+      agent: capturingRunner(resumeCalls),
+      harness_config: "needs-custom-r5f2",
+      tools,
+      harnessConfigRegistry: gitRegistry,
+      cwd: gitRepo,
+      concurrency: 1,
+      persistLogs: false,
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+    } as Record<string, unknown>);
+  } catch (error) {
+    thrown = error;
+  }
+  assert.equal(
+    resumeCalls.length,
+    0,
+    "phase 2: the cached fallback result must NOT replay after the cwd became a git repo",
+  );
+  assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+  assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+  assert.match((thrown as Error).message, /custom_x/);
+  // Sanity: the reverse direction (git-repo → git-repo) still replays, so the precondition
+  // field does not bust the cache when the outcome is stable. Re-run phase 1 in a git repo
+  // to build a journal, then resume in the SAME git repo and assert a cache hit.
+  const stableRepo = mkdtempSync(join(tmpdir(), "wf-gating-r5-f2-stable-"));
+  initGitRepoForGating(stableRepo);
+  writeHarness(stableRepo, "needs-read-r5f2-stable.json", {
+    schemaVersion: 1,
+    id: "needs-read-r5f2-stable",
+    harness_type: "pi",
+    requiredTools: ["read"],
+  });
+  const stableRegistry = loadHarnessConfigRegistry("/unused", {
+    projectDir: join(stableRepo, ".pi", "workflows", "harnesses"),
+    userDir,
+  });
+  const stableScript = `export const meta = { name: 'r5f2stable', description: 'stable precondition replay' }
+const a = await agent('step', { label: 'step', isolation: 'worktree' })
+return a`;
+  const stableJournal: JournalEntry[] = [];
+  const stableFirstCalls: CapturedCall[] = [];
+  await runWorkflow(stableScript, {
+    agent: capturingRunner(stableFirstCalls),
+    harness_config: "needs-read-r5f2-stable",
+    harnessConfigRegistry: stableRegistry,
+    cwd: stableRepo,
+    concurrency: 1,
+    persistLogs: false,
+    onAgentJournal: (entry) => stableJournal.push(entry),
+  } as Record<string, unknown>);
+  assert.equal(stableFirstCalls.length, 1, "stable phase 1: the isolated agent runs in a git repo");
+  const stableResumeCalls: CapturedCall[] = [];
+  await runWorkflow(stableScript, {
+    agent: capturingRunner(stableResumeCalls),
+    harness_config: "needs-read-r5f2-stable",
+    harnessConfigRegistry: stableRegistry,
+    cwd: stableRepo,
+    concurrency: 1,
+    persistLogs: false,
+    resumeJournal: new Map(stableJournal.map((entry) => [entry.index, entry])),
+  } as Record<string, unknown>);
+  assert.equal(
+    stableResumeCalls.length,
+    0,
+    "stable phase 2: an unchanged git-repo precondition must still replay the cached isolated result",
+  );
+  // Cleanup any worktrees the stable run kept (completed isolated runs keep their worktree).
+  execFileSync("git", ["worktree", "prune"], { cwd: stableRepo, stdio: "pipe" });
+  rmSync(nonGitCwd, { recursive: true, force: true });
+  rmSync(gitRepo, { recursive: true, force: true });
+  rmSync(stableRepo, { recursive: true, force: true });
+  rmSync(userDir, { recursive: true, force: true });
+});
+
+// ── Round-5 finding 3: an explicit per-call selection of a SKIPPED descriptor (malformed
+//    requiredTools) clean-skips the agent with the skip reason, instead of silently falling
+//    back to the run-level harness (which may have no requirement, defeating the fail-closed
+//    intent). Run-level explicit selection clean-skips these; per-call must match. ──
+
+test("round-5 finding 3: a per-call explicit selection of a skipped (malformed requiredTools) descriptor clean-skips instead of falling back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f3-"));
+  try {
+    // "bad" descriptor: requiredTools is a bare string (malformed) → loader skips it with a
+    // reason. "ok" run-level descriptor: requires read (present in default coding tools), so
+    // the run-level gate passes and an agent with no per-call override would run.
+    const harnessDir = writeHarness(dir, "bad.json", {
+      schemaVersion: 1,
+      id: "bad",
+      harness_type: "pi",
+      requiredTools: "not-an-array",
+    });
+    writeHarness(dir, "ok.json", {
+      schemaVersion: 1,
+      id: "ok",
+      harness_type: "pi",
+      requiredTools: ["read"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f3-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'r5f3', description: 'per-call skipped descriptor clean-skips' }
+const a = await agent('step', { label: 'step', harness_config: 'bad' })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "ok",
+          harnessConfigRegistry: registry,
+          cwd: dir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    // The agent must NOT run: the per-call "bad" descriptor was skipped by the loader, so
+    // the explicit per-call selection clean-skips instead of silently falling back to "ok".
+    assert.equal(calls.length, 0, "the agent must NOT run when the per-call descriptor was skipped by the loader");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /skipped by the loader/);
+    assert.match((thrown as Error).message, /requiredTools must be a string array/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("round-5 finding 3: a per-call UNKNOWN descriptor id still falls back to the run-level harness (skipped-clean-skip is specific to skipped descriptors)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f3-unknown-"));
+  try {
+    // Run-level "ok" requires read (present). Per-call references an UNKNOWN id "nope".
+    // Unknown ids are a softer mismatch (typo) and still fall back to run-level (the agent
+    // runs under "ok"), preserving prior behavior — only SKIPPED descriptors clean-skip.
+    const harnessDir = writeHarness(dir, "ok.json", {
+      schemaVersion: 1,
+      id: "ok",
+      harness_type: "pi",
+      requiredTools: ["read"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r5-f3-unknown-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    await runWorkflow(
+      `export const meta = { name: 'r5f3unk', description: 'unknown per-call falls back' }
+const a = await agent('step', { label: 'step', harness_config: 'nope' })
+return a`,
+      {
+        agent: capturingRunner(calls),
+        harness_config: "ok",
+        harnessConfigRegistry: registry,
+        cwd: dir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    assert.equal(calls.length, 1, "an unknown per-call id falls back to the run-level harness (agent runs)");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

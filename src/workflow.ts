@@ -76,7 +76,7 @@ import {
   type StageCheckResult,
 } from "./stage-check.js";
 import { type DagNode, DagValidationError, runDag, type WaveResult } from "./workflow-dag.js";
-import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
+import { createWorktree, isGitRepoForWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -1058,9 +1058,27 @@ export async function runWorkflow<T = unknown>(
       } else if (perCallHarnessConfigRaw !== undefined) {
         const descriptor = harnessConfigRegistry.get(perCallHarnessConfigRaw);
         if (!descriptor || descriptor.invalid || descriptor.skipped) {
+          // PR #108 round-5 finding 3: an explicit per-call selection of a SKIPPED descriptor
+          // (e.g. malformed requiredTools/preferredTools, or engine.min above the running
+          // engine) must clean-skip the agent with the skip reason instead of silently
+          // falling back to the run-level harness. Falling back would let the agent run
+          // under the run-level config — which may have no requirement — defeating the
+          // fail-closed intent of the loader skip (the run-level explicit-selection path
+          // clean-skips these descriptors; per-call explicit selection must match). Unknown
+          // ids / invalid descriptors still fall back to the run-level harness (typo/invalid
+          // is a softer mismatch, preserving prior behavior).
+          if (descriptor?.skipped) {
+            throw new WorkflowError(
+              `Per-call harness_config "${perCallHarnessConfigRaw}" was skipped by the loader: ${
+                descriptor.skipReason ?? "unknown"
+              }; refusing to run under a skipped descriptor (use a valid config or omit the override).`,
+              WorkflowErrorCode.HARNESS_NOT_WIRED,
+              { recoverable: false, agentLabel: requestedLabel },
+            );
+          }
           log(
             `per-call harness_config "${perCallHarnessConfigRaw}" is ${
-              descriptor?.skipped ? "skipped" : descriptor?.invalid ? "invalid" : "unknown"
+              descriptor?.invalid ? "invalid" : "unknown"
             }; using run-level harness`,
           );
           rejectOverride = true;
@@ -1446,6 +1464,21 @@ export async function runWorkflow<T = unknown>(
       effectiveHarnessSelection.harness_config === "none"
         ? '{"detectorVersion":1,"harness_config":"none","harness_type":"none","source":"explicit"}'
         : null;
+    // PR #108 round-5 finding 2: fold the worktree isolation PRECONDITION into the resume
+    // identity. When an isolated agent first runs where createWorktree falls back (not a
+    // git repo), the agent's effective tool base is the run-level `options.tools` set
+    // (custom tools retained), and the required-tools pre-check journals against that
+    // base. If the same run is later resumed after the cwd became a git repo, createWorktree
+    // would succeed and rebuild coding tools as DEFAULT_CODING_TOOL_NAMES — dropping any
+    // run-level `options.tools` custom tool — but the call hash would still match, so the
+    // cached (fallback) result would replay BEFORE the inside-limiter isolated re-check can
+    // fail closed. Including the git-repo precondition (the deterministic signal that
+    // createWorktree uses to choose isolated vs fallback) in the hash busts the cache when
+    // the isolation outcome's precondition changes, forcing a live re-run and the isolated
+    // required-tool re-check. Scoped to `isolation: "worktree"` calls; non-isolated calls
+    // share the `"none"` sentinel so their hashes (and resume behavior) are unchanged.
+    const worktreeIsolationPrecondition =
+      agentOptions.isolation === "worktree" ? (isGitRepoForWorktree(baseCwd) ? "git-repo" : "fallback") : "none";
     const harnessHashKey =
       harnessSelectionHashKey === '"none"'
         ? harnessSelectionHashKey
@@ -1463,6 +1496,9 @@ export async function runWorkflow<T = unknown>(
             // busts the cache and forces a live re-run.
             degraded: effectiveHarnessExpansion.degraded === true,
             degradeReason: effectiveHarnessExpansion.degradeReason ?? null,
+            // Fold the worktree isolation precondition into the resume identity (PR #108
+            // round-5 finding 2): see the worktreeIsolationPrecondition comment above.
+            worktreeIsolationPrecondition,
           });
     const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(
@@ -1658,44 +1694,6 @@ export async function runWorkflow<T = unknown>(
       // worktree cwd and rebuilds coding tools for it (agent.ts), not primary-cwd tools.
       const runCwd = worktree?.isolated ? worktree.cwd : baseCwd;
 
-      // PR #108 round-4 finding 2: the pre-validation above used the run-level base (the
-      // fallback reality) so a harness requiring a custom/web tool supplied via
-      // `options.tools` does not throw before the worktree fallback path can run. Now that
-      // the worktree actually exists, re-check tool requirements against the REAL
-      // per-agent base when isolation happened: a worktree-isolated agent rebuilds coding
-      // tools via `createCodingTools(runCwd)`, whose output is exactly
-      // `DEFAULT_CODING_TOOL_NAMES` — any run-level `options.tools` override is DROPPED.
-      // Fail closed (non-recoverable throw) if a required tool is absent from the default
-      // coding tools after isolation. Preferred-miss only logs here; the pre-check already
-      // folded run-level preferred degradation into the resume hash, and a throw on
-      // required-miss means no cached result is stored for this call anyway.
-      if (worktree?.isolated) {
-        const isolatedBaseToolNames = [...DEFAULT_CODING_TOOL_NAMES];
-        const isolatedAvailableTools = effectiveAvailableToolNames(
-          isolatedBaseToolNames,
-          narrowedAgentAllow,
-          narrowedAgentDeny,
-          effectiveReadOnly,
-        );
-        const isolatedToolResult = checkToolRequirements(
-          isolatedAvailableTools,
-          effectiveHarnessExpansion.requiredTools,
-          effectiveHarnessExpansion.preferredTools,
-        );
-        if (!isolatedToolResult.ok) {
-          throw new WorkflowError(
-            `Agent "${requestedLabel ?? "agent"}" isolated worktree base is missing required tool(s): ${
-              isolatedToolResult.missingRequired?.join(", ") ?? isolatedToolResult.reason ?? "unknown"
-            }; refusing to run without the required tool (worktree isolation drops run-level options.tools).`,
-            WorkflowErrorCode.HARNESS_NOT_WIRED,
-            { recoverable: false, agentLabel: requestedLabel },
-          );
-        }
-        if (isolatedToolResult.degraded) {
-          log(`[warn] ${isolatedToolResult.reason}`);
-        }
-      }
-
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0). Usage is reset
       // per retry attempt so a failed attempt does not double-count the next one.
@@ -1722,6 +1720,70 @@ export async function runWorkflow<T = unknown>(
       };
 
       try {
+        // PR #108 round-4 finding 2 (moved inside the cleanup try by round-5 finding 1):
+        // the pre-validation above used the run-level base (the fallback reality) so a
+        // harness requiring a custom/web tool supplied via `options.tools` does not throw
+        // before the worktree fallback path can run. Now that the worktree actually exists,
+        // re-check tool requirements against the REAL per-agent base when isolation
+        // happened: a worktree-isolated agent rebuilds coding tools via
+        // `createCodingTools(runCwd)`, whose output is exactly `DEFAULT_CODING_TOOL_NAMES` —
+        // any run-level `options.tools` override is DROPPED. Fail closed (non-recoverable
+        // throw) if a required tool is absent from the default coding tools after isolation.
+        // Preferred-miss only logs here; the pre-check already folded run-level preferred
+        // degradation into the resume hash, and a throw on required-miss means no cached
+        // result is stored for this call anyway.
+        //
+        // PR #108 round-5 finding 1: this check MUST run inside the `try/finally` below so
+        // that the `finally` removes the worktree on this fail-closed path. Previously the
+        // throw fired BEFORE the `try/finally` that calls `removeWorktree`, leaking the
+        // temporary `.pi/worktrees/...` checkout + branch (and leaving onAgentStart without a
+        // matching onAgentEnd) for exactly the missing-required-tool scenario this handles.
+        if (worktree?.isolated) {
+          const isolatedBaseToolNames = [...DEFAULT_CODING_TOOL_NAMES];
+          const isolatedAvailableTools = effectiveAvailableToolNames(
+            isolatedBaseToolNames,
+            narrowedAgentAllow,
+            narrowedAgentDeny,
+            effectiveReadOnly,
+          );
+          const isolatedToolResult = checkToolRequirements(
+            isolatedAvailableTools,
+            effectiveHarnessExpansion.requiredTools,
+            effectiveHarnessExpansion.preferredTools,
+          );
+          if (!isolatedToolResult.ok) {
+            const isolatedError = new WorkflowError(
+              `Agent "${requestedLabel ?? "agent"}" isolated worktree base is missing required tool(s): ${
+                isolatedToolResult.missingRequired?.join(", ") ?? isolatedToolResult.reason ?? "unknown"
+              }; refusing to run without the required tool (worktree isolation drops run-level options.tools).`,
+              WorkflowErrorCode.HARNESS_NOT_WIRED,
+              { recoverable: false, agentLabel: requestedLabel },
+            );
+            // Emit a matching onAgentEnd (onAgentStart fired above) so the UI does not see
+            // a dangling start. The `finally` below removes the worktree regardless.
+            options.onAgentEnd?.({
+              agentCallId,
+              label,
+              phase: assignedPhase,
+              result: null,
+              tokens: 0,
+              contextWindow: undefined,
+              worktree: runCwd,
+              model: displayModel,
+              agentConfig,
+              error: isolatedError.message,
+              errorCode: isolatedError.code,
+              recoverable: isolatedError.recoverable,
+              startedAt,
+              endedAt: new Date().toISOString(),
+            });
+            throw isolatedError;
+          }
+          if (isolatedToolResult.degraded) {
+            log(`[warn] ${isolatedToolResult.reason}`);
+          }
+        }
+
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           usage = undefined;
           contextWindow = undefined;
