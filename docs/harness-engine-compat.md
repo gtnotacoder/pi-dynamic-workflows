@@ -30,7 +30,7 @@ Both guards are advisory (warn + skip), not hard failures: a repo with an incomp
 - in repo CI, over `.pi/workflows/harnesses/*.json`;
 - as a post-engine-upgrade smoke (after bumping `pi-dynamic-workflows`, run it across dependent repos' harnesses to catch silent breakage before a real run).
 
-Programmatic: `validateHarnessFile(path, { engineVersion })` → `{ ok, findings }`. CLI: `runValidateHarness([paths])` → `{ exitCode, report }` (non-zero on any error).
+Programmatic: `validateHarnessFile(path, { engineVersion })` → `{ ok, findings }`. CLI: `runValidateHarness([paths])` → `{ exitCode, results, report }` (non-zero on any error); `results: HarnessValidationResult[]` carries per-descriptor `{ ok, path, findings }`.
 
 ## Reference
 

@@ -103,7 +103,7 @@ Every run flows through the WorkflowManager, so all of these capture it automati
   cache-read fraction, anomalies, trace links.
 - **LLM analysis:** `/workflow_trace_analyzer runId=<runId>` — Spark `trace-analyst`
   narrative + checklist.
-- **Langfuse:** trace id is `stableHex("trace:workflow:<runId>")`; each subagent is a
+- **Langfuse:** trace id is `stableHex("trace:workflow:<runId>", 32)` (second arg truncates the 64-char sha256 digest to 32 chars); each subagent is a
   generation carrying `usageDetails` with `cache_read`/`cache_write`.
 
 ## Measured findings (2026-06-30, GPT-5.5 codex vs Opus 4.8 Meridian)
