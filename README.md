@@ -224,10 +224,10 @@ A **harness_config** is a JSON descriptor that declares how a workflow harness i
 | `id` | `string` | Unique identifier for the harness config. |
 | `harness_type` | `string` | Runtime axis — see [Runtime axis](#runtime-axis) below. |
 | `trigger` | `string` | Trigger mode summary (e.g. `"auto"`, `"manual"`). |
-| `triggerRules` | `object` (optional) | Structured auto-detection rules consumed by the harness selector; shown by `/harness-configs`. |
+| `triggerRules` | `object` (optional) | Structured auto-detection rules consumed by the harness selector. `/harness-configs` shows them only when no `trigger` summary string is present. |
 | `displayName` | `string` | Human-readable label shown in listings. |
-| `description` | `string` (optional) | Longer human description shown in listings. |
-| `worktreeRequired` | `boolean` (optional) | When `true`, any run resolving this config demands run-level git-worktree isolation — the runner auto-isolates even without an explicit `isolation` run option. A non-boolean value warns and is treated as not-required. |
+| `description` | `string` (optional) | Longer human description for descriptor authors/readers (not currently displayed by `/harness-configs`). |
+| `worktreeRequired` | `boolean` (optional) | When `true`, a run launched with an **explicit** `--harness-config <id>` selection demands run-level git-worktree isolation — the manager auto-isolates before launch even without an explicit `isolation` run option. Auto-detected selections do not yet consult this field before launch (follow-up tracked in #93). A non-boolean value warns and is treated as not-required. |
 | `engine` | `object` (optional) | `{ "min": "<semver>" }` — minimum engine version floor. A descriptor whose floor is above the running engine is **skipped by the loader**; explicitly selecting a skipped config via `--harness-config` **clean-skips the run with the reason** instead of silently falling back to Pi defaults. The same floor is enforced for `meta.engine.min` declared inside workflow scripts. |
 
 ### Runtime axis
@@ -276,7 +276,7 @@ Run `/harness-configs` to list all harness configs with their id, harness_type, 
 | `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
-| `/workflow-telemetry-report` | `[window]` (e.g. `24h`, `7d`) | Summarize workflow cache, cost, context, trace, and compaction telemetry across recent runs. |
+| `/workflow-telemetry-report` | `[window=24h\|7d] [since=<iso>] [json]` | Summarize workflow cache, cost, context, trace, and compaction telemetry across recent runs. Arguments use `key=value` form (a bare `7d` is ignored and the default 24h window applies). |
 
 ### Issue Delivery workflow
 
