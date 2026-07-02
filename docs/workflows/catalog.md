@@ -71,10 +71,13 @@ installation state.
 1. Add canonical commands before deleting legacy names.
 2. Legacy commands should call canonical implementations and warn when practical.
 3. New docs and trace metadata should use canonical names.
-4. Transient scratch state lives under `.issue-delivery/` only. The retired
-   `.fugu/`/`.fastcontext/` compatibility window is closed (#104): those paths are
-   no longer ignored anywhere and a worktree still containing them blocks
-   finalization until cleaned.
+4. Transient workflow scratch state lives under `.issue-delivery/` only.
+   `.fugu/` is fully retired (#104): nothing writes it, it is no longer
+   git-ignored or lint-excluded, and a worktree still containing it blocks
+   finalization until cleaned. `.fastcontext/` is third-party tool output
+   (FastContext traces), kept git-ignored/lint-excluded as defensive hygiene
+   only — it is not workflow state and appears in no prompts or transient
+   lists.
 5. Use `prototype=true` / `--prototype` only for ad-hoc harness prototyping runs
    so the review system does not spend merge-gate effort on naming/catalog smoke
    tests. Normal delivery remains issue/plan driven.
