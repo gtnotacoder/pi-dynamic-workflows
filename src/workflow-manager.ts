@@ -727,6 +727,12 @@ export class WorkflowManager extends EventEmitter {
       throw conflict;
     }
     const wantWorktree = !!(isolation?.worktree || worktreeRequired || descriptorRequiresWorktree);
+    // Pane-spawn takes precedence over a plain worktree when BOTH are requested:
+    // per docs §4.6, an active herdr pane-spawn replaces src/worktree.ts (single
+    // source of truth). Without this precedence, an isolated run that also sets
+    // paneSpawn would take the plain-worktree `else if` and never call
+    // worktreeCreate/agentStart on herdr.
+    const wantPaneSpawn = !!(isolation?.paneSpawn && this.herdrPaneSpawnSetting !== "off");
     let runWorktree: Worktree | undefined;
     let runCwd = this.cwd;
     if (reuseWorktree && existsSync(reuseWorktree.cwd)) {
@@ -752,26 +758,10 @@ export class WorkflowManager extends EventEmitter {
       this.persistRun(managed);
       this.releaseRunLease(managed);
       throw goneError;
-    } else if (wantWorktree) {
-      runWorktree = await createWorktree(isolation?.base ?? this.cwd, `run-${managed.runId}`);
-      if (!runWorktree.isolated) {
-        // Fail closed: isolation was demanded but the worktree is unavailable (not a
-        // git repo, git error, …). Refuse to run in the primary checkout — that would
-        // violate the isolation contract and risk edits to the user's working branch.
-        const failError = new WorkflowError(
-          `Run isolation required but worktree unavailable (${runWorktree.reason ?? "unknown"})`,
-          WorkflowErrorCode.WORKFLOW_ABORTED,
-          { recoverable: false },
-        );
-        managed.status = "failed";
-        managed.error = failError;
-        this.persistRun(managed);
-        this.releaseRunLease(managed);
-        this.emit("error", { runId: managed.runId, error: failError });
-        throw failError;
-      }
-    } else if (isolation?.paneSpawn && this.herdrPaneSpawnSetting !== "off") {
+    } else if (wantPaneSpawn) {
       // ── Pane-spawn path: herdr-managed worktree replaces src/worktree.ts ──
+      // Checked BEFORE the plain worktree branch so an isolated run that also
+      // requests paneSpawn spawns via herdr instead of src/worktree.ts.
       // Acquire the concurrency lease (fail closed when the cap is exceeded).
       const spawnSlot = this.paneCoordinator.acquire(managed.runId);
       if (!spawnSlot) {
@@ -790,8 +780,10 @@ export class WorkflowManager extends EventEmitter {
       managed._spawnLease = spawnSlot;
 
       // herdr worktree create — single source of truth, no double bookkeeping.
+      // docs §2: --base is a git *ref*, --cwd is the repo path. Pass the repo path
+      // via --cwd; the herdr-managed branch is the wf/<runId> ref.
       const herdrWt = await this.herdrInvoker.worktreeCreate({
-        base: isolation.base ?? this.cwd,
+        cwd: isolation.base ?? this.cwd,
         branch: `wf/${managed.runId}`,
       });
       if (!herdrWt.cwd) {
@@ -846,6 +838,24 @@ export class WorkflowManager extends EventEmitter {
           message:
             "[isolation] explicit ExecOptions.tools dropped (primary-cwd bound); the agent builds worktree-cwd tools. Use a cwd-bound factory for custom policy (#93)",
         });
+      }
+    } else if (wantWorktree) {
+      runWorktree = await createWorktree(isolation?.base ?? this.cwd, `run-${managed.runId}`);
+      if (!runWorktree.isolated) {
+        // Fail closed: isolation was demanded but the worktree is unavailable (not a
+        // git repo, git error, …). Refuse to run in the primary checkout — that would
+        // violate the isolation contract and risk edits to the user's working branch.
+        const failError = new WorkflowError(
+          `Run isolation required but worktree unavailable (${runWorktree.reason ?? "unknown"})`,
+          WorkflowErrorCode.WORKFLOW_ABORTED,
+          { recoverable: false },
+        );
+        managed.status = "failed";
+        managed.error = failError;
+        this.persistRun(managed);
+        this.releaseRunLease(managed);
+        this.emit("error", { runId: managed.runId, error: failError });
+        throw failError;
       }
     }
     if (runWorktree?.isolated) {

@@ -146,11 +146,11 @@ bookkeeping.
 
 | Method | CLI equivalent | Purpose |
 |--------|----------------|---------|
-| `worktreeCreate({base, branch})` | `herdr worktree create --branch <b> --base <ref> --json` | Creates the herdr-managed worktree, returns `{cwd, branch}` |
+| `worktreeCreate({cwd, branch})` | `herdr worktree create --branch <b> --cwd <repo-path> --json` | Creates the herdr-managed worktree, returns `{cwd, branch}` |
 | `agentStart({name, cwd, workspace?, tab?, split?}, argv)` | `herdr agent start <name> --cwd <cwd> [--workspace] [--tab] [--split] -- <argv…>` | Starts a new herdr agent pane |
 | `reportAgent(pane, opts)` | `herdr pane report-agent <pane> …` | Pushes live state (`idle/working/blocked`) into the cell |
 | `reportMetadata(pane, opts)` | `herdr pane report-metadata <pane> …` | Layers a one-line custom status |
-| `releaseAgent(pane, opts)` | `herdr agent release <pane> …` | Marks the agent done |
+| `releaseAgent(pane, opts)` | `herdr pane release-agent <pane> …` | Marks the agent done |
 | `paneClose(pane)` | `herdr pane close <pane>` | Closes the spawned pane |
 
 The `createDefaultHerdrInvoker()` factory shells `herdr` via `spawn(...).unref()` — fire-and-forget, swallowing errors so a missing herdr binary never throws into the workflow runtime.

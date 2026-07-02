@@ -166,7 +166,7 @@ test("spawnRunPane: worktreeCreate then agentStart with nesting — src/worktree
   const { invoker, calls } = createFakeInvoker();
 
   // Simulate the executeRun pane-spawn path: worktreeCreate → agentStart.
-  const wt = await invoker.worktreeCreate({ base: "/repo", branch: "wf/test-run" });
+  const wt = await invoker.worktreeCreate({ cwd: "/repo", branch: "wf/test-run" });
   assert.equal(wt.cwd, "/tmp/wt/wf/test-run");
   assert.equal(wt.branch, "wf/test-run");
 
@@ -185,7 +185,7 @@ test("spawnRunPane: worktreeCreate then agentStart with nesting — src/worktree
   // Assert the call sequence: worktreeCreate first, then agentStart.
   assert.equal(calls.length, 2);
   assert.equal(calls[0].method, "worktreeCreate");
-  assert.deepEqual(calls[0].args, [{ base: "/repo", branch: "wf/test-run" }]);
+  assert.deepEqual(calls[0].args, [{ cwd: "/repo", branch: "wf/test-run" }]);
 
   assert.equal(calls[1].method, "agentStart");
   const [opts, argv] = calls[1].args as [
@@ -448,7 +448,7 @@ test("WorkflowManager: accepts injected herdrInvoker via constructor", () => {
     herdrInvoker: invoker,
   });
   // Verify the invoker is wired by calling a method through it.
-  invoker.worktreeCreate({ base: "/test", branch: "test" });
+  invoker.worktreeCreate({ cwd: "/test", branch: "test" });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "worktreeCreate");
   void manager;

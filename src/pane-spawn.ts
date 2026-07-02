@@ -27,8 +27,8 @@ export interface HerdrWorktree {
  * All methods return void/Promise<void> and never throw into the runtime.
  */
 export interface HerdrInvoker {
-  /** `herdr worktree create --branch <branch> --base <base> --json` → {cwd, branch}. */
-  worktreeCreate(opts: { base: string; branch: string }): Promise<HerdrWorktree>;
+  /** `herdr worktree create --branch <branch> --cwd <repo-path> --json` → {cwd, branch}. */
+  worktreeCreate(opts: { cwd: string; branch: string }): Promise<HerdrWorktree>;
 
   /**
    * `herdr agent start <name> --cwd <cwd> [--workspace <id>] [--tab <id>] [--split <dir>] -- <argv...>`
@@ -46,8 +46,9 @@ export interface HerdrInvoker {
   ): Promise<{ paneId: string }>;
 
   /**
-   * `herdr pane report-agent <pane> --source <source> --agent <agent> --state <state> [--custom-status <s>] [--seq <n>] [--ttl-ms <n>]`
+   * `herdr pane report-agent <pane> --source <source> --agent <agent> --state <state> [--custom-status <s>] [--seq <n>]`
    * Reports the live state of the agent running in the spawned pane.
+   * `--ttl-ms` is NOT supported by report-agent (only report-metadata); do not add it.
    */
   reportAgent(
     pane: string,
@@ -58,7 +59,6 @@ export interface HerdrInvoker {
       message?: string;
       customStatus?: string;
       seq?: string;
-      ttlMs?: number;
     },
   ): void;
 
@@ -76,7 +76,7 @@ export interface HerdrInvoker {
     },
   ): void;
 
-  /** `herdr agent release <pane> --source <source> --agent <agent>` — marks the agent done. */
+  /** `herdr pane release-agent <pane> --source <source> --agent <agent>` — marks the agent done. */
   releaseAgent(
     pane: string,
     opts: {
@@ -108,11 +108,13 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
   };
 
   return {
-    async worktreeCreate(opts: { base: string; branch: string }): Promise<HerdrWorktree> {
+    async worktreeCreate(opts: { cwd: string; branch: string }): Promise<HerdrWorktree> {
       try {
-        // `herdr worktree create --json` returns JSON on stdout with {cwd, branch}
+        // `herdr worktree create --json` returns JSON on stdout with {cwd, branch}.
+        // --base is a git *ref*, --cwd is the repo path (docs §2). We pass the
+        // repo path via --cwd so herdr creates the worktree under the right repo.
         const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-          const child = spawn("herdr", ["worktree", "create", "--branch", opts.branch, "--base", opts.base, "--json"]);
+          const child = spawn("herdr", ["worktree", "create", "--branch", opts.branch, "--cwd", opts.cwd, "--json"]);
           let out = "";
           child.stdout?.on("data", (chunk: Buffer) => (out += chunk));
           child.on("error", reject);
@@ -171,7 +173,6 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
         message?: string;
         customStatus?: string;
         seq?: string;
-        ttlMs?: number;
       },
     ): void {
       const args: string[] = [
@@ -188,7 +189,6 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
       if (opts.message) args.push("--message", opts.message);
       if (opts.customStatus) args.push("--custom-status", opts.customStatus);
       if (opts.seq) args.push("--seq", opts.seq);
-      if (opts.ttlMs != null) args.push("--ttl-ms", String(opts.ttlMs));
       runSync(args);
     },
 
@@ -208,7 +208,7 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
     },
 
     releaseAgent(pane: string, opts: { source: string; agent: string }): void {
-      runSync(["agent", "release", pane, "--source", opts.source, "--agent", opts.agent]);
+      runSync(["pane", "release-agent", pane, "--source", opts.source, "--agent", opts.agent]);
     },
 
     paneClose(pane: string): void {
@@ -345,8 +345,11 @@ export class PaneSpawnCoordinator {
   /**
    * Get or create a shared coordinator for a given project directory.
    * Ensures all WorkflowManager instances in the same project share
-   * the same concurrency cap. If a new maxPanes is provided, updates
-   * the cached instance to the tighter cap.
+   * the same concurrency cap. If a new maxPanes is TIGHTER (lower) than the
+   * cached cap, lower the cached cap so a manager reload honors the reduced
+   * setting immediately (raising it is ignored to avoid loosening a cap set
+   * by a stricter instance). Lowering only affects future `acquire()` calls;
+   * in-flight leases are unaffected.
    */
   static get(projectCwd: string, maxPanes: number = 4): PaneSpawnCoordinator {
     const key = resolve(projectCwd);
@@ -354,6 +357,8 @@ export class PaneSpawnCoordinator {
     if (!coord) {
       coord = new PaneSpawnCoordinator(maxPanes);
       PaneSpawnCoordinator._cache.set(key, coord);
+    } else if (maxPanes < coord.cap) {
+      coord.cap = maxPanes;
     }
     return coord;
   }
@@ -434,6 +439,14 @@ export function createPaneHandle(invoker: HerdrInvoker, paneId: string): RunPane
         state: mapping.state,
         customStatus: mapping.customStatus,
         seq: bumpSeq(),
+      });
+      // Self-heal: layer a ttl on the custom-status via report-metadata, which
+      // is the only report verb that supports --ttl-ms (docs §2). report-agent
+      // itself does not accept --ttl-ms, so the TTL must live here.
+      invoker.reportMetadata(paneId, {
+        source: PANE_SPAWN_SOURCE,
+        seq: bumpSeq(),
+        customStatus: mapping.customStatus,
         ttlMs: PANE_TTL_MS,
       });
 
