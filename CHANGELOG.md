@@ -9,6 +9,8 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ### Removed
 
+- Purge `.fugu/` and `.fastcontext/` transient-path vocabulary entirely (no more "legacy" mentions): `TRANSIENT_IGNORE_PREFIXES` is now `['.issue-delivery/']` only, issue-delivery prompts/transient lists mention only `.issue-delivery/`, README scrubbed. **Behavior change:** a stale worktree still containing `.fugu/` or `.fastcontext/` dirs now blocks finalization instead of being silently ignored (covered by a new test). (#104)
+
 - Remove `docs/issues.md` (stale local issue index — GitHub is canonical) and `docs/plans/` (plans for closed issues #64/#82/#87; content preserved in their issues/PRs). Both were stale-planning-artifact context poison of the same class as the upstream roadmap removed in #97. (#102)
 
 - Remove `docs/2.0-roadmap.md` — a stale pre-fork upstream planning artifact (upstream implemented and deleted it in their own tree); it misled planning sessions into treating upstream's completed backlog as ours. (#97)

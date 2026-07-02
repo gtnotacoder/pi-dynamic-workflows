@@ -8,8 +8,8 @@
  * touching git or GitHub.
  *
  * The evaluator is intentionally strict but forgiving on transient artifacts:
- * untracked/modified paths under `.issue-delivery/`, legacy `.fugu/`, and
- * `.fastcontext/` are treated as transient porcelain and ignored when deciding
+ * untracked/modified paths under `.issue-delivery/` are treated as transient
+ * porcelain and ignored when deciding
  * whether the worktree is "clean enough" to ship. A rename/copy is only ignored
  * when *both* sides of the rename live under a transient prefix — if a real
  * source file is moved into (or out of) one of those prefixes, that blocks
@@ -92,7 +92,7 @@ export interface FinalizationInput {
 }
 
 /** Transient porcelain path prefixes that never block finalization. */
-const TRANSIENT_IGNORE_PREFIXES = [".issue-delivery/", ".fugu/", ".fastcontext/"];
+const TRANSIENT_IGNORE_PREFIXES = [".issue-delivery/"];
 
 /**
  * A parsed line of `git status --porcelain`. Renames/copies carry both the
@@ -151,7 +151,7 @@ function isIgnoredPath(path: string, extraPrefixes: readonly string[] = []): boo
 
 /**
  * A porcelain entry blocks finalization when *any* path it participates in
- * is non-transient. A rename `src/important.ts -> .fugu/important.ts` therefore
+ * is non-transient. A rename `src/important.ts -> .issue-delivery/important.ts` therefore
  * blocks, because the source path is a real file being removed/renamed.
  */
 function entryIsDirty(entry: PorcelainEntry, extraPrefixes: readonly string[]): boolean {
@@ -348,7 +348,7 @@ async function runGit(cwd: string, args: string[], runner: FinalizationShellRunn
  * whitespace is preserved — this is essential for `git status --porcelain`,
  * whose first column may be a space (e.g. ` M path`); a `.trim()` would
  * collapse ` M path` into `M path`, shifting the path by one character and
- * breaking the transient-prefix (` .fugu/`) check.
+ * breaking the transient-prefix (` .issue-delivery/`) check.
  */
 function trimEnd(value: string): string {
   return value.replace(/\r?\n+$/, "");

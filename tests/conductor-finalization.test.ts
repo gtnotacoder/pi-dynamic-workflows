@@ -71,38 +71,44 @@ test("evaluateFinalization: dirty worktree → needs-finalize", () => {
   assert.match(r.nextAction, /Commit or stash/);
 });
 
-test("evaluateFinalization: transient issue-delivery, legacy .fugu/, and .fastcontext/ paths are ignored", () => {
+test("evaluateFinalization: transient .issue-delivery/ paths are ignored", () => {
   const r = evaluateFinalization(
     cleanInput({
-      porcelain:
-        "?? .issue-delivery/run-30/status.json\n?? .fugu/run-30/state.json\n?? .fastcontext/trajectory.jsonl\n",
+      porcelain: "?? .issue-delivery/run-30/status.json\n?? .issue-delivery/handoff.md\n",
     }),
   );
   assert.equal(r.status, "completed");
 });
 
+test("evaluateFinalization: retired .fugu/ and .fastcontext/ paths are no longer transient → needs-finalize", () => {
+  const r = evaluateFinalization(
+    cleanInput({ porcelain: "?? .fugu/run-30/state.json\n?? .fastcontext/trajectory.jsonl\n" }),
+  );
+  assert.equal(r.status, "needs-finalize");
+});
+
 test("evaluateFinalization: real file plus transient file → needs-finalize", () => {
-  const r = evaluateFinalization(cleanInput({ porcelain: "?? .fugu/state.json\n M src/real.ts\n" }));
+  const r = evaluateFinalization(cleanInput({ porcelain: "?? .issue-delivery/tmp.json\n M src/real.ts\n" }));
   assert.equal(r.status, "needs-finalize");
   assert.match(r.details ?? "", /src\/real\.ts/);
 });
 
 // ─── evaluateFinalization: rename handling ─────────────────────────────────
 
-test("evaluateFinalization: rename into .fugu/ (real source) → blocks", () => {
-  // R  src/important.ts -> .fugu/important.ts : source is a real file.
-  const r = evaluateFinalization(cleanInput({ porcelain: "R  src/important.ts -> .fugu/important.ts\n" }));
+test("evaluateFinalization: rename into .issue-delivery/ (real source) → blocks", () => {
+  // R  src/important.ts -> .issue-delivery/important.ts : source is a real file.
+  const r = evaluateFinalization(cleanInput({ porcelain: "R  src/important.ts -> .issue-delivery/important.ts\n" }));
   assert.equal(r.status, "needs-finalize");
   assert.match(r.details ?? "", /src\/important\.ts/);
 });
 
-test("evaluateFinalization: rename wholly within .fugu/ → ignored", () => {
-  const r = evaluateFinalization(cleanInput({ porcelain: "R  .fugu/a.json -> .fugu/b.json\n" }));
+test("evaluateFinalization: rename wholly within .issue-delivery/ → ignored", () => {
+  const r = evaluateFinalization(cleanInput({ porcelain: "R  .issue-delivery/a.json -> .issue-delivery/b.json\n" }));
   assert.equal(r.status, "completed");
 });
 
-test("evaluateFinalization: copy from real file to .fugu/ → blocks", () => {
-  const r = evaluateFinalization(cleanInput({ porcelain: "C  src/real.ts -> .fugu/copy.ts\n" }));
+test("evaluateFinalization: copy from real file to .issue-delivery/ → blocks", () => {
+  const r = evaluateFinalization(cleanInput({ porcelain: "C  src/real.ts -> .issue-delivery/copy.ts\n" }));
   assert.equal(r.status, "needs-finalize");
 });
 
@@ -290,10 +296,10 @@ test("aggregateChecks via collector: pending check → pending state", async () 
   assert.equal(input.checksState, "pending");
 });
 
-test("collectFinalizationState: preserves leading whitespace in porcelain ( M .fugu/... ignored)", async () => {
+test("collectFinalizationState: preserves leading whitespace in porcelain ( M .issue-delivery/... ignored)", async () => {
   // gh pr checks pending returns JSON but exits 8 — stdout must still parse.
   const runner = makeRunner({
-    "git status --porcelain": () => " M .fugu/state.json\n?? .fastcontext/traj.jsonl\n",
+    "git status --porcelain": () => " M .issue-delivery/status.json\n?? .issue-delivery/handoff.md\n",
     "git rev-parse --abbrev-ref HEAD": () => "feat-30\n",
     "git rev-parse HEAD": () => "abcdef1234567890\n",
     "git rev-parse --abbrev-ref @{upstream}": () => "origin/feat-30\n",
@@ -301,11 +307,11 @@ test("collectFinalizationState: preserves leading whitespace in porcelain ( M .f
     "gh pr checks --json name,state": () => JSON.stringify([{ name: "ci", state: "success" }]),
   });
   const input = await collectFinalizationState("/tmp/repo", {}, runner);
-  // Transient .fugu/.fastcontext entries must be ignored → completed.
+  // Transient .issue-delivery/ entries must be ignored → completed.
   const r = evaluateFinalization(input);
   assert.equal(r.status, "completed");
-  // Sanity: porcelain preserved leading space (slice(3) yields ".fugu/...").
-  assert.match(input.porcelain, /^ M .fugu\//);
+  // Sanity: porcelain preserved leading space (slice(3) yields ".issue-delivery/...").
+  assert.match(input.porcelain, /^ M .issue-delivery\//);
 });
 
 test("collectFinalizationState: gh pr checks pending (exit 8 with stdout JSON) → pending state", async () => {
