@@ -3,9 +3,18 @@
 All notable changes to **`pi-dynamic-workflows-oc-style`** — originally derived from
 [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT).
 Only changes from upstream are listed here; upstream history is preserved in git.
-See [PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
+See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream relationship.
 
 ## [Unreleased]
+
+### Removed
+
+- Remove `docs/2.0-roadmap.md` — a stale pre-fork upstream planning artifact (upstream implemented and deleted it in their own tree); it misled planning sessions into treating upstream's completed backlog as ours. (#97)
+- Remove `docs/fugu-test.md`, the naming-migration compatibility pointer; `docs/issue-delivery-smoke-test.md` is the canonical page. (#97)
+
+### Changed
+
+- Reposition PROVENANCE/README/CHANGELOG upstream language: the projects have diverged and upstream is now a read-only idea source (reviewed ~quarterly, concepts ported as issues — never diffs). Records the 2026-07-02 review of upstream v2.10.0 (one portable fix → #98). Stale test counts refreshed. (#97)
 
 ### Added
 

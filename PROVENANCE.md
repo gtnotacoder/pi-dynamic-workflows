@@ -3,7 +3,8 @@
 `pi-dynamic-workflows-oc-style` is an independently maintained [Pi](https://pi.dev)
 extension that was **originally derived from** `@quintinshaw/pi-dynamic-workflows`
 (MIT) and has since been substantially extended. This file records the origin, the
-changes from upstream, and how upstream is tracked.
+initial derivation edits, and the relationship to upstream. The projects have
+**diverged**: upstream is treated as a read-only idea source, not a merge source.
 
 ## Origin
 
@@ -13,9 +14,13 @@ changes from upstream, and how upstream is tracked.
 - **Original author:** Michael Livs (`pi-dynamic-workflows`); upstream maintainer: QuintinShaw
 - **License:** MIT, retained (see [LICENSE](./LICENSE))
 
-`main` carries upstream v2.7.0 plus all of the changes below.
+## Initial derivation edits (historical)
 
-## Changes from upstream
+These were the first seven edits made on top of upstream v2.7.0. The project has
+since diverged far beyond this list — a harness-agnostic broker
+(`harness_type`/`harness_config`), issue-delivery workflows, run-level worktree
+isolation, and a catalog/lock-gated command surface — see the
+[CHANGELOG](./CHANGELOG.md) and [docs/](./docs/) for current architecture.
 
 | Edit   | Summary                                                                 |
 |--------|-------------------------------------------------------------------------|
@@ -27,25 +32,26 @@ changes from upstream, and how upstream is tracked.
 | EDIT 6 | live progress panel polish + concurrency floor                          |
 | EDIT 7 | per-subagent **context modes** — main-agent rules don't leak into subagents (default `focused`) + `/modes` command (see [docs/context-modes.md](./docs/context-modes.md)) |
 
-## Tracking upstream
+## Relationship to upstream
 
-Upstream is tracked so its fixes can be pulled in without this project being a
-hard fork. To check for and pull upstream changes:
+The projects have diverged; a git merge or cherry-pick from upstream is neither
+possible nor desirable. Upstream remains a general-purpose workflow engine, while
+this project has been rebuilt around a different architecture. Upstream is kept
+only as a **read-only idea source**:
 
 ```bash
 # one-time
 git remote add upstream https://github.com/QuintinShaw/pi-dynamic-workflows.git
 
-# periodically
+# periodically (~quarterly): read the log, port CONCEPTS as issues — never diffs
 git fetch upstream
-git log --oneline main..upstream/main      # what's new upstream
-git diff main upstream/main -- src/         # review the delta
-# then cherry-pick / merge the commits you want, resolving against our edits, e.g.
-git cherry-pick <sha>
-npm test                                    # biome + tsc + unit gate must stay green
+git log --oneline main..upstream/main
 ```
 
-Re-check upstream periodically (e.g. on each upstream release).
+- **Last reviewed:** 2026-07-02, upstream at v2.10.0. Outcome: one portable fix
+  identified (share host ModelRegistry with workflow subagents, upstream #49) —
+  tracked as [#98](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/98);
+  everything else already superseded by our own architecture.
 
 ## Install
 
@@ -64,4 +70,5 @@ npm install && npm run build   # tsc -> dist/
 
 ## Status
 
-825/825 unit tests pass; the full `npm test` gate (biome + build + unit) is green.
+The full `npm test` gate (biome + build + unit) is green; see the
+[README](./README.md#status--acknowledgements) for the current test count.

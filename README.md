@@ -6,9 +6,9 @@ git-worktree isolation, an interactive `/workflows` TUI, `/deep-research`, and
 **OpenCode-style per-subagent context governance**: rules you put on the main
 agent don't leak into the subagents it spawns (see [Context modes](#context-modes)).
 
-> Independently maintained. Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) and substantially extended; see [PROVENANCE.md](./PROVENANCE.md) for the relationship and how upstream is tracked.
+> Independently maintained. Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) and substantially extended; see [PROVENANCE.md](./PROVENANCE.md) for the relationship; the projects have since diverged and upstream is treated as a read-only idea source.
 
-- **Originally derived from:** [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0 (MIT), tracking v2.7.0
+- **Originally derived from:** [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0/v2.7.0 (MIT); since diverged
 - **Security model:** workflow scripts are trusted code, not sandboxed; see [SECURITY.md](./SECURITY.md)
 - **License:** MIT (see [LICENSE](./LICENSE))
 
@@ -475,12 +475,12 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **1054/1054** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
+**Status:** **1298/1298** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now
 independently maintained and substantially extended. See
-[PROVENANCE.md](./PROVENANCE.md) for the change list and how upstream is tracked.
+[PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream relationship.
 
 ---
 
