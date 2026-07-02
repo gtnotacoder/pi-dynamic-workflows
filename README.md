@@ -323,7 +323,7 @@ Components:
 | **LocalChecks** | Calls host-side `stageCheck()` (TypeScript and Biome by default) and fails fast before the LLM Verifier when mechanical checks fail. |
 | **Verifier** | Performs strict semantic LLM review with schema output `{ passed, feedback }`, only after host checks pass. |
 | **Feedback Compactor** | Converts failed stage checks or verifier feedback into a bounded, redacted Correction Delta (`maxTokens: 512`) for the next Worker attempt. |
-| **State writer** | Writes transient diagnostic progress to `.issue-delivery/status.json` so long runs have inspectable local state. Legacy `.fugu/` scratch state is still ignored during migration. This is scratch state, not intended for commits. |
+| **State writer** | Writes transient diagnostic progress to `.issue-delivery/status.json` so long runs have inspectable local state. This is scratch state, not intended for commits. |
 | **Failed-run handoff** | When LocalChecks/Verifier exhaust repair attempts before PR delivery, writes `.issue-delivery/handoff.md` with the final findings, completed steps, transient files to remove/ignore, and `--finish` instructions. |
 | **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. `--finish` enters this checks → PR delivery → finalization lane directly after a human repairs a failed run. |
 
@@ -358,7 +358,7 @@ Prototype guardrails:
 Operational notes:
 
 - Start from a clean git working tree when possible; Issue Delivery will create its own branch during normal PR delivery.
-- If a run fails before PR creation with useful dirty worktree changes, inspect `.issue-delivery/handoff.md`, keep intended product changes, remove/ignore transient `.issue-delivery/`, `.fugu/`, and `.fastcontext/` files, then rerun `/issue-delivery --finish ...` from the repaired worktree.
+- If a run fails before PR creation with useful dirty worktree changes, inspect `.issue-delivery/handoff.md`, keep intended product changes, remove/ignore transient `.issue-delivery/` files, then rerun `/issue-delivery --finish ...` from the repaired worktree.
 - `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
 - Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
 - Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.
@@ -451,7 +451,7 @@ from earlier runs do not affect a new crashed run.
 
 The finalization gate checks:
 
-1. Worktree clean (transient `.issue-delivery/`, legacy `.fugu/`, and `.fastcontext/` paths are ignored)
+1. Worktree clean (transient `.issue-delivery/` paths are ignored)
 2. Branch pushed to upstream
 3. Local HEAD matches remote HEAD
 4. PR head SHA matches (when known)

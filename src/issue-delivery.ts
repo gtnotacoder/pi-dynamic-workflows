@@ -170,7 +170,7 @@ function renderFailedRunHandoff(input) {
   lines.push('- Inspect git status and remove only transient workflow scratch files.')
   lines.push('')
   lines.push('## Transient files to remove or ignore before commit')
-  for (const path of ['.issue-delivery/status.json', '.issue-delivery/handoff.md', '.fugu/', '.fastcontext/']) lines.push('- ' + path)
+  for (const path of ['.issue-delivery/status.json', '.issue-delivery/handoff.md']) lines.push('- ' + path)
   lines.push('')
   lines.push('## Finish path after manual repair')
   lines.push('1. Fix the findings above in this same worktree.')
@@ -210,7 +210,7 @@ if (FINISH_ONLY) {
   const finishPrResult = await agent(
     'You are the Issue Delivery finish agent. Do NOT rerun Scout, Thinker, Worker, or Verifier. The human repaired a failed Issue Delivery worktree and host checks are green.\\n\\n' +
     'Task: "' + TASK_CONTEXT + '"\\n' +
-    'Read .issue-delivery/handoff.md and .issue-delivery/status.json if present. Inspect git status. Commit ONLY intended product changes; do not commit transient paths such as .issue-delivery/, .fugu/, or .fastcontext/. Push a safe branch and open a draft PR. Include Closes #N if the task mentions an issue number. Return the PR URL and branch summary.',
+    'Read .issue-delivery/handoff.md and .issue-delivery/status.json if present. Inspect git status. Commit ONLY intended product changes; do not commit transient paths such as .issue-delivery/. Push a safe branch and open a draft PR. Include Closes #N if the task mentions an issue number. Return the PR URL and branch summary.',
     {
       label: 'issue-finish-delivery',
       tier: 'small'
@@ -377,7 +377,7 @@ async function writeFailedRunHandoff(input) {
     failedSteps: failedStepIds,
     reason: 'Issue Delivery stopped after verifier/local-check failures.',
     writeStatus: 'pending',
-    transientFiles: ['.issue-delivery/status.json', '.issue-delivery/handoff.md', '.fugu/', '.fastcontext/']
+    transientFiles: ['.issue-delivery/status.json', '.issue-delivery/handoff.md']
   }
   await writeIssueDeliveryState('issue-state-handoff-pending')
 
@@ -628,7 +628,7 @@ const prResult = await agent(
   'Task: "' + TASK_CONTEXT + '"\\n' +
   'Summary of changes: ' + executionState.summary + '\\n' +
   'Modified Files:\\n' + executionState.completedSteps.map(s => '- ' + s.file).join('\\n') + '\\n\\n' +
-  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .issue-delivery/, legacy .fugu/, or .fastcontext/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
+  'IMPORTANT: You must only stage and commit the files explicitly listed in the Modified Files list above. Do NOT stage any unlisted paths, including transient paths under .issue-delivery/. If there are any non-transient changed files that are NOT in the Modified Files list, stop and report them rather than committing them.\\n\\n' +
   'Please use your bash tool to run the necessary git and gh command steps to construct a neat draft Pull Request. Try to parse an issue number out of the task text if present (e.g., #2) so you can close it (using \\'Closes #N\\' in the PR body). Double check that the branch name is safe (e.g. issue-delivery/auto-pr-<timestamp>) and commit message is clear. Return a summary of the created PR URL.',
   {
     label: 'issue-pr-delivery',
