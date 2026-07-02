@@ -22,6 +22,46 @@
       "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },
     {
+      "canonicalName": "deep-research",
+      "command": "/deep-research",
+      "kind": "builtin-command",
+      "source": "src/deep-research.ts",
+      "sha256": "9e20ea0cbe2b28ca1c273a8cd33742f082dfe1eb5af53fe7dc0f3a8a4f2e2fa4",
+      "aliases": [],
+      "channel": "active",
+      "notes": "Research a question across the web with cross-checked sources. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
+    },
+    {
+      "canonicalName": "adversarial-review",
+      "command": "/adversarial-review",
+      "kind": "builtin-command",
+      "source": "src/adversarial-review.ts",
+      "sha256": "a3e8448b15606ae408a5a4d65d3de3097aa648cd7ca4adcebcb03fb0ea911da3",
+      "aliases": [],
+      "channel": "active",
+      "notes": "Investigate a task, then cross-check each finding with skeptical reviewers. Registered as a builtin command. Supports --evidence and --reviewers/--threshold knobs."
+    },
+    {
+      "canonicalName": "code-review",
+      "command": "/code-review",
+      "kind": "builtin-command",
+      "source": "src/code-review.ts",
+      "sha256": "9f9f4dd18b3bd9a3cc2aeb5949b868b3f7639f405939dbc29dd86b869f9e9e61",
+      "aliases": [],
+      "channel": "active",
+      "notes": "Multi-angle code review with independent verification and synthesis. Registered as a builtin command. Review agents receive only read-only tools."
+    },
+    {
+      "canonicalName": "workflow-telemetry-report",
+      "command": "/workflow-telemetry-report",
+      "kind": "builtin-command",
+      "source": "src/workflow-telemetry-command.ts",
+      "sha256": "b29431f36bcc893083a8a9a8b48a59af923cc3e6eb1832443bdee0742de8d856",
+      "aliases": [],
+      "channel": "active",
+      "notes": "Summarize workflow cache, cost, context, trace, and compaction telemetry. Registered separately from builtin-commands.ts."
+    },
+    {
       "canonicalName": "issue_delivery",
       "command": "/issue_delivery",
       "kind": "saved-workflow",

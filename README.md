@@ -1,20 +1,19 @@
 # pi-dynamic-workflows-oc-style
 
-**Dynamic multi-agent workflows for [Pi](https://pi.dev)** — fan a task out across
-hundreds of subagents with model routing, token/cost accounting, resume,
-git-worktree isolation, an interactive `/workflows` TUI, `/deep-research`, and
-**OpenCode-style per-subagent context governance**: rules you put on the main
-agent don't leak into the subagents it spawns (see [Context modes](#context-modes)).
+**Dynamic multi-agent workflows for [Pi](https://pi.dev).** Fan a task out across
+hundreds of subagents with model routing, context governance, resume, and
+git-worktree isolation. The runtime supports phases, fan-out (`parallel`/`pipeline`/`dag`),
+model-tier routing, context modes, saved workflows, and the Issue Delivery
+closed-loop workflow (Scout → Thinker → Worker → Checks → Verifier → PR).
 
 > Independently maintained. Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) (MIT) and substantially extended; see [PROVENANCE.md](./PROVENANCE.md) for the relationship; the projects have since diverged and upstream is treated as a read-only idea source.
 
-- **Originally derived from:** [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows) v2.6.0/v2.7.0 (MIT); since diverged
 - **Security model:** workflow scripts are trusted code, not sandboxed; see [SECURITY.md](./SECURITY.md)
 - **License:** MIT (see [LICENSE](./LICENSE))
 
 ---
 
-## Install
+## Quickstart
 
 Point Pi's agent settings at this checkout, build, and restart Pi:
 
@@ -48,122 +47,71 @@ launch diagnostics.
 
 ---
 
-## The `workflow` tool
+## Slash commands
 
-The model-facing primitive. The tool name remains `workflow` for compatibility; only the editor auto-trigger phrase is now the exact `workflow-run` phrase so ordinary discussion of workflows does not auto-trigger orchestration. A workflow is a plain JavaScript string with a required `meta` header and at least one `agent()` call:
-
-```js
-export const meta = { name: 'research_topic', description: 'Cross-check a topic', phases: [{ title: 'Scope' }, { title: 'Synthesize' }] };
-
-phase('Scope');
-const findings = await parallel([
-  () => agent('find sources for X', { label: 'scout-a', tier: 'small' }),
-  () => agent('find sources for Y', { label: 'scout-b', tier: 'small' }),
-]);
-
-phase('Synthesize');
-return await agent(`Synthesize: ${JSON.stringify(findings)}`, { label: 'synth', tier: 'big' });
-```
-
-- **Background by default** — the tool returns immediately with a run id; the result is delivered back into chat when the run finishes. Pass `background: false` to block inline.
-- **Resume-safe** — every `agent()` call is journaled under a stable call sequence, so a run interrupted by a usage-limit checkpoint resumes without re-running finished agents.
-- **Context-window aware** — finished agents record provider input/context tokens, model window, reserve/effective window, and occupancy. Runs log and persist visible warnings at 70/85/95% of the effective window, and `maxContextTokens` can hard-stop oversized agents before repeated huge prompts.
-- **Bounded** — fan-out capped at 4096 items, script source at 512 KB, synchronous `runInContext` setup at 30 s, and async workflow runs by a wall-clock timeout.
-- **Trusted-code execution** — Node `vm` is a determinism/authoring realm, **not** a security sandbox. Do not run unreviewed model-generated or third-party workflow scripts as untrusted input; see [SECURITY.md](./SECURITY.md).
-
-### Authoring API (globals inside a script)
-
-| Primitive | Purpose |
-|-----------|---------|
-| `agent(prompt, opts)` | Spawn one sub-agent. Returns its result (or `null` on recoverable failure). |
-| `parallel(thunks)` | Fan-out. **Pass functions, not promises:** `items.map(x => () => agent(...))`. Results in input order; recoverable failures become `null`. |
-| `pipeline(items, ...stages)` | Each item flows through stages sequentially; different items run concurrently. Stage gets `(prev, original, index)`. |
-| `dag(nodes)` | Dependency-aware execution. Nodes are `{ id, dependsOn?, run(deps) }`; dependency-ready nodes run in deterministic declaration-order waves, failed nodes cascade-skip dependents, and independent branches continue in later waves. Use `parallel()` for concurrent independent fan-out. |
-| `phase(title)` | Group agents under a phase (matches `meta.phases`). Optional `{ budget }` sub-budget. |
-| `workflow(name, args)` | Run a saved workflow inline (one nesting level). |
-| `args`, `runId` / `workflowRunId`, `cwd`, `budget` | Run inputs, current workflow run id, cwd, and `budget.remaining()` / `budget.total`. |
-| `log(msg)` | Emit a progress log line. |
-| `stageCheck(opts)` | Host-side mechanical checks (TypeScript `tsc --noEmit` and Biome when detected) with zero LLM tokens. |
-| `compactFeedback(request)` / `renderCorrectionDelta(delta)` | Deterministically collapse retry feedback into a bounded, schema-validated Correction Delta for the next Worker turn. |
-| `checkpoint(prompt, opts)` | Human-in-the-loop yes/no gate — deterministic, journaled, replayable (resume-safe). Maps to `ctx.ui.confirm` in a UI run; headless runs use the declared `headless` default. |
-
-### Dependency-aware `dag()`
-
-Use `dag()` when work has real dependencies instead of a flat `parallel()` wave. Each node has a stable `id`, optional `dependsOn`, and a `run(deps)` thunk. The scheduler executes currently-ready nodes in declaration order, waits for that wave to settle, then promotes the next wave. Ready-node thunks are intentionally serialized (agent calls still use the shared run limits) so `agent()` call sequence stays stable even if a node awaits before calling `agent()`. Use `parallel()` inside a node or outside `dag()` for truly concurrent independent fan-out.
-
-```js
-const out = await dag([
-  { id: 'fetch', run: () => agent('Fetch raw data', { label: 'fetch', tier: 'small' }) },
-  { id: 'parse', dependsOn: ['fetch'], run: (deps) => agent(`Parse: ${deps.fetch}`, { label: 'parse' }) },
-  { id: 'report', dependsOn: ['parse'], run: (deps) => agent(`Report: ${deps.parse}`, { label: 'report', tier: 'big' }) },
-]);
-if (!out.ok) log(JSON.stringify({ status: out.status, errors: out.errors, skipped: out.skipped }));
-return out.results.report;
-```
-
-Invalid graphs (duplicate ids, reserved object-prototype ids, malformed `dependsOn`, missing dependencies, cycles) fail script validation. Ordinary node failures are contained: that node becomes `failed`, its dependents become `skipped`, and independent branches keep running in later waves. Recoverable `agent()` exhaustion inside a node is treated as that node failing instead of returning `null`; intentional `null` data returned by non-agent node logic remains valid. Non-recoverable run-level failures such as provider usage limits, context-window caps, token-budget exhaustion, agent-limit exhaustion, or abort still stop the whole workflow.
-
-### Quality helpers
-
-Most are built on `agent()`/`parallel()`. `retry()` and `gate()` are **generic thunk combinators** — they are agent-backed only if your thunk calls `agent()`; non-agent work in them is NOT journaled and will repeat on resume/retry.
-
-| Helper | Signature | Returns |
-|--------|-----------|---------|
-| `verify(item, {reviewers=2, threshold=0.5, lens})` | Adversarial fact-check — N reviewers try to refute the claim. | `{ real, realCount, total, votes }` |
-| `judgePanel(attempts, {judges=3, rubric})` | Score N candidates with a judge panel, pick the highest. | `{ index, attempt, score, judgments }` — read `.attempt` for the winning candidate |
-| `loopUntilDry({round, key, consecutiveEmpty=2, maxRounds=50})` | Keep calling `round(i)` until rounds stop yielding fresh items. | `all[]` (deduped) |
-| `completenessCheck(taskArgs, results)` | "What's still missing?" critic. | `{ complete, missing[] }` |
-| `retry(thunk, {attempts=3, until})` | Bounded retry until `until(result)` is true. | last result |
-| `gate(thunk, validator, {attempts=3})` | Retry where the validator's `feedback` steers the next attempt. | `{ ok, value, attempts }` |
-
-### Run-level loop guard
-
-Repeated identical `agent()` calls are often a runaway script loop. The run-level `loopGuard` option detects repeated call identities (`phase` + `label` + effective `model`/`tier` + `prompt`; ignored tiers are excluded when an explicit model wins). It is **warn-only by default** so legitimate identical-prompt fan-out such as reviewer panels is not aborted. To hard-stop a runaway loop, pass for example:
-
-```jsonc
-{
-  "script": "export const meta = { name: '...', description: '...' }\n...",
-  "loopGuard": { "action": "abort", "maxConsecutive": 3 }
-}
-```
-
-Supported fields: `window`, `maxRepeats`, `maxConsecutive`, and `action: 'warn' | 'abort'`.
-
-### `agent()` options
-
-| Opt | Effect |
-|-----|--------|
-| `tier` | Route to a tier model (`'small'` / `'medium'` / `'big'`) — see [Model routing](#model-tier-routing). |
-| `model` | Pin a specific `provider/modelId` (overrides `tier`). |
-| `label` | Short unique label (2–5 words) for live status + logs. |
-| `schema` | JSON Schema; `agent()` returns the validated object. |
-| `phase` | Override the active phase for this agent. |
-| `timeoutMs`, `retries` | Per-agent timeout / retry count. |
-| `maxContextTokens`, `contextReserveTokens` | Per-agent context-window guardrails. `maxContextTokens` is a hard provider input/context cap; `contextReserveTokens` overrides the reserve subtracted from the model window for 70/85/95% occupancy warnings. |
-| `compactionPolicy` | Per-agent compaction posture: `auto` (default), `default`, `aggressive-local`, `cache-preserving`, or `off`. `auto` applies aggressive earlier compaction to local/no-cache models and leaves cacheable remote models on the default policy. |
-| `tools`, `disallowedTools` | Per-call coding-tool allow/deny lists by tool name; schema agents still receive `structured_output`. |
-| `contextMode` | Context-inheritance posture (`'focused'` *(default)* / `'isolated'` / `'scoped'` / `'legacy'` / project-defined) — see [Context modes](#context-modes). |
-| `inheritMainRules`, `inheritProjectContext`, `systemPromptMode`, `inheritSkills` | Per-field overrides of the resolved mode. |
+| Command | Usage | What it does |
+|---------|-------|--------------|
+| `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
+| `/code-review` | `[high\|xhigh\|max] [--mode <name>] [--harness-type <id>] [--harness-config <id>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
+| `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
+| `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
+| `/issue-delivery` | `[--mode <name>] [--prototype] [--finish] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. `--finish` skips planning/worker steps and ships an already-repaired failed run. |
+| `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
+| `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
+| `/harness-configs` | — | List harness configs: id, harness_type, wired status, and trigger summary — see [Harness configs](#harness-configs). |
+| `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
+| `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
+| `/workflows-models` | — | View and edit model tiers (small/medium/big). |
+| `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
+| `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
+| `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
+| `/workflow-telemetry-report` | `[window=24h\|since=<iso>] [until=<iso>] [runId=<id>] [sessionId=<id>] [json=true]` | Summarize workflow cache, cost, context, trace, and compaction telemetry across recent runs. All arguments use `key=value` form. |
 
 ---
 
-## Model-tier routing
+## How it works
 
-Agents are routed to concrete models by **tier**, so workflow source stays portable. The mapping lives in a machine-local config, not in the repo:
-
-```jsonc
-// ~/.pi/workflows/model-tiers.json
-{ "tiers": { "small": "litellm/qwen3.6-27b", "medium": "ollama/glm-5.2", "big": "openai-codex/gpt-5.5" } }
+```mermaid
+flowchart TD
+  U["User types a slash command"] --> CMD{"Command source"}
+  CMD -->|"builtin"| BC["pi.registerCommand<br/>src/builtin-commands.ts<br/>src/issue-delivery.ts<br/>src/workflow-telemetry-command.ts"]
+  CMD -->|"saved workflow"| SW["Saved-workflow command<br/>src/saved-commands.ts<br/>~/.pi/workflows/saved/*.json"]
+  BC --> WM
+  SW --> WM
+  WM["WorkflowManager.startInBackground<br/>src/workflow-manager.ts"] --> WT{"worktreeRequired /<br/>isolation.worktree?"}
+  WT -->|"yes"| ISO["createWorktree<br/>src/worktree.ts<br/>branch pi/wf/runId"]
+  WT -->|"no"| HB
+  ISO --> HB["Harness broker<br/>selectHarness / resolveHarnessLayers<br/>src/harness-selector.ts<br/>harness_type: pi | opencode | hermes<br/>harness_config descriptor"]
+  HB --> RUN["Workflow engine<br/>parseWorkflowScript + runWorkflow<br/>src/workflow.ts"]
+  RUN --> VM["Trusted-code VM — phases, phase(),<br/>agent / parallel / pipeline / dag"]
+  VM --> JR[("Journal + resume<br/>stable call-seq<br/>ManagedRun.runStatePath")]
+  VM --> AR["agentType registry<br/>resolveAgentType<br/>src/agent-registry.ts"]
+  VM --> MT["Model tiers<br/>resolveTierModel<br/>src/model-tier-config.ts<br/>~/.pi/workflows/model-tiers.json<br/>small / medium / big"]
+  AR --> SA["Subagent execution<br/>createAgentSession + applyToolPolicy<br/>tools / disallowedTools<br/>src/agent.ts"]
+  MT --> SA
+  SA --> CS["Conductor status<br/>setSemanticStatus<br/>src/conductor-types.ts<br/>spawned, workflow-running,<br/>workflow-complete-pane-open, finalizing,<br/>completed / failed / needs-human"]
+  CS --> HR["herdr pane reporting<br/>installHerdrReporter<br/>src/herdr-reporter.ts<br/>HERDR_PANE_ID"]
+  CS --> TP["Task panel + result delivery<br/>installTaskPanel / installResultDelivery<br/>src/task-panel.ts"]
+  CS --> DEL["Delivery — branch + commit + push + draft PR<br/>checkFinalization gate<br/>src/issue-delivery.ts"]
 ```
 
-- `resolveTierModel(tier, config)` returns the `provider/modelId` spec for a tagged tier.
-- **Untagged agents (no `tier`/`model`) route to the configured `medium` tier** when a tier config exists; the session main model is the fallback only when no `model-tiers.json` is present. So pin `tier`/`model` explicitly when it matters.
-- Inspect/edit live with **`/workflows-models`**.
-- **Gotcha:** an invalid spec **silently falls back** to the session main model with no warning — always confirm the spec is in `listAvailableModelSpecs()`.
+A slash command (built-in or saved) funnels through the `WorkflowManager`, which optionally spins up a git worktree for isolation, resolves the harness config, and hands off to the workflow engine. Inside the trusted-code VM, `agent()` calls are routed through the agent-type registry and model-tier config, then executed as subagent sessions with tool policies applied. Conductor status propagates to the herdr pane, task panel, and — for Issue Delivery — through PR delivery and the finalization gate. The full architecture diagram with expanded detail lives in [docs/architecture.md](./docs/architecture.md).
 
 ---
 
-## Context modes
+## Guides
+
+### Workflow tool
+
+The `workflow` tool is the model-facing primitive for multi-agent orchestration. It accepts a trusted JavaScript string with a required `meta` header and at least one `agent()` call. Scripts run inside a Node `vm` context that exposes `agent()`, `parallel()`, `pipeline()`, `dag()`, `phase()`, quality helpers (`verify`, `judgePanel`, `loopUntilDry`, `completenessCheck`), and run-level controls (`loopGuard`, `tokenBudget`, `compactionPolicy`). Background runs are the default; pass `background: false` to block inline. Every `agent()` call is journaled for resume safety.
+
+**Full reference:** see the [Workflow tool](#workflow-tool) reference in the full docs or [docs/workflows/catalog.md](./docs/workflows/catalog.md) for the workflow catalog and lock.
+
+### Model-tier routing
+
+Agents are routed to concrete models by **tier** (`small`/`medium`/`big`), keeping workflow source portable. The mapping lives in `~/.pi/workflows/model-tiers.json` and is editable via `/workflows-models`. Untagged agents fall back to the `medium` tier (or the session main model when no tier config exists).
+
+### Context modes
 
 Per-subagent **context governance**, OpenCode-style: **rules you put on the main
 agent don't leak into the subagents it spawns.** `AGENTS.md` stays small and
@@ -194,103 +142,13 @@ isolated — subagents spawn with fresh sessions.)
 
 Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
----
+### Harness configs
 
-## Harness configs
+A **harness_config** is a JSON descriptor that declares how a workflow harness is configured. Descriptors live as `schemaVersion` 1 JSON files under user-level (`~/.pi/workflows/harnesses/`) or project-level (`.pi/workflows/harnesses/`) directories. The `harness_type` field (`pi`, `opencode`, `hermes`) determines runtime wiring; only `pi` is connected. Run `/harness-configs` to list active configs.
 
-A **harness_config** is a JSON descriptor that declares how a workflow harness is configured. Descriptors live as `schemaVersion` 1 JSON files under:
+### Issue Delivery
 
-- **User-level:** `~/.pi/workflows/harnesses/`
-- **Project-level:** `.pi/workflows/harnesses/` (project wins over user)
-
-### Descriptor schema
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "frontend-react-shadcn",
-  "harness_type": "pi",
-  "trigger": "auto",
-  "displayName": "React + shadcn UI",
-  "description": "Frontend work in React + shadcn repos",
-  "worktreeRequired": false,
-  "engine": { "min": "0.1.7" }
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `schemaVersion` | `number` | Must be `1`. Schema version for forwards compatibility. |
-| `id` | `string` | Unique identifier for the harness config. |
-| `harness_type` | `string` | Runtime axis — see [Runtime axis](#runtime-axis) below. |
-| `trigger` | `string` | Trigger mode summary (e.g. `"auto"`, `"manual"`). |
-| `triggerRules` | `object` (optional) | Structured auto-detection rules consumed by the harness selector. `/harness-configs` shows them only when no `trigger` summary string is present. |
-| `displayName` | `string` | Human-readable label shown in listings. |
-| `description` | `string` (optional) | Longer human description for descriptor authors/readers (not currently displayed by `/harness-configs`). |
-| `worktreeRequired` | `boolean` (optional) | When `true`, a run launched with an **explicit** `--harness-config <id>` selection demands run-level git-worktree isolation — the manager auto-isolates before launch even without an explicit `isolation` run option. Auto-detected selections do not yet consult this field before launch (follow-up tracked in #93). A non-boolean value warns and is treated as not-required. |
-| `engine` | `object` (optional) | `{ "min": "<semver>" }` — minimum engine version floor. A descriptor whose floor is above the running engine is **skipped by the loader**; explicitly selecting a skipped config via `--harness-config` **clean-skips the run with the reason** instead of silently falling back to Pi defaults. The same floor is enforced for `meta.engine.min` declared inside workflow scripts. |
-
-### Runtime axis
-
-The `harness_type` field determines how the runtime treats the harness config. `pi` is wired; `opencode` and `hermes` are honest no-op placeholders for cross-platform descriptors:
-
-| `harness_type` | Behavior |
-|----------------|----------|
-| `pi` | **Wired** — the Pi runtime connects the harness config to live tooling and workflows. |
-| `opencode` | **Honest no-op placeholder** — recognized by the runtime but not wired; useful for cross-platform descriptors. |
-| `hermes` | **Honest no-op placeholder** — recognized by the runtime but not wired; useful for cross-platform descriptors. |
-
-### Legacy `harnessType` compatibility
-
-Legacy descriptors used a `harnessType` field with fully-qualified identifiers.
-A compatibility mapping normalizes the old `harnessType` to the canonical `id`:
-
-| Legacy `harnessType` | Canonical `id` |
-|---------------------|----------------|
-| `"frontend.radix-shadcn"` | `"frontend-react-shadcn"` |
-
-When a descriptor carries a legacy `harnessType`, the runtime resolves it to
-the canonical `id` above. New descriptors should use the `id` field directly.
-
-### `/harness-configs` command
-
-Run `/harness-configs` to list all harness configs with their id, harness_type, wired status, and trigger summary. The legacy `/profiles` command remains a deprecated compatibility alias; new documentation and user-facing text should use `harness_config` vocabulary.
-
----
-
-## Slash commands
-
-| Command | Usage | What it does |
-|---------|-------|--------------|
-| `/workflows` | `[list] \| status <id> \| watch <id> \| stop <id> \| pause <id> \| resume <id> \| rm <id> \| save <name> [runId]` | Manage runs. No args (with a UI) opens the interactive navigator. `watch` streams live progress to the status bar and prints the final snapshot. `save` registers a finished run as a reusable `/<name>` command. |
-| `/code-review` | `[high\|xhigh\|max] [--mode <name>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
-| `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
-| `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
-| `/issue-delivery` | `[--mode <name>] [--prototype] [--finish] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. `--finish` skips planning/worker steps and ships an already-repaired failed run. |
-| `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
-| `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
-| `/harness-configs` | — | List harness configs: id, harness_type, wired status, and trigger summary — see [Harness configs](#harness-configs). |
-| `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
-| `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
-| `/workflows-models` | — | View and edit model tiers (small/medium/big). |
-| `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
-| `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
-| `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
-| `/workflow-telemetry-report` | `[window=24h\|7d] [since=<iso>] [json]` | Summarize workflow cache, cost, context, trace, and compaction telemetry across recent runs. Arguments use `key=value` form (a bare `7d` is ignored and the default 24h window applies). |
-
-### Issue Delivery workflow
-
-`/issue-delivery [--mode <name>] [--prototype] [--finish] <task or issue>` is the built-in issue-to-draft-PR coordinator: a small deterministic workflow script routes work between specialist agents instead of stuffing the whole coordination policy into one massive prompt. Fugu/Trinity are historical inspirations; `/fugu` remains a deprecated compatibility alias.
-
-```text
-/issue-delivery implement issue #42
-/issue-delivery --mode focused --prototype fix the failing parser regression and open a draft PR
-/issue-delivery --finish issue #42
-```
-
-The normal production path is still issue/plan driven: a GitHub issue with a matching plan markdown file flows through the closed-loop delivery system and then PR review. `--prototype` is the dogfood harness lane for small repo-local experiments while developing the workflow package itself; `--dry-run` also implies this prototype lane. Prototype mode defaults to `dryRun=true`: it performs the safety check, read-only Scout/Thinker planning, host local checks, and bounded prototype review rounds, then stops before Worker edits, git push, and PR creation. To allow bounded local edits but still stop before PR delivery, run `--prototype --dry-run=false` from an isolated linked worktree. If a normal run fails before PR creation but leaves useful product changes, it writes `.issue-delivery/handoff.md`; after manual repair, run `--finish` in the same worktree to run checks, commit/push/open the PR, and execute the finalization gate without redoing Scout/Thinker/Worker. Context posture is still controlled separately by `--mode` (`focused`, `scoped`, `isolated`, `legacy`).
-
-High-level flow:
+`/issue-delivery` is the built-in issue-to-draft-PR coordinator. The normal production path:
 
 ```text
 Task / issue text
@@ -312,7 +170,7 @@ Feedback Compactor: failed checks/verdicts become a bounded Correction Delta for
 PR delivery + Telemetry finalization: branch, commit, push, PR, clean/pushed/checks gate
 ```
 
-Components:
+**Components:**
 
 | Component | Role |
 |-----------|------|
@@ -327,41 +185,16 @@ Components:
 | **Failed-run handoff** | When LocalChecks/Verifier exhaust repair attempts before PR delivery, writes `.issue-delivery/handoff.md` with the final findings, completed steps, transient files to remove/ignore, and `--finish` instructions. |
 | **PR delivery / Telemetry** | After all steps pass, creates a safe branch, commits, pushes, opens a draft PR, then runs the deterministic finalization gate. If the task mentions an issue like `#42`, the PR body should include `Closes #42`. `--finish` enters this checks → PR delivery → finalization lane directly after a human repairs a failed run. |
 
-DAG example produced by the Thinker:
+**Model routing:** built-in Issue Delivery uses tiers rather than hard-coded provider IDs — Scout/state/PR: `small`; Thinker/Verifier: `big`; Worker: `small → medium → big` on retry; LocalChecks: host `stageCheck()` (zero LLM tokens).
 
-```json
-[
-  { "id": "step-1", "file": "src/parser.ts", "dependencies": [] },
-  { "id": "step-2", "file": "tests/parser.test.ts", "dependencies": ["step-1"] },
-  { "id": "step-3", "file": "README.md", "dependencies": [] }
-]
-```
+**Prototype mode:** `--prototype` defaults to `dryRun=true`, `worktreeRequired=true`, `maxSteps=4`, `maxRepairRounds=1`, `maxReviewRounds=1`. Dry-runs use read-only agents and stop before Worker edits, git push, and PR creation. `--prototype --dry-run=false` allows bounded local edits but still stops before PR delivery.
 
-In that example, `step-1` and `step-3` can run together, while `step-2` waits for the parser change.
-
-Model routing is intentionally portable for NPM: built-in Issue Delivery uses tiers rather than hard-coded provider IDs.
-
-- Scout / state / PR delivery: `tier: "small"`
-- Thinker / Verifier: `tier: "big"`
-- Worker: attempt 1 `tier: "small"`, attempt 2 `tier: "medium"`, attempt 3 `tier: "big"`
-- LocalChecks: host-side `stageCheck()` (zero LLM tokens)
-
-Use `/workflows-models` to map those tiers to your own subscriptions or local models. For example, one machine can route big to GPT-5-class reasoning, medium to GLM/DeepSeek coding, and small to a fast local Qwen verifier without changing the shipped workflow.
-
-Prototype guardrails:
-
-- `--prototype` defaults: `dryRun=true`, `worktreeRequired=true`, `maxSteps=4`, `maxRepairRounds=1`, `maxReviewRounds=1`.
-- Prototype mode refuses the primary/shared checkout by default; use a linked worktree or pass `--worktree-required=false --allow-shared-checkout` deliberately.
-- Prototype dry-runs use read-only pre-report agents, do not run Worker edit agents, do not push, and do not create PRs. The final report includes selected steps, omitted steps, safety status, local checks, review notes, and the recommended next action.
-- Prototype execution (`--dry-run=false`) can edit the isolated worktree, but still stops before git push/PR creation so a human can inspect or promote it.
-
-Operational notes:
-
-- Start from a clean git working tree when possible; Issue Delivery will create its own branch during normal PR delivery.
-- If a run fails before PR creation with useful dirty worktree changes, inspect `.issue-delivery/handoff.md`, keep intended product changes, remove/ignore transient `.issue-delivery/` files, then rerun `/issue-delivery --finish ...` from the repaired worktree.
-- `gh` must be authenticated and the repo must allow pushing branches for draft PR delivery to succeed.
+**Operational notes:**
+- Start from a clean git working tree when possible.
+- If a run fails before PR creation with useful changes, inspect `.issue-delivery/handoff.md`, repair, then rerun `/issue-delivery --finish ...`.
+- `gh` must be authenticated and the repo must allow pushing branches.
 - Prefer focused issue-sized tasks. Broad roadmap requests should be broken into issues first.
-- Use `--mode <name>` to choose the context-inheritance posture for all subagents, e.g. `focused`, `scoped`, or a project-defined mode.
+- Use `--mode <name>` to choose the context-inheritance posture.
 - Issue Delivery opens a draft PR; it does not auto-merge.
 
 ### Adversarial review evidence mode
@@ -373,28 +206,7 @@ Baseline `/adversarial-review <task>` preserves the original fast workflow: inve
 /adversarial-review --evidence=web_search,github --reviewers=3 --threshold=0.75 check this external claim
 ```
 
-Options:
-
-- `--mode <name>` / `--mode=<name>` — choose the run-level context mode for all subagents.
-- `--evidence` — enable source-ledger collection with the default no-key components: `web_fetch,github`.
-- `--evidence=<components>` — enable only selected components. Comma/plus separated, e.g. `web_fetch,github` or `web_search+github`.
-- `--evidence-components=<components>` — alias for selecting evidence components explicitly.
-- `--no-evidence` — force baseline mode even if an earlier flag enabled evidence.
-- `--reviewers <N>` / `--reviewers=<N>` — skeptical reviewers per finding. Default: `2`.
-- `--reviewer-count <N>` / `--reviewer-count=<N>` — alias for `--reviewers`.
-- `--threshold <N>` / `--threshold=<N>` — required real-vote ratio for a finding to survive, clamped to `0..1`. Default: `0.5`.
-- `--agreement-threshold <N>` / `--agreement-threshold=<N>` — alias for `--threshold`.
-- `--` — stop option parsing; everything after it becomes the task text.
-
-Evidence components:
-
-- `web_fetch` — fetch and quote known URLs.
-- `github` — GitHub URLs/files via `web_fetch`; no API key required. Aliases: `gh`, `github_fetch`.
-- `web_search` — optional best-effort web discovery, then `web_fetch` to read sources. Aliases: `search`, `bing`.
-- `all` — enable `web_fetch`, `github`, and `web_search`.
-- `off` / `none` / `false` / `no` / `0` — disable evidence when used as the value for `--evidence=`.
-
-Brave/Exa provider-backed search can be layered in by installing a web-tools package or saved workflow that exposes those tools, but the built-in command starts with reliable no-key fetch/GitHub evidence.
+**Options:** `--mode <name>`, `--evidence[=<components>]`, `--no-evidence`, `--reviewers <N>`, `--threshold <N>`, `--` (stop option parsing). Evidence components: `web_fetch`, `github`, `web_search`, `all`, or `off`.
 
 ### Saved workflows
 
