@@ -52,8 +52,8 @@ async function withGitRepo(fn: (cwd: string) => Promise<void>): Promise<void> {
   try {
     await withFakeHomeAsync(fakeHome, () => fn(cwd));
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -142,8 +142,8 @@ test("isolation: fail-closed when a required worktree is unavailable (non-git cw
       );
     });
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -175,8 +175,8 @@ test("isolation: preserves the caller's subdirectory inside the worktree", async
         const m = line.match(/^(\S+)\s+/);
         if (m?.[1].includes(".pi/worktrees/")) execSync(`git worktree remove --force "${m[1]}"`, { cwd: repo });
       });
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -205,8 +205,8 @@ test("isolation: reuseWorktree reuses an existing worktree instead of creating a
     } catch {
       // ignore
     }
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -228,8 +228,8 @@ test("isolation: resume fails closed when the persisted worktree is gone (no pri
       );
     });
   } finally {
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -256,8 +256,8 @@ test("isolation: the persisted worktree cwd is the ROOT, not the subdir-adjusted
     });
   } finally {
     execSync("git worktree prune", { cwd: repo });
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -299,8 +299,8 @@ return 'ran'`;
     });
   } finally {
     execSync("git worktree prune", { cwd: repo });
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
