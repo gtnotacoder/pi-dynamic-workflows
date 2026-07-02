@@ -191,6 +191,8 @@ export function registerSavedWorkflow(
 
         // Fallback: inline runWorkflow (foreground, no TUI tracking).
         const result = await runWorkflow(wf.script, {
+          // Route tier/phase models against the host session registry (upstream #49 port).
+          modelRegistry: ctx.modelRegistry,
           cwd,
           args: parsedArgs,
           tools: executionPolicy.tools,
