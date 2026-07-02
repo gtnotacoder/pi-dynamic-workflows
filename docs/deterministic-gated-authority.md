@@ -1,6 +1,6 @@
 # Deterministic Gated Authority Research
 
-> **Status:** Design rationale (2026-06, issue #12) — the StageCheck/LocalChecks gate described here is implemented; details may lag the code.
+> **Status:** Design rationale (2026-06, issue #12) — the StageCheck/LocalChecks gate is implemented as the `stageCheck()` workflow VM global (`src/workflow.ts`) called from Issue Delivery's `LocalChecks` phase (`src/issue-delivery.ts`). The "Integration options" / "Recommendation" sections below were updated to match shipped v0.2.0; other design rationale may lag the code.
 
 ## Goal
 
@@ -8,28 +8,36 @@ Issue Delivery routes mechanical verification through the `LocalChecks` phase. E
 
 ## Proposed StageCheck boundary
 
-Add a host-side stage that executes selected checks before LLM verification:
+> Types updated to match shipped v0.2.0 (`src/stage-check.ts`).
+
+The shipped `StageCheck` boundary executes selected checks before LLM verification:
 
 ```ts
-type StageCheckStatus = "passed" | "failed" | "skipped";
-
-type StageCheckResult = {
+// Per-command result (shipped)
+interface StageCheckCommandResult {
   name: string;
-  command: string[];
-  status: StageCheckStatus;
+  command: string;
+  args: string[];
+  ok: boolean;
   exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  durationMs: number;
+  timedOut: boolean;
   stdout: string;
   stderr: string;
-  durationMs: number;
-};
+  summary: string;
+}
 
-type StageCheckReport = {
+// Top-level result (shipped)
+interface StageCheckResult {
   ok: boolean;
-  checks: StageCheckResult[];
-};
+  targetFile?: string;
+  checks: StageCheckCommandResult[];
+  summary: string;
+}
 ```
 
-The workflow engine can then provide `StageCheckReport` directly to the Verifier prompt/schema instead of asking an intermediate check agent to run and summarize commands.
+The workflow engine provides `StageCheckResult` directly to the Verifier prompt/schema instead of asking an intermediate check agent to run and summarize commands.
 
 ## TypeScript and Biome checks
 
@@ -52,7 +60,7 @@ Use Node's native child-process APIs rather than an LLM tool call:
 ```ts
 import { spawn } from "node:child_process";
 
-async function runStageCommand(command: string, args: string[], cwd: string): Promise<StageCheckResult> {
+async function runStageCommand(command: string, args: string[], cwd: string): Promise<StageCheckCommandResult> {
   const started = Date.now();
   return await new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -72,15 +80,22 @@ async function runStageCommand(command: string, args: string[], cwd: string): Pr
       stderr += chunk;
     });
 
-    child.on("close", (exitCode) => {
+    child.on("close", (exitCode, signal) => {
+      const ok = exitCode === 0;
       resolve({
         name: `${command} ${args.join(" ")}`,
-        command: [command, ...args],
-        status: exitCode === 0 ? "passed" : "failed",
+        command,
+        args,
+        ok,
         exitCode,
+        signal,
+        durationMs: Date.now() - started,
+        timedOut: false,
         stdout: stdout.slice(-20_000),
         stderr: stderr.slice(-20_000),
-        durationMs: Date.now() - started,
+        summary: ok
+          ? `passed: ${command} ${args.join(" ")}`
+          : `failed (exit ${exitCode}): ${command} ${args.join(" ")}`,
       });
     });
   });
@@ -102,24 +117,33 @@ The Verifier receives a compact, deterministic payload:
 ```json
 {
   "ok": false,
+  "summary": "Stage checks failed (TypeScript compile).",
   "checks": [
     {
       "name": "TypeScript compile",
-      "command": ["npm", "run", "build"],
-      "status": "failed",
+      "command": "npm",
+      "args": ["exec", "--", "tsc", "--noEmit"],
+      "ok": false,
       "exitCode": 2,
+      "signal": null,
+      "timedOut": false,
       "stdout": "...",
       "stderr": "...",
-      "durationMs": 4312
+      "durationMs": 4312,
+      "summary": "TypeScript compile failed (exit 2): npm exec -- tsc --noEmit"
     },
     {
       "name": "Biome check",
-      "command": ["npm", "run", "check"],
-      "status": "passed",
+      "command": "npm",
+      "args": ["exec", "--", "biome", "check", "."],
+      "ok": true,
       "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
       "stdout": "Checked 81 files...",
       "stderr": "",
-      "durationMs": 910
+      "durationMs": 910,
+      "summary": "Biome check passed: npm exec -- biome check ."
     }
   ]
 }
@@ -133,20 +157,20 @@ Verifier policy:
 
 ## Integration options
 
-1. **Workflow helper**
-   - Add a built-in `stageCheck()` workflow global.
-   - Issue Delivery calls it from the `LocalChecks` phase.
-   - Best developer experience, but expands the workflow VM API.
+These were the three candidate integration surfaces evaluated during design. Option 1 was the one shipped.
 
-2. **Host tool**
-   - Expose a restricted `stage_check` tool only to Issue Delivery/local-check phases.
-   - Easier to audit and sandbox than arbitrary bash.
+1. **Workflow helper** ✅ shipped
+   - A built-in `stageCheck()` workflow global, exposed to the trusted-code VM (`src/workflow.ts`) and injected as `stageCheck` in the run globals (`src/workflow.ts`).
+   - Issue Delivery calls it directly from the `LocalChecks` phase (`src/issue-delivery.ts`).
+   - Best developer experience; it does expand the workflow VM API, but keeps the gate inside the Node orchestration boundary rather than exposing a model-callable tool.
 
-3. **Manager pre-verification hook**
+2. **Host tool** (not shipped)
+   - A restricted `stage_check` tool exposed only to Issue Delivery/local-check phases.
+   - Easier to audit and sandbox than arbitrary bash, but no such tool is registered.
+
+3. **Manager pre-verification hook** (not shipped)
    - Let `WorkflowManager` run StageCheck after selected agents complete.
    - Most deterministic, but least flexible for arbitrary generated workflows.
-
-A good first implementation is option 2: a host-owned `stage_check` tool with a tiny allowlist for `npm run build` and `npm run check`, returning `StageCheckReport` JSON.
 
 ## Open questions
 
@@ -157,4 +181,4 @@ A good first implementation is option 2: a host-owned `stage_check` tool with a 
 
 ## Recommendation
 
-Implement deterministic StageCheck as a restricted host tool first. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks. This preserves the Thinker-Worker-Verifier control model while moving hard compiler/linter authority out of the model loop and into deterministic orchestration code.
+The shipped implementation is the workflow-helper option: a `stageCheck()` VM global that Issue Delivery's `LocalChecks` phase calls directly. Keep the LLM Verifier, but make it consume structured facts from native TypeScript/Biome checks via the `StageCheckResult` returned by `stageCheck()`. This preserves the Thinker-Worker-Verifier control model while keeping hard compiler/linter authority in deterministic orchestration code rather than the model loop.

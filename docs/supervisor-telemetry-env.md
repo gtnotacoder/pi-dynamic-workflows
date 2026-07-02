@@ -43,8 +43,7 @@ secrets by checking booleans from `prepareSupervisorTelemetryEnv()`:
 
 - `langfuse.publicKeyPresent`
 - `langfuse.secretKeyPresent`
-- `langfuse.endpointConfigured` (true only when `LANGFUSE_BASE_URL`,
-  `LANGFUSE_BASEURL`, or `LANGFUSE_HOST` is explicitly set)
+- `langfuse.endpointConfigured` (true only when `LANGFUSE_BASE_URL` (preferred), `LANGFUSE_BASEURL`, or `LANGFUSE_HOST` (legacy) is explicitly set)
 - `langfuse.includePayloads`
 
 Tracing still follows the runtime rules in `src/langfuse-tracing.ts`:
