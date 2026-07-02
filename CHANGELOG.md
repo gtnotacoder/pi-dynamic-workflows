@@ -7,6 +7,10 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-02
+
+First milestone release since 0.1.7 — consolidates ~20 merged PRs: the harness-agnostic broker (`harness_type`/`harness_config`), run-level worktree isolation, host-shared ModelRegistry for subagents, the upstream-provenance/docs deep-clean, and the `.fugu`/`.fastcontext` vocabulary retirement. (Changelog was behind since 0.1.3; 0.1.4–0.1.7 shipped without sections — this entry folds in everything since.)
+
 ### Removed
 
 - Purge `.fugu/` and `.fastcontext/` transient-path vocabulary entirely (no more "legacy" mentions): `TRANSIENT_IGNORE_PREFIXES` is now `['.issue-delivery/']` only, issue-delivery prompts/transient lists mention only `.issue-delivery/`, README scrubbed. **Behavior change:** `.fugu/` is fully retired — also removed from `.gitignore` and Biome excludes, so leftover `.fugu/` debris is visible to git and blocks finalization with an actionable path list (covered by a new test). `.fastcontext/` remains git-ignored/lint-excluded as defensive hygiene for third-party FastContext tool output (still written by the Scout until #105) but appears in no workflow vocabulary. (#104)
