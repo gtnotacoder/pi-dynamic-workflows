@@ -350,17 +350,17 @@ export class PaneSpawnCoordinator {
    */
   static get(projectCwd: string, maxPanes: number = 4): PaneSpawnCoordinator {
     const key = resolve(projectCwd);
-    let coord = this._cache.get(key);
+    let coord = PaneSpawnCoordinator._cache.get(key);
     if (!coord) {
       coord = new PaneSpawnCoordinator(maxPanes);
-      this._cache.set(key, coord);
+      PaneSpawnCoordinator._cache.set(key, coord);
     }
     return coord;
   }
 
   /** Clear the shared cache (for testing). */
   static reset(): void {
-    this._cache.clear();
+    PaneSpawnCoordinator._cache.clear();
   }
 
   /**
