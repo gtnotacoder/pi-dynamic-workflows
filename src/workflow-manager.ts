@@ -935,12 +935,30 @@ export class WorkflowManager extends EventEmitter {
       // Resolve nesting so the spawned pane is nested under the caller pane.
       const nesting = resolveNesting(process.env);
 
-      // agentStart — the pane nests under HERDR_WORKSPACE_ID/HERDR_TAB_ID.
+      // Resolve the subdir-adjusted cwd BEFORE agentStart so the spawned pane starts
+      // in the same derived cwd the workflow runs in (herdrWt.cwd + the manager's
+      // subdirectory offset within the repo). When the manager is rooted in a repo
+      // subdirectory (e.g. packages/foo), starting the pane at the worktree root
+      // would land a kept-open handoff pane in the repo root with the wrong project
+      // settings/path discovery instead of the subproject that produced the run.
+      // Derive the relative subpath from the repo root used for worktreeCreate
+      // (`spawnBase`), so an auto pane-spawn run triggered by `worktreeRequired`/a
+      // descriptor from a manager rooted at a repo subdirectory runs inside that
+      // subdir within the herdr worktree — not at herdrWt.cwd. The explicit
+      // `isolation.base` path is the special case of the same rule.
+      runCwd = herdrWt.cwd;
+      const sub = relative(spawnBase, this.cwd);
+      if (sub && !sub.startsWith("..") && !isAbsolute(sub)) {
+        runCwd = join(herdrWt.cwd, sub);
+      }
+
+      // agentStart — the pane nests under HERDR_WORKSPACE_ID/HERDR_TAB_ID, in the
+      // same subdir-adjusted cwd the workflow will run in.
       const runArgs = ["--mode", "focused"];
       const agentResult = await this.herdrInvoker.agentStart(
         {
           name: `wf-${managed.runId}`,
-          cwd: herdrWt.cwd,
+          cwd: runCwd,
           ...nesting,
         },
         ["pi", ...runArgs],
@@ -981,18 +999,6 @@ export class WorkflowManager extends EventEmitter {
       managed.paneId = agentResult.paneId;
       managed.paneHandle = createPaneHandle(this.herdrInvoker, agentResult.paneId);
       this.persistRun(managed);
-
-      // Set runCwd (same subdir-adjustment logic as the plain worktree path below).
-      // Derive the relative subpath from the repo root used for worktreeCreate
-      // (`spawnBase`), so an auto pane-spawn run triggered by `worktreeRequired`/a
-      // descriptor from a manager rooted at a repo subdirectory (e.g. packages/foo)
-      // runs inside that subdir within the herdr worktree — not at herdrWt.cwd. The
-      // explicit `isolation.base` path is the special case of the same rule.
-      runCwd = herdrWt.cwd;
-      const sub = relative(spawnBase, this.cwd);
-      if (sub && !sub.startsWith("..") && !isAbsolute(sub)) {
-        runCwd = join(herdrWt.cwd, sub);
-      }
       // Note: explicit ExecOptions.tools are rejected above (fail-closed) before
       // this point, so no tools-drop warning is needed here.
     } else if (wantWorktree) {
@@ -1230,18 +1236,18 @@ export class WorkflowManager extends EventEmitter {
       // semantic statuses (needs-human/needs-finalize) are the issue-delivery
       // repair/finalize handoff and must keep their worktree. Explicit deleteRun()
       // cleans up the rest; finalization removes a delivered worktree.
-      // Pane-spawn runs set `managed.worktree` directly (herdr owns the worktree)
-      // and leave `runWorktree` undefined, so wrap `managed.worktree` here too —
-      // otherwise an aborted pane-spawn run skips removal and leaves the herdr
-      // worktree + branch behind until a later manual deleteRun(), regressing the
-      // existing isolation contract for stop()/abort.
+      // Pane-spawn runs set `managed.worktree` directly — herdr owns the worktree —
+      // and leave `runWorktree` undefined, so wrap `managed.worktree` here too.
+      // Route pane-spawn cleanup through the Herdr worktree API (worktreeRemove),
+      // not the local git `removeWorktree` helper, so Herdr's internal
+      // workspace/group bookkeeping stays consistent — the same routing the
+      // agentStart-failure path uses. Deleting the herdr-created checkout behind
+      // Herdr's back can leave a stale Herdr workspace/branch entry.
       if (runWorktree?.isolated && managed.status === "aborted") await removeWorktree(runWorktree);
       else if (!runWorktree?.isolated && managed.worktree && managed.status === "aborted")
-        await removeWorktree({
-          isolated: true,
-          cwd: managed.worktree.cwd,
-          branch: managed.worktree.branch,
-          repoRoot: managed.worktree.repoRoot,
+        await this.herdrInvoker.worktreeRemove({
+          cwd: managed.worktree.repoRoot ?? managed.worktree.cwd,
+          branch: managed.worktree.branch ?? `wf/${managed.runId}`,
         });
       // Release the pane-spawn coordinator lease ONLY when the pane is actually
       // closed/gone. Kept-open conductor states (workflow-complete-pane-open,
@@ -1253,24 +1259,36 @@ export class WorkflowManager extends EventEmitter {
       // (setSemanticStatus closes it), on deleteRun(), or here on abort (the run
       // unwound and the worktree is gone, so the pane is stale/closed).
       if (managed._spawnLease && managed.status === "aborted") {
-        managed._spawnLease.release();
-        managed._spawnLease = undefined;
-        // The pane is stale after an abort — close it so it doesn't linger.
-        if (managed.paneHandle) {
-          managed.paneHandle.close();
-          managed.paneHandle = undefined;
-        }
-        // Clear the persisted pane id too: the catch block above persisted the run
-        // with paneId still set, so after a process restart reconcilePaneCap()
-        // would treat the stale paneId as a live pane and permanently consume a
-        // herdrMaxPanes slot until the user manually deletes the run. Mirror the
-        // completed-path cleanup (setSemanticStatus) by clearing paneId and
-        // persisting the cleared state once the pane is actually closed.
-        if (managed.paneId) {
-          managed.paneId = undefined;
-          this.persistRun(managed);
-        }
+        this.closePaneSlot(managed);
       }
+    }
+  }
+
+  /** Close a pane-spawn run's pane slot: close the herdr pane, release the
+   *  coordinator lease, clear the in-memory handle and persisted `paneId`, and
+   *  persist the cleared state. Shared by the abort finally (executeRun unwinding)
+   *  and stop() for an already-paused pane-spawn run (no finally runs in that
+   *  case, so the pane handle, lease, and paneId would otherwise leak and keep
+   *  seeding the herdrMaxPanes cap on restart). Idempotent: safe to call when the
+   *  lease/handle/paneId are already gone. */
+  private closePaneSlot(managed: ManagedRun): void {
+    if (managed._spawnLease) {
+      managed._spawnLease.release();
+      managed._spawnLease = undefined;
+    }
+    if (managed.paneHandle) {
+      managed.paneHandle.close();
+      managed.paneHandle = undefined;
+    }
+    // Clear the persisted pane id too: the catch block above persisted the run
+    // with paneId still set, so after a process restart reconcilePaneCap()
+    // would treat the stale paneId as a live pane and permanently consume a
+    // herdrMaxPanes slot until the user manually deletes the run. Mirror the
+    // completed-path cleanup (setSemanticStatus) by clearing paneId and
+    // persisting the cleared state once the pane is actually closed.
+    if (managed.paneId) {
+      managed.paneId = undefined;
+      this.persistRun(managed);
     }
   }
 
@@ -1443,11 +1461,25 @@ export class WorkflowManager extends EventEmitter {
     const managed = this.runs.get(runId);
     if (!managed || (managed.status !== "running" && managed.status !== "paused")) return false;
 
+    // For an already-paused pane-spawn run, executeRun has already unwound: no
+    // finally runs after stop() persists `aborted`, so the pane handle, the
+    // coordinator lease, and the persisted `paneId` would leak — the pane stays
+    // open and the stale `paneId` keeps consuming a herdrMaxPanes slot across
+    // restarts. Clean the pane slot here too, mirroring the abort finally for a
+    // still-running run. (A running run's slot is closed by executeRun's finally
+    // once its agents unwind; calling closePaneSlot here would close the pane
+    // while agents may still be active, so only do this for the paused case.)
+    const wasPaused = managed.status === "paused";
+
     managed.controller.abort();
     managed.status = "aborted";
     this.emit("stopped", { runId });
     this.persistRun(managed);
     this.releaseRunLease(managed);
+
+    if (wasPaused && managed._spawnLease) {
+      this.closePaneSlot(managed);
+    }
     // The worktree is torn down by executeRun's finally once the aborted run's agents
     // unwind (no race with in-flight tool processes); stop() just signals the abort.
     return true;

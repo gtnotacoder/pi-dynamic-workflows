@@ -853,3 +853,264 @@ return process.cwd()`;
     rmSync(fakeHome, { recursive: true, force: true });
   }
 });
+
+// ── Round-5 fixes (lifecycle consistency) ────────────────────────────────────
+
+// A fake invoker that records the agentStart opts (so the derived pane cwd can be
+// asserted). The round-3 helper drops agentStart args; this one keeps them.
+function createCapturingInvoker(overrides: Partial<{ agentStartPaneId: string }> = {}): {
+  invoker: HerdrInvoker;
+  calls: Array<{ method: string; args: unknown[] }>;
+} {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const agentStartPaneId = overrides.agentStartPaneId ?? "wH:p4";
+  return {
+    calls,
+    invoker: {
+      async worktreeCreate(opts): Promise<HerdrWorktree> {
+        calls.push({ method: "worktreeCreate", args: [opts] });
+        return { cwd: `/tmp/wt/${opts.branch}`, branch: opts.branch };
+      },
+      async worktreeRemove(opts): Promise<void> {
+        calls.push({ method: "worktreeRemove", args: [opts] });
+      },
+      async agentStart(opts, argv): Promise<{ paneId: string }> {
+        calls.push({ method: "agentStart", args: [opts, argv] });
+        return { paneId: agentStartPaneId };
+      },
+      reportAgent(pane, opts): void {
+        calls.push({ method: "reportAgent", args: [pane, opts] });
+      },
+      reportMetadata(pane, opts): void {
+        calls.push({ method: "reportMetadata", args: [pane, opts] });
+      },
+      releaseAgent(pane, opts): void {
+        calls.push({ method: "releaseAgent", args: [pane, opts] });
+      },
+      paneClose(pane): void {
+        calls.push({ method: "paneClose", args: [pane] });
+      },
+      notify(pane, opts): void {
+        calls.push({ method: "notify", args: [pane, opts] });
+      },
+    },
+  };
+}
+
+// Fix #3 (round-5): when the manager is rooted in a repo subdirectory, the pane
+// must start in the derived subdir cwd (herdrWt.cwd + relative offset), not the
+// worktree root — so a kept-open handoff pane lands in the right directory.
+test("pane-spawn subdir: agentStart cwd is the derived subdir cwd (not the worktree root)", async () => {
+  PaneSpawnCoordinator.reset();
+  const repoRoot = mkdtempSync(join(tmpdir(), "pi-dw-r5-panecwd-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r5-panecwd-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    const sub = join(repoRoot, "packages", "foo");
+    mkdirSync(sub, { recursive: true });
+
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettingsAt(sub, 4);
+      const { invoker, calls } = createCapturingInvoker();
+      const manager = new WorkflowManager({ cwd: sub, herdrInvoker: invoker, agent: instantAgent().agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true, base: repoRoot },
+      });
+
+      await promise.catch(() => {});
+
+      const agentStartCalls = calls.filter((c) => c.method === "agentStart");
+      assert.equal(agentStartCalls.length, 1, "agentStart called once");
+      const startOpts = agentStartCalls[0].args[0] as { cwd: string };
+      const expectedPaneCwd = join(`/tmp/wt/wf/${runId}`, "packages", "foo");
+      assert.equal(
+        startOpts.cwd,
+        expectedPaneCwd,
+        "agentStart cwd is the derived subdir cwd (herdr worktree cwd + packages/foo), not the worktree root",
+      );
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #1 (round-5): pane-spawn abort cleanup must route the herdr-owned worktree
+// through herdrInvoker.worktreeRemove, not the local git removeWorktree helper.
+test("abort: pane-spawn worktree removed via herdrInvoker.worktreeRemove (not local git helper)", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r5-abortwt-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r5-abortwt-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 2);
+
+      // Deferred agent so the run stays in flight long enough to stop().
+      let resolveAgent!: (v: unknown) => void;
+      const deferred = {
+        agent: {
+          async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
+            options.onUsage?.({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 });
+            return new Promise((r) => {
+              resolveAgent = r;
+            });
+          },
+        },
+      };
+
+      const { invoker, calls } = createCapturingInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: deferred.agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true },
+      });
+
+      for (let i = 0; i < 200; i++) {
+        if (calls.some((c) => c.method === "agentStart")) break;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      assert.ok(
+        calls.some((c) => c.method === "agentStart"),
+        "pane spawned before abort",
+      );
+
+      manager.stop(runId);
+      resolveAgent("done");
+      await promise.catch(() => {});
+
+      // The herdr-owned worktree was removed through the Herdr API, targeting the
+      // same branch that worktreeCreate produced — not the local git helper.
+      const removeCalls = calls.filter((c) => c.method === "worktreeRemove");
+      assert.equal(removeCalls.length, 1, "herdrInvoker.worktreeRemove called once on abort");
+      const createCalls = calls.filter((c) => c.method === "worktreeCreate");
+      assert.equal(createCalls.length, 1);
+      assert.equal(
+        (removeCalls[0].args[0] as { branch: string }).branch,
+        (createCalls[0].args[0] as { branch: string }).branch,
+        "worktreeRemove targets the same branch that worktreeCreate produced",
+      );
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #2 (round-5): stop() of an already-paused pane-spawn run must close the
+// pane, release the coordinator lease, clear paneId, and persist — no finally
+// runs in that case, so without this the pane handle/lease/paneId leak and keep
+// seeding the herdrMaxPanes cap on restart.
+test("stop() of a paused pane-spawn run: closes pane, releases lease, clears paneId, persists (no restart cap leak)", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r5-stoppaused-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r5-stoppaused-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 2);
+
+      // An agent that pauses itself via a pause() gate: the first call suspends
+      // (the workflow runtime aborts on the controller signal), then we stop().
+      // Simpler: use a deferred agent that never resolves while we pause() then
+      // stop() — pause() aborts the controller, the run settles to paused, and
+      // the deferred keeps executeRun's promise pending until we resolve it.
+      let resolveAgent!: (v: unknown) => void;
+      const deferred = {
+        agent: {
+          async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
+            options.onUsage?.({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 });
+            return new Promise((r) => {
+              resolveAgent = r;
+            });
+          },
+        },
+      };
+
+      const { invoker, calls } = createCapturingInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: deferred.agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true },
+      });
+
+      // Wait for the pane to spawn, then pause the run (user pause).
+      for (let i = 0; i < 200; i++) {
+        if (calls.some((c) => c.method === "agentStart")) break;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      assert.ok(
+        calls.some((c) => c.method === "agentStart"),
+        "pane spawned before pause",
+      );
+      assert.ok(manager.getRun(runId)?.paneId, "paneId persisted while running");
+
+      const paused = manager.pause(runId);
+      assert.ok(paused, "pause() accepted the running pane-spawn run");
+      assert.equal(manager.getRun(runId)?.status, "paused", "run is paused");
+
+      // No paneClose yet — paused pane-spawn runs keep their pane open.
+      assert.equal(
+        calls.filter((c) => c.method === "paneClose").length,
+        0,
+        "paused pane-spawn pane not closed before stop()",
+      );
+
+      // Now stop() the already-paused pane-spawn run. executeRun has unwound (the
+      // abort signal fired and the deferred agent's await rejected), so no finally
+      // runs after stop() — the pane slot must be cleaned in stop() itself.
+      const stopped = manager.stop(runId);
+      assert.ok(stopped, "stop() accepted the paused pane-spawn run");
+      assert.equal(manager.getRun(runId)?.status, "aborted", "run is aborted after stop()");
+
+      // Resolve the deferred agent so executeRun's promise settles (the abort
+      // already fired; resolveAgent may be unset if the abort rejected first —
+      // guard it).
+      try {
+        resolveAgent("done");
+      } catch {
+        // already rejected
+      }
+      await promise.catch(() => {});
+
+      // The pane was closed via stop()'s paused-pane cleanup.
+      const closeCalls = calls.filter((c) => c.method === "paneClose");
+      assert.equal(closeCalls.length, 1, "stop() closed the paused pane-spawn pane");
+
+      // The in-memory paneId and lease are cleared.
+      const run = manager.getRun(runId);
+      assert.equal(run?.paneId, undefined, "in-memory paneId cleared by stop()");
+      assert.equal(run?._spawnLease, undefined, "coordinator lease cleared by stop()");
+      assert.equal(run?.paneHandle, undefined, "pane handle cleared by stop()");
+
+      // The lease release dropped activeCount.
+      assert.equal(manager.paneCoordinator.activeCount, 0, "coordinator lease released by stop()");
+
+      // A fresh manager (simulating restart) must NOT count the stopped pane
+      // against the cap — the persisted paneId is gone.
+      PaneSpawnCoordinator.reset();
+      const restarted = new WorkflowManager({ cwd, herdrInvoker: createCapturingInvoker().invoker });
+      assert.equal(
+        restarted.paneCoordinator.activeCount,
+        0,
+        "stopped paused pane is not counted against the cap after restart",
+      );
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
