@@ -43,6 +43,10 @@ export interface HarnessConfig {
   worktreeRequiredMalformed?: boolean;
   engineMin?: string;
   engineMinMalformed?: boolean;
+  /** Mandatory tools required by this harness. If unavailable, we clean-skip execution. */
+  requiredTools?: string[];
+  /** Optional preferred tools for this harness. If unavailable, we degrade gracefully with a warning. */
+  preferredTools?: string[];
   /** Loader skipped this descriptor (e.g. engine.min above the running engine); kept in the registry so an explicit `--harness-config <id>` can clean-skip with the reason instead of silently falling back to pi. */
   skipped?: boolean;
   skipReason?: string;
@@ -180,6 +184,8 @@ export function parseHarnessConfigDescriptor(
     worktreeRequiredMalformed: "worktreeRequired" in raw && typeof raw.worktreeRequired !== "boolean",
     engineMin,
     engineMinMalformed,
+    requiredTools: stringArrayField(raw.requiredTools),
+    preferredTools: stringArrayField(raw.preferredTools),
     displayName: stringField(raw.displayName) ?? stringField(raw.name),
     description: stringField(raw.description),
     trigger: triggerSummary(raw),
@@ -430,6 +436,14 @@ export interface HarnessExpansion {
   systemPromptMode?: string;
   tools?: string[];
   disallowedTools?: string[];
+  /** Mandatory tools required by this harness expansion. */
+  requiredTools?: string[];
+  /** Optional preferred tools for this harness expansion. */
+  preferredTools?: string[];
+  /** Whether the harness execution is degraded due to missing preferred tools. */
+  degraded?: boolean;
+  /** The reason why the harness execution is degraded. */
+  degradeReason?: string;
   stageCheckDefaults?: Record<string, unknown>;
   agentOverrides?: Record<string, unknown>;
   componentExtensions?: string[];
@@ -495,6 +509,8 @@ export function expandHarnessConfig(opts: {
     harness_type: type,
     harness_config,
     wired: descriptor.invalid && !isHarnessType(harness_type) ? false : HARNESS_RUNTIME_INFO[type].wired,
+    requiredTools: descriptor.requiredTools,
+    preferredTools: descriptor.preferredTools,
   };
 
   // Optional override fields from raw

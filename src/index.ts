@@ -256,6 +256,7 @@ export {
   type TelemetryProcessRole,
   type TelemetryRuntime,
 } from "./telemetry-env.js";
+export { checkToolRequirements, type ToolRequirementResult } from "./tool-requirements.js";
 export {
   type HarnessValidationResult,
   runValidateHarness,

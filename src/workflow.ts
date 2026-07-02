@@ -54,6 +54,7 @@ import {
   loadHarnessConfigRegistry,
 } from "./harness-config.js";
 import { type HarnessSelection, harnessSelectionKey, selectHarness } from "./harness-selector.js";
+import { checkToolRequirements } from "./tool-requirements.js";
 
 const ENGINE_PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
 
@@ -743,6 +744,44 @@ export async function runWorkflow<T = unknown>(
     state.logs.push(text);
     logger.log(text);
   };
+
+  const availableTools = options.tools?.map((t) => t.name);
+  const toolResult = checkToolRequirements(
+    availableTools,
+    harnessExpansion.requiredTools,
+    harnessExpansion.preferredTools,
+  );
+  if (!toolResult.ok) {
+    const skip = harnessNotWiredSkip({
+      harness_type: harnessExpansion.harness_type,
+      harness_config: harnessExpansion.harness_config,
+      reason: toolResult.reason ?? "Missing required tool(s)",
+    });
+    log(`[harness-skip] ${skip.reason}`);
+    return {
+      meta,
+      result: skip as T,
+      logs: state.logs,
+      phases: state.phases,
+      agentCount: 0,
+      durationMs: Date.now() - started,
+      runId,
+      tokenUsage: options.sharedRuntime?.tokenUsage ?? {
+        input: 0,
+        output: 0,
+        total: 0,
+        cost: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      harnessSelection,
+    };
+  }
+  if (toolResult.degraded) {
+    harnessExpansion.degraded = true;
+    harnessExpansion.degradeReason = toolResult.reason;
+    log(`[warn] ${toolResult.reason}`);
+  }
 
   const phase = (title: string, phaseOptions?: { budget?: number }) => {
     state.currentPhase = title;
