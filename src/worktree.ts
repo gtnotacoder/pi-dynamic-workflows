@@ -56,6 +56,24 @@ function slug(name: string): string {
 }
 
 /**
+ * Resolve the git repository root (toplevel) containing `baseCwd`. Returns
+ * `undefined` when `baseCwd` is not inside a git repository. Used by the
+ * pane-spawn path to compute the caller's subdirectory offset from the repo
+ * root so a manager rooted at a repo subdirectory (e.g. packages/foo) runs
+ * inside that subdir within the herdr worktree — mirroring the plain worktree
+ * path that derives the subpath from `createWorktree`'s resolved repoRoot.
+ */
+export async function resolveRepoRoot(baseCwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec("git", ["-C", baseCwd, "rev-parse", "--show-toplevel"]);
+    const root = stdout.trim();
+    return root || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Create an isolated worktree under `<repoRoot>/.pi/worktrees/<name>` on branch
  * `pi/wf/<name>`. The `name` must be deterministic (derived from runId + call index,
  * never wall-clock) so resume keys stay stable. Returns a no-op Worktree on any failure.

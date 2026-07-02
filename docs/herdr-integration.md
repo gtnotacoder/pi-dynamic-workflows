@@ -1,11 +1,10 @@
 # Herdr integration — design notes & roadmap
 
-> **Status:** Design notes & roadmap (2026-07-01) — the status reporter and run-level isolation seams are shipped (#85/#94); remaining roadmap items are aspirational, not commitments or active backlog.
+> **Status:** Tier 0 (status reporter, `src/herdr-reporter.ts`) is **shipped** (#85).  
+> Tier 1 (run-level worktree isolation + pane-spawn seam, `src/pane-spawn.ts`) is **shipped** (#93).  
+> Tier 2 (bidirectional control) is **designed** — this document tracks the research, API surface, and integration spec.
 
-> **Status:** Tier 0 is **shipped** (`src/herdr-reporter.ts`). Tier 1 and Tier 2
-> below are **designed, not built** — this document exists so the research and
-> the herdr API surface we mapped aren't lost. It is the spec to build from when
-> we decide to take the integration further.
+> **Roadmap:** Tier 0 = status mirror (shipped) · Tier 1 = real herdr cells per run (shipped) · Tier 2 = bidirectional control (designed).
 
 [herdr](https://herdr.dev) is a terminal workspace manager / TUI for AI coding
 agents (workspaces → tabs → panes, with per-pane agent status). This repo
@@ -128,44 +127,87 @@ the cell `0/4 → 4/4` then cleared, with the result delivered back to chat.
 
 ---
 
-## 4. Tier 1 — conductor runs become real herdr cells (FOUNDATION SHIPPED; pane spawn pending)
+## 4. Tier 1 — conductor runs become real herdr cells (SHIPPED)
 
 **Goal:** instead of one enriched pi cell, give each *conductor run* its own
 herdr cell — attachable, focusable, with native agent detection. herdr's tab grid
 becomes the fan-out dashboard, and `herdr worktree list` replaces ad-hoc worktree
 bookkeeping.
 
-**Shipped foundation (#85): run-level worktree isolation is wired at the `WorkflowManager` launch layer — `startInBackground`/`runSync` accept `isolation: { worktree: true }` (or the first-class `worktreeRequired: true`), which creates a run-owned git worktree on `pi/wf/<runId>`, runs the whole workflow there (never the primary checkout's working branch), and lets finalization deliver a PR from that worktree. This is the (a) worktree + (c) never-touch-primary + (d) PR-from-worktree leg.
+**Shipped (#85): run-level worktree isolation** is wired at the `WorkflowManager` launch layer — `startInBackground`/`runSync` accept `isolation: { worktree: true }` (or `worktreeRequired: true`), creating a run-owned git worktree on `pi/wf/<runId>`, running the whole workflow there (never the primary checkout's working branch), and letting finalization deliver a PR from that worktree.
 
-> Run worktrees live under `<repoRoot>/.pi/worktrees/<runId>`; gitignore `.pi/` (the convention) so a kept worktree doesn't show as untracked in the primary checkout. The worktree is KEPT on completed/failed/paused runs (outputs/edits preserved for inspection/PR/resume) and removed only on abort or explicit `deleteRun()`; finalization removes a delivered worktree. `ExecOptions.tools` are dropped for an isolated run (they're primary-cwd-bound); a cwd-bound tool factory for custom tool policy under isolation is tracked in #93.
+> Run worktrees live under `<repoRoot>/.pi/worktrees/<runId>`; gitignore `.pi/` (the convention) so a kept worktree doesn't show as untracked in the primary checkout. The worktree is KEPT on completed/failed/paused runs (outputs/edits preserved for inspection/PR/resume) and removed only on abort or explicit `deleteRun()`; finalization removes a delivered worktree.
 
-**Still pending (tracked follow-up, validated against the admin-portal worked example):** the (b) tmux/herdr **pane spawn** — `herdr agent start wf-<run> --cwd <worktree> -- pi …` so each run is a real, focusable herdr cell with live status — plus a memory/concurrency cap (spawning real `pi` per run multiplies VM memory) and harness-descriptor `worktreeRequired` auto-isolation. The spawn mechanism below is the spec for that follow-up.
+**Shipped (#93): pane-spawn seam** (`src/pane-spawn.ts`) — the injectable herdr CLI boundary that owns ALL herdr CLI access for pane-spawning. Behind an opt-in `herdrPaneSpawn` setting (default `"off"`).
 
-**Mechanism (for the pane-spawn follow-up) — where the conductor would `spawn` a run:
+### 4.1 The `HerdrInvoker` interface
 
-```
-herdr worktree create --branch wf/<run> --base <ref> --json   # herdr owns the worktree
-herdr agent start wf-<run> --cwd <worktree> -- pi …           # or: tab create + pane split
-# then map ConductorStatusName onto the cell (table in §6) via report-agent/report-metadata
-herdr release-agent / pane close  on terminal
-```
+`src/pane-spawn.ts` exports `HerdrInvoker` — an injectable boundary so unit tests mock the invoker and never touch a live herdr server. Methods:
 
-**Seams in this repo:**
+| Method | CLI equivalent | Purpose |
+|--------|----------------|---------|
+| `worktreeCreate({cwd, branch})` | `herdr worktree create --branch <b> --cwd <repo-path> --json` | Creates the herdr-managed worktree, returns `{cwd, branch}` |
+| `agentStart({name, cwd, workspace?, tab?, split?}, argv)` | `herdr agent start <name> --cwd <cwd> [--workspace] [--tab] [--split] -- <argv…>` | Starts a new herdr agent pane |
+| `reportAgent(pane, opts)` | `herdr pane report-agent <pane> …` | Pushes live state (`idle/working/blocked`) into the cell |
+| `reportMetadata(pane, opts)` | `herdr pane report-metadata <pane> …` | Layers a one-line custom status |
+| `releaseAgent(pane, opts)` | `herdr pane release-agent <pane> …` | Marks the agent done |
+| `paneClose(pane)` | `herdr pane close <pane>` | Closes the spawned pane |
 
-- The conductor spawn point (where status `spawned` is set / `conductor-finalization.ts`).
-- `workflow-manager.ts` `setSemanticStatus()` — the single fan-in point; also call the herdr mapper here.
-- `conductor-types.ts` icons/labels/sets — already the right shape for the mapping.
+The `createDefaultHerdrInvoker()` factory shells `herdr` via `spawn(...).unref()` — fire-and-forget, swallowing errors so a missing herdr binary never throws into the workflow runtime.
 
-**Why it's heavier:** in-process subagents are **not** separate terminals, so do
-**not** make a herdr pane per subagent. Tier 1 applies only at the *run* level
-(runs that already are/were meant to be tmux panes). Keep subagent fan-out as the
-Tier-0 enriched single cell.
+### 4.2 Run-level pane only (not per subagent)
 
-**Risks / decisions:**
+In-process subagents are **not** separate terminals — one real `pi` process per run.
+Tier 1 applies only at the *run* level (runs that already are/were meant to be tmux panes).
+Subagent fan-out stays as the Tier-0 enriched single cell.
 
-- Pane lifecycle: auto-close on `completed`, or keep open for `workflow-complete-pane-open`/finalize? (Conductor taxonomy already distinguishes these.)
-- Worktree ownership: herdr-managed (`herdr worktree`) vs our own `src/worktree.ts`. Pick one to avoid double bookkeeping.
-- Spawning real `pi` per run multiplies memory on the VM (see lean-ctx/tsserver pressure history) — gate behind a concurrency cap.
+### 4.3 Workspace/tab/split nesting
+
+`resolveNesting(env)` reads `HERDR_WORKSPACE_ID` and `HERDR_TAB_ID` from the caller's environment.
+When present (inside herdr), it returns `{workspace, tab, split: 'down'}` — so the spawned agent
+pane nests **under the caller pane** via `--split down`, never appearing as an orphaned top-level
+agent. When env is empty (not inside herdr), it returns `{}` — no nesting applied.
+
+### 4.4 `conductorToHerdrState` mapping
+
+Pure function (`conductorToHerdrState(status: ConductorRunStatus)`) implements the
+[§6 table](#6-canonical-status-mapping-conductor--herdr) exactly — mapping each
+`ConductorStatusName` to the herdr cell `{state, customStatus, release?, closePane?, notify?}`.
+Wired into `WorkflowManager.setSemanticStatus()` (the docs §4 fan-in point) so every
+status transition pushes the correct herdr state.
+
+### 4.5 Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `herdrPaneSpawn` | `'off' \| 'auto'` | `'off'` | Opt-in because a real pi per run multiplies VM memory. `'auto'` enables pane-spawn for isolated runs only when inside herdr (`HERDR_PANE_ID` present). See [§6](#6-canonical-status-mapping-conductor--herdr). |
+| `herdrMaxPanes` | `number` | `4` | Concurrency cap — the VM memory ceiling so parallel isolated runs cannot exhaust RAM. `PaneSpawnCoordinator.acquire(runId)` returns a lease or `null` (cap enforced, no throw). |
+
+### 4.6 Worktree ownership reconciliation
+
+When `herdrPaneSpawn` is active, `herdr worktree create` (via the invoker) **replaces**
+`src/worktree.ts` `createWorktree` — the herdr-managed `{cwd, branch}` is persisted onto
+`managed.worktree` (with `repoRoot` derived from `base`). This is a **single source of truth**;
+no double bookkeeping between `src/worktree.ts` and herdr.
+
+### 4.7 Pane lifecycle
+
+| Conductor status | Pane behavior |
+|-----------------|---------------|
+| `completed` | **Auto-closed** — `releaseAgent` + `paneClose` called |
+| `workflow-complete-pane-open` | **Kept open** — `report-agent` state=`working`, custom-status=`◐ complete (pane open)` |
+| `needs-finalize` | **Kept open** — `report-agent` state=`blocked`, custom-status=`! needs finalize`, notify=`request` |
+| `finalizing` | **Kept open** — `report-agent` state=`working`, custom-status=`⟳ finalizing` |
+| `failed` | Kept open — `report-agent` state=`blocked`, custom-status=`✗ failed`, notify=`request` |
+| `needs-human` | Kept open — `report-agent` state=`blocked`, custom-status=`? needs human`, notify=`request` |
+
+The `RunPaneHandle` returned from `createPaneHandle(invoker, paneId)` provides
+`updateStatus(status)` (pushes via `conductorToHerdrState`) and `close()` (calls `paneClose`).
+
+### 4.8 Follow-ups (out of scope)
+
+- **Admin-portal `/ui_refine` acceptance item** — external to this repo; tracked separately in the PR.
+- **cwd-bound tool factory** (`#93` cwd-bound factory leg) — preserving tool policy under isolation when `ExecOptions.tools` are dropped for isolated runs. Remains open.
 
 ---
 
@@ -268,7 +310,10 @@ bridge package" idea is **deferred** — only worth revisiting if the separate
 `multi-team-agentic-coding` system later wants to import the same reporter; until
 then, extracting it would add maintenance for no local benefit.
 
-### Open questions to revisit (Tier 1+)
+### Resolved questions (Tier 1)
 
-- Should run/worktree ownership move to herdr (`herdr worktree`) or stay local?
-- Pane-per-run memory cost on the VM — what concurrency cap is safe?
+- **Run/worktree ownership:** herdr-managed (`herdr worktree`) when pane-spawning; `src/worktree.ts` for plain isolation. Single source of truth — no double bookkeeping (§4.6).
+- **Pane-per-run memory cost:** gated behind `herdrMaxPanes` (default 4) via `PaneSpawnCoordinator`. Opt-in via `herdrPaneSpawn` (default `'off'`).
+- **Pane lifecycle:** auto-close on `completed`, kept open for `workflow-complete-pane-open`/`needs-finalize`/`finalizing` (§4.7).
+
+### Open questions to revisit (Tier 2+)
