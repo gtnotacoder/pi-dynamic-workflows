@@ -69,6 +69,8 @@ A harness is **two artifacts the repo pins locally** plus the engine that runs t
 }
 ```
 
+> **`targetFile` semantics:** `targetFile: null` (or omitted) means biome checks the entire `cwd`; set it to a specific file to scope the check.
+
 ### `schemaVersion` + `engine.min`
 - `schemaVersion` (data shape) and `engine.min` (engine behavior) are the two compatibility guards — see [harness-engine-compat.md](./harness-engine-compat.md). Set `engine.min` to the oldest engine that supports the behavior this descriptor relies on. Both are advisory: a below-floor/incompatible descriptor is **warned + skipped** on load (and `validate-harness` flags it), never crashes the run.
 
@@ -95,7 +97,7 @@ A harness selects a posture for its agents via the context/inheritance fields. C
 Model routing lives in the **machine-local** `~/.pi/workflows/model-tiers.json`, not the descriptor — descriptors stay portable. The config shape today is `tiers: Record<string, string>` (one model id per tier: `small`, `medium`, `big`); **per-tier fallback chains are not yet supported**. The workflow script assigns `tier: "small"|"medium"|"big"` per role — fanout workers on a cheap/local `small`/`medium` tier, judges/verifiers on a `big` (frontier) tier — and the run resolves each tier to its configured model. (Multi-model fallback pools are a planned addition; track via an engine issue, not the descriptor.)
 
 ### Gates incl. trace-assert
-Use `gate(workerThunk, validator, { attempts })` for the repair loop (worker → host `stageCheck` → feedback). `stageCheck` runs **host-side mechanical checks with zero LLM tokens**: the auto-detected defaults are `tsc --noEmit` (TypeScript) + `biome check`; a repo **`build` is not auto-added** — supply it explicitly via `stageCheck.commands` if the harness should gate on it. Defaults otherwise come from the descriptor's `stageCheck` block (package `cwd`, `targetFile`). For a per-step harness, pass the step's `harness_config` to `stageCheck` so checks run in the step's package, not the run-level default.
+Use `gate(workerThunk, validator, { attempts })` for the repair loop (worker → host `stageCheck` → feedback). `stageCheck` runs **host-side mechanical checks with zero LLM tokens**: auto-detected defaults are `tsc --noEmit` (if `tsconfig.json` AND `package.json` exist) + `biome check` (if `biome.json` AND `package.json` exist and `targetFile` is null or has a supported extension); a repo `build` script is **NOT auto-added** — supply it explicitly via `stageCheck.commands`. Defaults otherwise come from the descriptor's `stageCheck` block (package `cwd`, `targetFile`). For a per-step harness, pass the step's `harness_config` to `stageCheck` so checks run in the step's package, not the run-level default.
 
 **Trace-assert (planned, not yet shipped):** asserting telemetry spans/events from inside a workflow script (e.g. that a UI worker consulted the anchor doc / guardrail) is not yet an exposed API — the sandbox globals do not include a trace reader. Until it ships, encode the read-path guardrail via the descriptor's `componentExtensions`/`frontendPathTriggers` (enforced by the harness expansion) rather than a runtime trace assertion. Track the trace-assert capability via an engine issue.
 
