@@ -225,6 +225,13 @@ export interface WorkflowAgentOptions {
    * to the session default when no config is saved yet.
    */
   mainModel?: string;
+  /**
+   * Host session ModelRegistry shared with subagents (upstream #49 port). When
+   * set, tier/phase/model routing resolves against the same registry as the
+   * main Pi session — including providers registered dynamically by extensions
+   * — instead of an isolated disk registry. Absent → disk fallback.
+   */
+  modelRegistry?: ModelRegistry;
 }
 
 /**
@@ -232,12 +239,15 @@ export interface WorkflowAgentOptions {
  * `provider/modelId` specs. Used to tell the workflow author which models it may
  * route agents to. Best-effort: returns [] if the registry can't be built.
  */
-export function listAvailableModelSpecs(): string[] {
+export function listAvailableModelSpecs(registry?: ModelRegistry): string[] {
   try {
-    const dir = getAgentDir();
-    const auth = AuthStorage.create(join(dir, "auth.json"));
-    const registry = ModelRegistry.create(auth, join(dir, "models.json"));
-    return registry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+    let resolved = registry;
+    if (!resolved) {
+      const dir = getAgentDir();
+      const auth = AuthStorage.create(join(dir, "auth.json"));
+      resolved = ModelRegistry.create(auth, join(dir, "models.json"));
+    }
+    return resolved.getAvailable().map((m) => `${m.provider}/${m.id}`);
   } catch {
     return [];
   }
@@ -307,6 +317,11 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * caring which concrete model backs that tier.
    */
   tier?: string;
+  /**
+   * Per-run ModelRegistry override (wins over the agent's shared registry and
+   * the disk fallback). Lets a host thread its live registry into a single run.
+   */
+  modelRegistry?: ModelRegistry;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
   /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
@@ -590,6 +605,8 @@ export class WorkflowAgent {
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly instructions?: string;
   private readonly mainModel?: string;
+  /** Host session registry shared across all runs of this agent (upstream #49 port). */
+  private readonly sharedRegistry?: ModelRegistry;
   /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
   private registry?: ModelRegistry;
 
@@ -599,9 +616,13 @@ export class WorkflowAgent {
     this.sessionOptions = options.session ?? {};
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
+    this.sharedRegistry = options.modelRegistry;
   }
 
-  private getRegistry(): ModelRegistry {
+  /** Registry precedence: per-run override > shared host registry > lazy disk fallback. */
+  private getRegistry(perRun?: ModelRegistry): ModelRegistry {
+    if (perRun) return perRun;
+    if (this.sharedRegistry) return this.sharedRegistry;
     if (!this.registry) {
       const dir = getAgentDir();
       // Same agentDir/auth files createAgentSession uses by default, so a model
@@ -617,8 +638,8 @@ export class WorkflowAgent {
    * or a bare `modelId` (prefers auth-configured models, then any known model).
    * Returns undefined when nothing matches.
    */
-  private resolveModel(spec: string): Model<any> | undefined {
-    const registry = this.getRegistry();
+  private resolveModel(spec: string, perRun?: ModelRegistry): Model<any> | undefined {
+    const registry = this.getRegistry(perRun);
     const slash = spec.indexOf("/");
     if (slash > 0) {
       return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
@@ -626,11 +647,14 @@ export class WorkflowAgent {
     return registry.getAvailable().find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
-  private resolveSettingsDefaultModel(settingsManager: SettingsManager): Model<any> | undefined {
+  private resolveSettingsDefaultModel(
+    settingsManager: SettingsManager,
+    perRun?: ModelRegistry,
+  ): Model<any> | undefined {
     const provider = settingsManager.getDefaultProvider();
     const modelId = settingsManager.getDefaultModel();
-    if (provider && modelId) return this.getRegistry().find(provider, modelId);
-    return modelId ? this.resolveModel(modelId) : undefined;
+    if (provider && modelId) return this.getRegistry(perRun).find(provider, modelId);
+    return modelId ? this.resolveModel(modelId, perRun) : undefined;
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -667,7 +691,7 @@ export class WorkflowAgent {
     // spec falls back to the session default (with a warning) rather than failing.
     let resolvedModel: Model<any> | undefined;
     if (modelSpec) {
-      resolvedModel = this.resolveModel(modelSpec);
+      resolvedModel = this.resolveModel(modelSpec, options.modelRegistry);
       if (resolvedModel) {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
       } else {
@@ -680,11 +704,13 @@ export class WorkflowAgent {
     // Single SettingsManager shared by the session and (when built) the loader, so
     // the subagent inherits the user's default provider/model exactly as today.
     const settingsManager = SettingsManager.create(this.cwd, agentDir);
-    const settingsDefaultModel = this.resolveSettingsDefaultModel(settingsManager);
+    const settingsDefaultModel = this.resolveSettingsDefaultModel(settingsManager, options.modelRegistry);
     const activeModel =
       resolvedModel ??
       (this.sessionOptions.model as Partial<Model<any>> | undefined) ??
-      (modelSpec === undefined && this.mainModel ? this.resolveModel(this.mainModel) : undefined) ??
+      (modelSpec === undefined && this.mainModel
+        ? this.resolveModel(this.mainModel, options.modelRegistry)
+        : undefined) ??
       settingsDefaultModel;
     const baseCompactionSettings = settingsManager.getCompactionSettings();
     const resolvedModelSpec = resolvedModel ? modelSpec : undefined;
@@ -775,6 +801,11 @@ export class WorkflowAgent {
       ...this.sessionOptions,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),
+      // Share the host registry with the subagent session so it resolves models
+      // against the same providers as the main session (per-run > shared).
+      ...((options.modelRegistry ?? this.sharedRegistry)
+        ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry }
+        : {}),
     });
 
     let removeAbortListener: (() => void) | undefined;

@@ -1,4 +1,4 @@
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { listAvailableModelSpecs } from "./agent.js";
@@ -25,8 +25,8 @@ import { loadWorkflowSettings } from "./workflow-settings.js";
  * This string is injected into the workflow tool's promptGuidelines and
  * therefore appears in the LLM's system prompt for every workflow execution.
  */
-export function modelRoutingGuideline(): string {
-  const available = listAvailableModelSpecs();
+export function modelRoutingGuideline(registry?: ModelRegistry): string {
+  const available = listAvailableModelSpecs(registry);
   const list = available.length
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
@@ -222,16 +222,11 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       defaultAgentContextReserveTokens: defaults.agentContextReserveTokens,
     });
 
-  return defineTool({
-    name: "workflow",
-    label: "Workflow",
-    description: [
-      "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), pipeline(), and dag().",
-      "script is required raw JavaScript. It must start with export const meta = { name, description, phases? } and must call agent() at least once.",
-    ].join(" "),
-    promptSnippet:
-      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }.",
-    promptGuidelines: [
+  // Rebuilt on each read (see the promptGuidelines getter below) so the
+  // model-routing guideline reflects the manager's CURRENT registry —
+  // setModelRegistry runs on session_start, after this tool is created.
+  const buildPromptGuidelines = (): string[] =>
+    [
       "Use workflow only when the user explicitly asks for a workflow, workflows, fan-out, or multi-agent orchestration.",
       "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
       "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description', phases: [{ title: 'Phase name' }] }`; meta.name and meta.description are required non-empty strings.",
@@ -252,12 +247,23 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
-      modelRoutingGuideline(),
+      modelRoutingGuideline(manager.getModelRegistry()),
       agentTypeGuideline(),
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
       "For workflow, runs are background by default: the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when the run finishes. Pass background: false only when you must use the result inline in this same turn (it will block).",
       "For workflow, you may call `await workflow('saved-name', argsObject)` to run a saved workflow inline and use its result; nesting is one level deep only, and the global 16-concurrent / 1000-total caps hold across the nesting.",
-    ].filter((g): g is string => typeof g === "string" && g.length > 0),
+    ].filter((g): g is string => typeof g === "string" && g.length > 0);
+
+  const definition = defineTool({
+    name: "workflow",
+    label: "Workflow",
+    description: [
+      "Execute a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), pipeline(), and dag().",
+      "script is required raw JavaScript. It must start with export const meta = { name, description, phases? } and must call agent() at least once.",
+    ].join(" "),
+    promptSnippet:
+      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }.",
+    promptGuidelines: buildPromptGuidelines(),
     parameters: workflowToolSchema,
     prepareArguments(args) {
       return normalizeWorkflowToolArgs(args);
@@ -432,6 +438,16 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return new Text(clean || theme.fg("muted", "workflow"), 0, 0);
     },
   });
+  // The SDK re-reads promptGuidelines on each tool-registry refresh and holds the
+  // definition by reference, so a getter rebuilds the guidelines from the manager's
+  // CURRENT registry — a registry set via setModelRegistry (session_start) after
+  // tool creation is advertised instead of a stale creation-time snapshot.
+  Object.defineProperty(definition, "promptGuidelines", {
+    get: buildPromptGuidelines,
+    enumerable: true,
+    configurable: true,
+  });
+  return definition;
 }
 
 export function resolveWorkflowToolDefaults(

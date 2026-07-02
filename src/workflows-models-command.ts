@@ -119,7 +119,9 @@ export async function editSingleTier(
   tiers: Record<string, string>,
   tierName: string,
 ): Promise<Record<string, string> | null> {
-  const available = listAvailableModelSpecs();
+  // Use the host session's registry so extension-registered providers (e.g.
+  // ollama-cloud) are listed, not only statically configured disk models.
+  const available = listAvailableModelSpecs(ctx.modelRegistry);
   const current = tiers[tierName];
 
   // Build SelectItems: all available models as scrollable list
