@@ -1,5 +1,7 @@
 # Context Compaction & State Redaction Research
 
+> **Status:** Research note (2026-06-24, issue #11) — point-in-time findings; not a spec of current behavior.
+
 ## Introduction
 
 This research note supports [GitHub issue #11](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/11), which tracks context degradation in the Worker–Verifier loop. The issue observes that repeated Worker verification failures, when recorded as raw chronological logs appended verbatim to the prompt, produce three compounding pathologies:

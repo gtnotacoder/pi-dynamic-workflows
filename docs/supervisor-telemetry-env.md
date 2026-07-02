@@ -1,5 +1,7 @@
 # Supervisor telemetry/env policy
 
+> **Status:** Reference — describes current shipped behavior.
+
 This runbook covers tmux/supervisor-launched Pi sessions such as issue-delivery,
 review, and repair panes.
 

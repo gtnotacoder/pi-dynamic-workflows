@@ -1,5 +1,7 @@
 # Prompt & Skill Guidance Style
 
+> **Status:** Reference — describes current shipped behavior.
+
 How we write behavioral guidance for agents (system prompts, workflow specialist
 definitions, `promptGuidelines`, skill docs). Borrowed *structure* from gstack's
 ETHOS — **not** its content. (gstack's "Boil the Ocean" is wrong for us: we run on

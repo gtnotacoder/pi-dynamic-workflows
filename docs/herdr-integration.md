@@ -1,5 +1,7 @@
 # Herdr integration — design notes & roadmap
 
+> **Status:** Design notes & roadmap (2026-07-01) — the status reporter and run-level isolation seams are shipped (#85/#94); remaining roadmap items are aspirational, not commitments or active backlog.
+
 > **Status:** Tier 0 is **shipped** (`src/herdr-reporter.ts`). Tier 1 and Tier 2
 > below are **designed, not built** — this document exists so the research and
 > the herdr API surface we mapped aren't lost. It is the spec to build from when

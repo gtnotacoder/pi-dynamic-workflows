@@ -1,5 +1,7 @@
 # Repo harness bootstrapping guide
 
+> **Status:** Reference — describes current shipped behavior.
+
 How to onboard a repo as a **southbound Pi harness** — the canonical, repeatable "add a Pi harness to a repo" guide. As we add new repos with custom UI/UX treatment (e.g. `desktop-app`, same pattern as `kneutral-admin-portal`), each repo's harness is set up the same way and stays engine-compatible.
 
 This is the control-plane counterpart to [harness-engine-compat.md](./harness-engine-compat.md) (which defines the `schemaVersion`/`engine.min` compatibility discipline). Read that first.

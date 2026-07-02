@@ -1,5 +1,7 @@
 # Model Specialization & Intelligent Routing Strategy
 
+> **Status:** Research note (2026-06-28) — strategy exploration; not a spec of current behavior.
+
 ## 1. Executive Summary
 
 As our multi-agent pipelines scale to handle larger issues, reviews, and closed-loop repairs across `pi-dynamic-workflows` and `kneutral-admin-portal`, our weekly `openai-codex/gpt-5.5` token allotment faces substantial consumption pressure. Monolithic model allocation—where a single premium model (GPT-5.5) handles planning, exploration, file editing, and verification—is financially and operationally unsustainable.
