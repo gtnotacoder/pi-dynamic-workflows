@@ -1201,6 +1201,52 @@ export async function runWorkflow<T = unknown>(
       log(`[warn] ${perCallToolResult.reason}`);
     }
 
+    // Per-agent narrowing re-check (PR #108 finding 1): the per-call harness re-check
+    // above only applied the harness allow/deny policy. An agentType `.tools` allowlist
+    // or a per-call `agentOptions.tools` allowlist can narrow the effective set further
+    // and DROP a required tool, which would otherwise pass silently (the run-level
+    // checkToolRequirements gate only saw runLevelBaseToolNames narrowed by the harness
+    // policy). Mirror the exact narrowing the runner applies below (agentOptions.tools
+    // wins; else intersect agentType.tools with the harness allowlist; union the
+    // denylists) and re-run checkToolRequirements against that narrowed set. For a
+    // required-miss introduced by narrowing, fail this agent call with the same
+    // harnessNotWiredSkip-style reason (clean failure: the agent cannot run without the
+    // required tool). The run-level gate still clean-skips the whole run for run-level
+    // misses; this seam only fires when per-agent narrowing drops a required tool.
+    const narrowedAgentAllow =
+      agentOptions.tools ?? intersectToolAllowlists([agentDef?.tools, effectiveHarnessExpansion.tools]);
+    const narrowedAgentDeny =
+      agentOptions.disallowedTools ??
+      unionToolDenylists([agentDef?.disallowedTools, effectiveHarnessExpansion.disallowedTools]);
+    const narrowedAvailableTools = effectiveAvailableToolNames(
+      runLevelBaseToolNames,
+      narrowedAgentAllow,
+      narrowedAgentDeny,
+      effectiveReadOnly,
+    );
+    const narrowedToolResult = checkToolRequirements(
+      narrowedAvailableTools,
+      effectiveHarnessExpansion.requiredTools,
+      effectiveHarnessExpansion.preferredTools,
+    );
+    if (!narrowedToolResult.ok) {
+      throw new WorkflowError(
+        `Agent "${requestedLabel ?? "agent"}" effective tool set is missing required tool(s): ${
+          narrowedToolResult.missingRequired?.join(", ") ?? narrowedToolResult.reason ?? "unknown"
+        }; refusing to run without the required tool.`,
+        WorkflowErrorCode.HARNESS_NOT_WIRED,
+        { recoverable: false, agentLabel: requestedLabel },
+      );
+    }
+    if (narrowedToolResult.degraded) {
+      effectiveHarnessExpansion = {
+        ...effectiveHarnessExpansion,
+        degraded: true,
+        degradeReason: narrowedToolResult.reason,
+      };
+      log(`[warn] ${narrowedToolResult.reason}`);
+    }
+
     // Resolve the context-inheritance posture once: the harness expansion is the
     // lowest-precedence layer, agentType frontmatter is mid, agent() call options highest.
     // The result is passed to run() as explicit primitives (which win over any bare

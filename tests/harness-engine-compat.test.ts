@@ -206,6 +206,66 @@ test("loader warns + skips a descriptor whose engine.min is a non-string value",
   assert.match(result.findings.find((f) => f.level === "error")?.message ?? "", /engine\.min/);
 });
 
+// PR #108 finding 3: validate-harness must flag malformed requiredTools/preferredTools
+// (including an explicit null), not just malformed engine.min. A present non-array
+// would silently drop the requirement and bypass the clean-skip/degrade gate.
+test("validate-harness fails on malformed requiredTools and preferredTools (incl. null)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "validate-harness-tool-malformed-"));
+  const badReq = writeDescriptor(dir, "badreq.json", {
+    schemaVersion: 1,
+    id: "badreq",
+    harness_type: "pi",
+    requiredTools: "web_search",
+  });
+  const badPref = writeDescriptor(dir, "badpref.json", {
+    schemaVersion: 1,
+    id: "badpref",
+    harness_type: "pi",
+    preferredTools: ["read", 1],
+  });
+  const nullReq = writeDescriptor(dir, "nullreq.json", {
+    schemaVersion: 1,
+    id: "nullreq",
+    harness_type: "pi",
+    requiredTools: null,
+  });
+  const ok = writeDescriptor(dir, "ok.json", {
+    schemaVersion: 1,
+    id: "ok",
+    harness_type: "pi",
+    requiredTools: ["read", "bash"],
+  });
+
+  const reqResult = validateHarnessFile(badReq, { engineVersion: sem("0.1.7") });
+  assert.equal(reqResult.ok, false, "malformed requiredTools fails validate-harness");
+  assert.match(
+    reqResult.findings.find((f) => f.level === "error")?.message ?? "",
+    /requiredTools must be a non-empty string array/,
+  );
+
+  const prefResult = validateHarnessFile(badPref, { engineVersion: sem("0.1.7") });
+  assert.equal(prefResult.ok, false, "malformed preferredTools fails validate-harness");
+  assert.match(
+    prefResult.findings.find((f) => f.level === "error")?.message ?? "",
+    /preferredTools must be a non-empty string array/,
+  );
+
+  const nullResult = validateHarnessFile(nullReq, { engineVersion: sem("0.1.7") });
+  assert.equal(nullResult.ok, false, "null requiredTools fails validate-harness");
+  assert.match(
+    nullResult.findings.find((f) => f.level === "error")?.message ?? "",
+    /requiredTools must be a non-empty string array/,
+  );
+
+  // A well-formed non-empty string array still passes.
+  const okResult = validateHarnessFile(ok, { engineVersion: sem("0.1.7") });
+  assert.equal(okResult.ok, true, "well-formed requiredTools passes validate-harness");
+
+  // The CLI exit code is non-zero when any descriptor has malformed tool lists.
+  const run = runValidateHarness([badReq, badPref, nullReq, ok], { engineVersion: sem("0.1.7") });
+  assert.equal(run.exitCode, 1, "CLI exits non-zero when any descriptor has malformed tool lists");
+});
+
 test("validate-harness checks a linked workflow script's meta.engine.min floor", () => {
   const dir = mkdtempSync(join(tmpdir(), "validate-harness-meta-floor-"));
   const descriptor = writeDescriptor(dir, "ok.json", {

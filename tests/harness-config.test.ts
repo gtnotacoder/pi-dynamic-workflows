@@ -479,6 +479,29 @@ describe("parseHarnessConfigDescriptor: malformed tool lists", () => {
     assert.equal(config.preferredToolsMalformed, true);
   });
 
+  // PR #108 finding 2: an explicitly present non-array — including null — is
+  // malformed, mirroring worktreeRequiredMalformed's presence-with-wrong-type
+  // detection. Treating null as not-malformed would silently drop the requirement.
+  it("flags an explicit null requiredTools as malformed (presence-with-wrong-type)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "nullreq", harness_type: "pi", requiredTools: null }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.requiredTools, undefined);
+    assert.equal(config.requiredToolsMalformed, true, "null is an explicit non-array and must be malformed");
+  });
+
+  it("flags an explicit null preferredTools as malformed (presence-with-wrong-type)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "nullpref", harness_type: "pi", preferredTools: null }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.preferredTools, undefined);
+    assert.equal(config.preferredToolsMalformed, true);
+  });
+
   it("does NOT flag a well-formed non-empty string array", () => {
     const config = parseHarnessConfigDescriptor(
       JSON.stringify({ schemaVersion: 1, id: "ok", harness_type: "pi", requiredTools: ["read", "bash"] }),
@@ -555,6 +578,35 @@ describe("loadHarnessConfigRegistry: malformed tool lists clean-skip + warn", ()
       assert.equal(cfg?.skipped, true, "malformed preferredTools clean-skips the descriptor");
       assert.ok(
         warnings.some((w) => w.includes("preferredTools must be a non-empty string array")),
+        `warning emitted; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // PR #108 finding 2: an explicit null is presence-with-wrong-type and must
+  // clean-skip the descriptor, not be treated as an absent declaration.
+  it("skips a descriptor whose requiredTools is explicitly null and emits a warning", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-null-req-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "nullreq.json",
+        JSON.stringify({ schemaVersion: 1, id: "nullreq", harness_type: "pi", requiredTools: null }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("nullreq");
+      assert.ok(cfg, "descriptor is retained (skipped, not dropped)");
+      assert.equal(cfg?.skipped, true, "null requiredTools clean-skips the descriptor");
+      assert.ok(
+        warnings.some((w) => w.includes("requiredTools must be a non-empty string array")),
         `warning emitted; got: ${JSON.stringify(warnings)}`,
       );
     } finally {

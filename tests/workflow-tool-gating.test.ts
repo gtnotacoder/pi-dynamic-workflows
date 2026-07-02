@@ -293,3 +293,135 @@ return a`,
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── Finding 1: per-agent narrowing (agentType/per-call `tools`) that drops a required
+//    tool must fail that agent call, not pass silently. The run-level gate only
+//    applies the harness allow/deny policy to runLevelBaseToolNames, so a required
+//    tool later removed by an agentType or per-call `tools` allowlist would slip
+//    through unless re-checked at the narrowing seam. ──
+
+test("finding 1: a per-call tools allowlist that drops a required tool fails the agent call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-f1-narrow-"));
+  try {
+    // Harness requires `bash` (present in the default coding tool set, so the run-level
+    // gate passes). A per-call `tools: ['read']` allowlist narrows `bash` away.
+    const harnessDir = writeHarness(dir, "needs-bash.json", {
+      schemaVersion: 1,
+      id: "needs-bash",
+      harness_type: "pi",
+      requiredTools: ["bash"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-f1-narrow-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'f1narrow', description: 'per-call tools drops required tool' }
+const a = await agent('step', { label: 'step', tools: ['read'] })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-bash",
+          harnessConfigRegistry: registry,
+          cwd: dir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(calls.length, 0, "the agent must NOT run when per-call tools drops the required tool");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /missing required tool/);
+    assert.match((thrown as Error).message, /bash/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finding 1: an agentType tools allowlist that drops a required tool fails the agent call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-f1-agenttype-"));
+  try {
+    const harnessDir = writeHarness(dir, "needs-bash2.json", {
+      schemaVersion: 1,
+      id: "needs-bash2",
+      harness_type: "pi",
+      requiredTools: ["bash"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-f1-agenttype-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    // agentType narrows to read-only tools (no bash).
+    const agentRegistry = new Map([
+      [
+        "reader",
+        {
+          name: "reader",
+          description: "r",
+          tools: ["read", "grep"],
+          prompt: "be a reader",
+          source: "project" as const,
+        },
+      ],
+    ]);
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'f1at', description: 'agentType drops required tool' }
+const a = await agent('step', { label: 'step', agentType: 'reader' })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-bash2",
+          harnessConfigRegistry: registry,
+          agentRegistry,
+          cwd: dir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(calls.length, 0, "the agent must NOT run when the agentType drops the required tool");
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /bash/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finding 1: per-agent narrowing that still satisfies the required tool runs the agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-f1-narrow-ok-"));
+  try {
+    const harnessDir = writeHarness(dir, "needs-read2.json", {
+      schemaVersion: 1,
+      id: "needs-read2",
+      harness_type: "pi",
+      requiredTools: ["read"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-f1-narrow-ok-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    await runWorkflow(
+      `export const meta = { name: 'f1narrowok', description: 'per-call tools keeps required tool' }
+const a = await agent('step', { label: 'step', tools: ['read', 'grep'] })
+return a`,
+      {
+        agent: capturingRunner(calls),
+        harness_config: "needs-read2",
+        harnessConfigRegistry: registry,
+        cwd: dir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    assert.equal(calls.length, 1, "the agent runs when the narrowed set still contains the required tool");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

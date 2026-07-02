@@ -106,17 +106,22 @@ function stringArrayField(value: unknown): string[] | undefined {
  * (no declaration ⇒ nothing to validate). Used to surface a loader warning and
  * clean-skip instead of silently dropping the requirement (the bare `stringArrayField`
  * return of `undefined` would otherwise let the run proceed without the tool).
+ *
+ * Presence-with-wrong-type mirrors `worktreeRequiredMalformed` (`"field" in raw &&
+ * typeof raw.field !== "boolean"`): an explicitly present non-array — including
+ * `null` — is malformed. Treating `null` as not-malformed would let
+ * `requiredTools: null` silently drop the requirement (stringArrayField returns
+ * undefined) and bypass the clean-skip/degrade gate.
  */
 function isMalformedToolList(raw: Record<string, unknown>, key: string): boolean {
   if (!(key in raw)) return false;
   const value = raw[key];
-  if (value === undefined || value === null) return false;
-  if (Array.isArray(value)) {
-    // Empty array or an array with any non-string element is malformed.
-    return value.length === 0 || !value.every((item) => typeof item === "string");
-  }
-  // A bare string, number, boolean, or non-array object is malformed.
-  return true;
+  // Present but not an array (null, bare string, number, boolean, object, or
+  // explicit undefined) is malformed — mirrors worktreeRequiredMalformed's
+  // presence-with-wrong-type detection.
+  if (!Array.isArray(value)) return true;
+  // Empty array or an array with any non-string element is malformed.
+  return value.length === 0 || !value.every((item) => typeof item === "string");
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
