@@ -93,6 +93,19 @@ export function validateHarnessFile(
     findings.push({ level: "error", message: "Missing required field 'id'" });
   }
 
+  // Malformed tool-requirement lists: a present non-array (including null), an
+  // empty array, or a mixed-type array would silently drop the requirement
+  // (stringArrayField returns undefined) and let the run proceed WITHOUT the tool,
+  // bypassing the clean-skip/degrade gate. Surface them here so validate-harness
+  // catches the misdeclaration in CI instead of passing (mirrors the loader's
+  // warn-and-clean-skip in readConfigsFromDir).
+  if (config.requiredToolsMalformed) {
+    findings.push({ level: "error", message: "requiredTools must be a non-empty string array" });
+  }
+  if (config.preferredToolsMalformed) {
+    findings.push({ level: "error", message: "preferredTools must be a non-empty string array" });
+  }
+
   // engine.min floor check.
   if (config.engineMinMalformed) {
     findings.push({ level: "error", message: "engine.min must be a semver string" });

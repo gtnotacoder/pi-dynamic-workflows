@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { loadHarnessConfigRegistry } from "../src/harness-config.js";
 import { runWorkflow } from "../src/workflow.js";
 
@@ -87,7 +88,7 @@ return a`;
   assert.equal(result.result, "ran:do");
 });
 
-test("a per-call harness_config that the loader skipped is rejected (keeps run-level)", async () => {
+test("a per-call harness_config that the loader skipped clean-skips (PR #108 round-5 finding 3)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "engine-floor-percall-"));
   writeHarness(dir, "too-new", { engine: { min: "99.0.0" }, tools: ["read"] });
   writeHarness(dir, "backend-ok", { tools: ["bash", "read"] });
@@ -102,23 +103,33 @@ test("a per-call harness_config that the loader skipped is rejected (keeps run-l
   const script = `export const meta = { name: 'percall_skipped', description: 'per-call skipped' }
 const a = await agent('step', { label: 'step', harness_config: 'too-new' })
 return a`;
-  // Run-level backend-ok (bash,read); per-call too-new is skipped → rejected → keeps run-level.
-  await runWorkflow(script, {
-    agent: {
-      async run(_p: string, o: Record<string, unknown>) {
-        calls.push({ label: o.label as string | undefined, toolNames: o.toolNames as readonly string[] | undefined });
-        return "ran";
+  // PR #108 round-5 finding 3: an explicit per-call selection of a SKIPPED descriptor must
+  // clean-skip the agent with the skip reason instead of silently falling back to the
+  // run-level harness (which may have no requirement, defeating the fail-closed intent of
+  // the loader skip). Previously the per-call skipped descriptor fell back to run-level and
+  // the agent ran under backend-ok; now it throws a non-recoverable HARNESS_NOT_WIRED.
+  let thrown: unknown;
+  try {
+    await runWorkflow(script, {
+      agent: {
+        async run(_p: string, o: Record<string, unknown>) {
+          calls.push({ label: o.label as string | undefined, toolNames: o.toolNames as readonly string[] | undefined });
+          return "ran";
+        },
       },
-    },
-    harness_config: "backend-ok",
-    harnessConfigRegistry: registry,
-    cwd: dir,
-    persistLogs: false,
-  });
-  const step = calls[0];
-  assert.ok(step, "agent ran (the per-call skipped config was rejected, not a whole-run clean-skip)");
-  assert.ok(step.toolNames?.includes("bash"), "per-call skipped config keeps the run-level backend tool");
-  assert.ok(!step.toolNames?.includes("read") || step.toolNames?.includes("bash"), "run-level tool policy retained");
+      harness_config: "backend-ok",
+      harnessConfigRegistry: registry,
+      cwd: dir,
+      persistLogs: false,
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.equal(calls.length, 0, "the agent must NOT run when the per-call descriptor was skipped by the loader");
+  assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+  assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+  assert.match((thrown as Error).message, /skipped by the loader/);
+  assert.match((thrown as Error).message, /engine\.min/, "skip reason names the engine.min floor");
 });
 
 test("a workflow script with a malformed (non-string) meta.engine.min clean-skips on launch", async () => {

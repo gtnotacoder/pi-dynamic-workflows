@@ -435,3 +435,237 @@ describe("expandHarnessConfig", () => {
     assert.strictEqual(result.frontendPathTriggers, undefined);
   });
 });
+
+// ── Malformed requiredTools / preferredTools (PR #108 finding 3) ──────────────
+
+describe("parseHarnessConfigDescriptor: malformed tool lists", () => {
+  it("flags a bare-string requiredTools as malformed and drops the requirement", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "bare", harness_type: "pi", requiredTools: "web_search" }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.requiredTools, undefined, "bare string is not a valid tool list");
+    assert.equal(config.requiredToolsMalformed, true, "malformed flag is set");
+  });
+
+  it("flags a mixed-type array requiredTools as malformed", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "mixed", harness_type: "pi", requiredTools: ["read", 42] }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.requiredTools, undefined, "mixed array is not a valid tool list");
+    assert.equal(config.requiredToolsMalformed, true);
+  });
+
+  // PR #108 round-4 finding 3: an explicitly EMPTY array is a benign serialized
+  // default meaning "no requirement" — it must NOT be flagged malformed (the previous
+  // behavior marked it malformed and the loader clean-skipped the descriptor, making
+  // generated descriptors with `requiredTools: []` / `preferredTools: []` unusable).
+  it("does NOT flag an empty requiredTools array as malformed (empty = no requirement)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "empty", harness_type: "pi", requiredTools: [] }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(
+      config.requiredTools,
+      undefined,
+      "empty array yields no requirement (stringArrayField returns undefined)",
+    );
+    assert.equal(config.requiredToolsMalformed, false, "an empty array is NOT malformed");
+  });
+
+  it("does NOT flag an empty preferredTools array as malformed (empty = no preference)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "emptypref", harness_type: "pi", preferredTools: [] }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.preferredTools, undefined);
+    assert.equal(config.preferredToolsMalformed, false, "an empty preferred array is NOT malformed");
+  });
+
+  it("flags a bare-string preferredTools as malformed", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "pref", harness_type: "pi", preferredTools: "web_search" }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.preferredTools, undefined);
+    assert.equal(config.preferredToolsMalformed, true);
+  });
+
+  // PR #108 finding 2: an explicitly present non-array — including null — is
+  // malformed, mirroring worktreeRequiredMalformed's presence-with-wrong-type
+  // detection. Treating null as not-malformed would silently drop the requirement.
+  it("flags an explicit null requiredTools as malformed (presence-with-wrong-type)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "nullreq", harness_type: "pi", requiredTools: null }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.requiredTools, undefined);
+    assert.equal(config.requiredToolsMalformed, true, "null is an explicit non-array and must be malformed");
+  });
+
+  it("flags an explicit null preferredTools as malformed (presence-with-wrong-type)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "nullpref", harness_type: "pi", preferredTools: null }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.preferredTools, undefined);
+    assert.equal(config.preferredToolsMalformed, true);
+  });
+
+  it("does NOT flag a well-formed non-empty string array", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "ok", harness_type: "pi", requiredTools: ["read", "bash"] }),
+      "project",
+    );
+    assert.ok(config);
+    assert.deepEqual(config.requiredTools, ["read", "bash"]);
+    assert.equal(config.requiredToolsMalformed, false);
+  });
+
+  it("does NOT flag an absent field (no declaration ⇒ nothing to validate)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "absent", harness_type: "pi" }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.requiredTools, undefined);
+    assert.equal(config.requiredToolsMalformed, false);
+    assert.equal(config.preferredToolsMalformed, false);
+  });
+});
+
+describe("loadHarnessConfigRegistry: malformed tool lists clean-skip + warn", () => {
+  function writeJson(dir: string, file: string, content: string) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, file), content, "utf-8");
+  }
+
+  it("skips a descriptor with malformed requiredTools and emits a warning", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-malformed-req-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "bad.json",
+        JSON.stringify({ schemaVersion: 1, id: "bad", harness_type: "pi", requiredTools: "web_search" }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("bad");
+      assert.ok(cfg, "descriptor is retained (skipped, not dropped)");
+      assert.equal(cfg?.skipped, true, "malformed requiredTools clean-skips the descriptor");
+      assert.equal(cfg?.wired, false);
+      assert.ok(
+        warnings.some((w) => w.includes("requiredTools must be a string array")),
+        `warning emitted; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a descriptor with malformed preferredTools and emits a warning", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-malformed-pref-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "badpref.json",
+        JSON.stringify({ schemaVersion: 1, id: "badpref", harness_type: "pi", preferredTools: ["read", 1] }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("badpref");
+      assert.ok(cfg);
+      assert.equal(cfg?.skipped, true, "malformed preferredTools clean-skips the descriptor");
+      assert.ok(
+        warnings.some((w) => w.includes("preferredTools must be a string array")),
+        `warning emitted; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // PR #108 finding 2: an explicit null is presence-with-wrong-type and must
+  // clean-skip the descriptor, not be treated as an absent declaration.
+  it("skips a descriptor whose requiredTools is explicitly null and emits a warning", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-null-req-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "nullreq.json",
+        JSON.stringify({ schemaVersion: 1, id: "nullreq", harness_type: "pi", requiredTools: null }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("nullreq");
+      assert.ok(cfg, "descriptor is retained (skipped, not dropped)");
+      assert.equal(cfg?.skipped, true, "null requiredTools clean-skips the descriptor");
+      assert.ok(
+        warnings.some((w) => w.includes("requiredTools must be a string array")),
+        `warning emitted; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // PR #108 round-4 finding 3: an explicitly EMPTY requiredTools/preferredTools array
+  // is a benign "no requirement" default — the descriptor must NOT be clean-skipped and
+  // must remain wired/usable.
+  it("does NOT skip a descriptor with empty requiredTools/preferredTools arrays (empty = no requirement)", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-empty-req-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "emptyok.json",
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "emptyok",
+          harness_type: "pi",
+          requiredTools: [],
+          preferredTools: [],
+        }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("emptyok");
+      assert.ok(cfg, "descriptor is retained");
+      assert.notEqual(cfg?.skipped, true, "an empty tool list must NOT clean-skip the descriptor");
+      assert.equal(cfg?.wired, true, "an empty tool list keeps the descriptor wired and usable");
+      assert.ok(
+        !warnings.some((w) => /requiredTools must be a string array/.test(w)),
+        `no requiredTools malformed warning; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

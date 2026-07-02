@@ -5,11 +5,33 @@
  * the caller to inspect. Falls back to a logged no-op when isolation isn't possible.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+
+/**
+ * Synchronous precondition probe for worktree isolation: returns true when `cwd` is
+ * inside a git repository (so `createWorktree` would ATTEMPT a real worktree add and
+ * return `isolated: true` on success), false when it is not a git repo (the
+ * guaranteed-fallback path, `isolated: false`). Used to fold the isolation outcome's
+ * precondition into the resume identity (see workflow.ts) so a cached result produced
+ * under the fallback base (run-level `options.tools` retained) cannot replay after the
+ * repo becomes a git repo and isolation actually drops those tools. Best-effort: any
+ * git error returns false, matching createWorktree's fallback branch.
+ */
+export function isGitRepoForWorktree(cwd: string): boolean {
+  try {
+    execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      stdio: ["ignore", "ignore", "ignore"],
+      shell: false,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface Worktree {
   /** True when a real worktree was created; false means "ran in the shared tree". */
