@@ -22,6 +22,16 @@ import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { HARNESS_RUNTIME_INFO, HARNESS_TYPES, loadHarnessConfigRegistry } from "./harness-config.js";
 import type { HarnessSelection } from "./harness-selector.js";
 import {
+  conductorToHerdrState,
+  createDefaultHerdrInvoker,
+  createPaneHandle,
+  type HerdrInvoker,
+  PaneSpawnCoordinator,
+  type RunPaneHandle,
+  resolveNesting,
+  type SpawnLease,
+} from "./pane-spawn.js";
+import {
   assertValidRunId,
   createRunPersistence,
   generateRunId,
@@ -107,6 +117,10 @@ export interface ManagedRun {
   /** Optional conductor-level semantic status, layered on top of the engine
    *  `status` above. Older runs may omit this. */
   semanticStatus?: ConductorRunStatus;
+  /** Optional herdr-pane handle (only when paneSpawn isolation is active). */
+  paneHandle?: RunPaneHandle;
+  /** Optional pane-spawn coordinator lease (released in executeRun's finally). */
+  _spawnLease?: SpawnLease;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -184,6 +198,13 @@ export interface RunIsolationOptions {
   worktree?: boolean;
   /** Base cwd/repo to add the worktree to (defaults to the manager's cwd). */
   base?: string;
+  /**
+   * Enable herdr pane-spawn: spawn a real pi process in a herdr-managed pane,
+   * nested under the caller's workspace/tab/split. The herdr-managed worktree
+   * replaces src/worktree.ts — single source of truth, no double bookkeeping.
+   * Requires `herdrPaneSpawn` setting to be enabled on the manager.
+   */
+  paneSpawn?: boolean;
 }
 
 export interface WorkflowManagerOptions {
@@ -217,6 +238,8 @@ export interface WorkflowManagerOptions {
   defaultAgentContextReserveTokens?: number | null;
   /** Named context-mode registry (built-ins + project-defined) for tool-driven runs. */
   contextModeRegistry?: ContextModeRegistry;
+  /** Injectable HerdrInvoker for pane-spawning (tests inject a mock). */
+  herdrInvoker?: HerdrInvoker;
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -246,6 +269,12 @@ export class WorkflowManager extends EventEmitter {
   private contextModeRegistry?: ContextModeRegistry;
   /** Cached setting: whether subagent transcripts are persisted to disk. */
   private persistSubagentTranscripts: boolean;
+  /** Injectable herdr invoker for pane-spawning (real or mock). */
+  private herdrInvoker: HerdrInvoker;
+  /** Pane-spawn concurrency coordinator (enforces herdrMaxPanes cap). */
+  private paneCoordinator: PaneSpawnCoordinator;
+  /** Cached herdrPaneSpawn setting ('off' | 'auto'). */
+  private herdrPaneSpawnSetting: "off" | "auto";
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -264,11 +293,27 @@ export class WorkflowManager extends EventEmitter {
     this.defaultAgentContextReserveTokens =
       normalizePositiveIntegerOption(options.defaultAgentContextReserveTokens) ?? null;
     this.contextModeRegistry = options.contextModeRegistry;
+    this.herdrInvoker = options.herdrInvoker ?? createDefaultHerdrInvoker();
     this.persistence = createRunPersistence(this.cwd);
-    // Read the opt-out once (run start is rare). Default true matches Claude Code.
+    // Read settings once (run start is rare). Default true matches Claude Code.
+    this.herdrPaneSpawnSetting = "off";
+    // Pre-initialize with a temporary instance — replaced below once settings are loaded.
+    this.paneCoordinator = new PaneSpawnCoordinator(4);
     try {
       const settings: WorkflowSettings = loadWorkflowSettings({ cwd: this.cwd });
       this.persistSubagentTranscripts = settings.persistSubagentTranscripts ?? PERSIST_SUBAGENT_TRANSCRIPTS_DEFAULT;
+      this.herdrPaneSpawnSetting = settings.herdrPaneSpawn ?? "off";
+      {
+        let maxPanes = 4;
+        if (
+          typeof settings.herdrMaxPanes === "number" &&
+          Number.isFinite(settings.herdrMaxPanes) &&
+          settings.herdrMaxPanes > 0
+        ) {
+          maxPanes = Math.min(64, Math.floor(settings.herdrMaxPanes));
+        }
+        this.paneCoordinator = PaneSpawnCoordinator.get(this.cwd, maxPanes);
+      }
       if (options.defaultAgentMaxContextTokens === undefined) {
         this.defaultAgentMaxContextTokens = settings.defaultAgentMaxContextTokens ?? null;
       }
@@ -725,6 +770,83 @@ export class WorkflowManager extends EventEmitter {
         this.emit("error", { runId: managed.runId, error: failError });
         throw failError;
       }
+    } else if (isolation?.paneSpawn && this.herdrPaneSpawnSetting !== "off") {
+      // ── Pane-spawn path: herdr-managed worktree replaces src/worktree.ts ──
+      // Acquire the concurrency lease (fail closed when the cap is exceeded).
+      const spawnSlot = this.paneCoordinator.acquire(managed.runId);
+      if (!spawnSlot) {
+        const capError = new WorkflowError(
+          `herdr pane concurrency cap reached (${this.paneCoordinator.activeCount}/${this.paneCoordinator.maxPanes}); raise herdrMaxPanes or wait`,
+          WorkflowErrorCode.WORKFLOW_ABORTED,
+          { recoverable: false },
+        );
+        managed.status = "failed";
+        managed.error = capError;
+        this.persistRun(managed);
+        this.releaseRunLease(managed);
+        this.emit("error", { runId: managed.runId, error: capError });
+        throw capError;
+      }
+      managed._spawnLease = spawnSlot;
+
+      // herdr worktree create — single source of truth, no double bookkeeping.
+      const herdrWt = await this.herdrInvoker.worktreeCreate({
+        base: isolation.base ?? this.cwd,
+        branch: `wf/${managed.runId}`,
+      });
+      if (!herdrWt.cwd) {
+        const wtError = new WorkflowError(
+          "herdr worktree create returned empty path — pane spawn aborted",
+          WorkflowErrorCode.WORKFLOW_ABORTED,
+          { recoverable: false },
+        );
+        managed.status = "failed";
+        managed.error = wtError;
+        spawnSlot.release();
+        this.persistRun(managed);
+        this.releaseRunLease(managed);
+        this.emit("error", { runId: managed.runId, error: wtError });
+        throw wtError;
+      }
+
+      // Persist the herdr-managed worktree onto managed.worktree.
+      managed.worktree = { cwd: herdrWt.cwd, branch: herdrWt.branch, repoRoot: isolation.base ?? this.cwd };
+      this.persistRun(managed);
+
+      // Resolve nesting so the spawned pane is nested under the caller pane.
+      const nesting = resolveNesting(process.env);
+
+      // agentStart — the pane nests under HERDR_WORKSPACE_ID/HERDR_TAB_ID.
+      const runArgs = ["--mode", "focused"];
+      const agentResult = await this.herdrInvoker.agentStart(
+        {
+          name: `wf-${managed.runId}`,
+          cwd: herdrWt.cwd,
+          ...nesting,
+        },
+        ["pi", ...runArgs],
+      );
+
+      // Store the pane handle for lifecycle management.
+      if (agentResult.paneId) {
+        managed.paneHandle = createPaneHandle(this.herdrInvoker, agentResult.paneId);
+      }
+
+      // Set runCwd (same subdir-adjustment logic as normal worktree path).
+      runCwd = herdrWt.cwd;
+      if (isolation.base) {
+        const sub = relative(isolation.base, this.cwd);
+        if (sub && !sub.startsWith("..") && !isAbsolute(sub)) {
+          runCwd = join(herdrWt.cwd, sub);
+        }
+      }
+      if (tools) {
+        this.emit("log", {
+          runId: managed.runId,
+          message:
+            "[isolation] explicit ExecOptions.tools dropped (primary-cwd bound); the agent builds worktree-cwd tools. Use a cwd-bound factory for custom policy (#93)",
+        });
+      }
     }
     if (runWorktree?.isolated) {
       runCwd = runWorktree.cwd;
@@ -750,18 +872,19 @@ export class WorkflowManager extends EventEmitter {
     }
     // Stash the worktree ROOT (not the subdir-adjusted runCwd) so resume re-derives
     // the subdir cleanly instead of appending it twice.
-    managed.worktree = runWorktree?.isolated
-      ? { cwd: runWorktree.cwd, branch: runWorktree.branch, repoRoot: runWorktree.repoRoot }
-      : undefined;
+    // (Pane-spawn path already set managed.worktree via herdr — don't overwrite.)
+    if (!managed.worktree && runWorktree?.isolated) {
+      managed.worktree = { cwd: runWorktree.cwd, branch: runWorktree.branch, repoRoot: runWorktree.repoRoot };
+    }
     // Persist the worktree immediately so a crash between `git worktree add` and the
     // first journal callback still leaves the isolation target on disk for resume.
     if (managed.worktree) this.persistRun(managed);
     try {
       const result = await runWorkflow(script, {
         cwd: runCwd,
-        agentRegistry: runWorktree?.isolated ? loadAgentRegistry(this.cwd) : undefined,
-        harnessConfigRegistry: runWorktree?.isolated ? harnessRegistry : undefined,
-        tools: runWorktree?.isolated ? undefined : tools,
+        agentRegistry: managed.worktree ? loadAgentRegistry(this.cwd) : undefined,
+        harnessConfigRegistry: managed.worktree ? harnessRegistry : undefined,
+        tools: managed.worktree ? undefined : tools,
         args,
         runId: managed.runId,
         agent: this.agent,
@@ -933,6 +1056,11 @@ export class WorkflowManager extends EventEmitter {
       // repair/finalize handoff and must keep their worktree. Explicit deleteRun()
       // cleans up the rest; finalization removes a delivered worktree.
       if (runWorktree?.isolated && managed.status === "aborted") await removeWorktree(runWorktree);
+      // Release the pane-spawn coordinator lease.
+      if (managed._spawnLease) {
+        managed._spawnLease.release();
+        managed._spawnLease = undefined;
+      }
     }
   }
 
@@ -1121,6 +1249,9 @@ export class WorkflowManager extends EventEmitter {
    * Set the conductor-level semantic status for a run.
    * The status is persisted (so it survives resume) and returned by
    * listRuns() alongside the existing engine `status`.
+   * When a pane handle is attached (pane-spawn isolation), this also pushes
+   * the conductorToHerdrState mapping into the herdr cell and auto-closes
+   * the pane on `completed`.
    */
   setSemanticStatus(runId: string, semanticStatus: ConductorRunStatus): void {
     const managed = this.runs.get(runId);
@@ -1128,6 +1259,14 @@ export class WorkflowManager extends EventEmitter {
       managed.semanticStatus = semanticStatus;
       this.persistRun(managed);
       this.emit("semanticStatus", { runId, semanticStatus });
+      // Drive the herdr pane cell (docs §4 fan-in point).
+      if (managed.paneHandle) {
+        const mapping = conductorToHerdrState(semanticStatus);
+        managed.paneHandle.updateStatus(semanticStatus);
+        if (mapping.closePane) {
+          managed.paneHandle.close();
+        }
+      }
     }
   }
 

@@ -49,6 +49,19 @@ export interface WorkflowSettings {
    */
   herdrStatus?: "auto" | "off";
   /**
+   * herdr pane-spawn: "off" (default — do not spawn a real pi per run) or
+   * "auto" (enable pane-spawn for isolated runs only when inside herdr,
+   * i.e. HERDR_PANE_ID present). Opt-in because a real pi per run multiplies
+   * VM memory. See docs/herdr-integration.md §4.
+   */
+  herdrPaneSpawn?: "off" | "auto";
+  /**
+   * Maximum concurrent herdr-pane-spawned runs (VM memory cap).
+   * Default 4. Must be a positive integer; invalid values fall back to default.
+   * See docs/herdr-integration.md §6.
+   */
+  herdrMaxPanes?: number;
+  /**
    * Project-defined context modes, merged OVER the built-ins (focused|isolated|
    * scoped|legacy) for `--mode <name>` and agentType frontmatter. Each name maps
    * to the full inheritance primitive set. Built-in names are reserved and
@@ -191,6 +204,13 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   }
   if (raw.herdrStatus === "auto" || raw.herdrStatus === "off") {
     settings.herdrStatus = raw.herdrStatus;
+  }
+  if (raw.herdrPaneSpawn === "off" || raw.herdrPaneSpawn === "auto") {
+    settings.herdrPaneSpawn = raw.herdrPaneSpawn;
+  }
+  {
+    const maxPanes = normalizeInteger(raw.herdrMaxPanes, 1, 64);
+    if (maxPanes !== undefined) settings.herdrMaxPanes = maxPanes;
   }
   const contextModes = normalizeContextModes(raw.contextModes);
   if (contextModes) settings.contextModes = contextModes;
