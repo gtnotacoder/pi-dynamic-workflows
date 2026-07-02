@@ -14,6 +14,7 @@ import {
   type AgentDefinition,
   type AgentRegistry,
   agentDefinitionKey,
+  applyToolPolicy,
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
@@ -473,6 +474,40 @@ function unionToolDenylists(lists: ReadonlyArray<readonly string[] | undefined>)
   return [...new Set(defined.flatMap((list) => [...list]))];
 }
 
+/**
+ * Canonical names of the default coding tools `createCodingTools(cwd)` returns
+ * (read, bash, edit, write) plus the read-only set (grep, find, ls) the agent
+ * also exposes. When `runWorkflow` is called without an explicit `options.tools`,
+ * the WorkflowAgent builds exactly these, so required/preferred tool-requirement
+ * checks must run against this set (intersected with the harness tool policy)
+ * rather than skipping enforcement (the old `undefined` availableTools path).
+ */
+const DEFAULT_CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+/**
+ * Compute the effective set of tool names an agent will actually receive, by
+ * applying the harness/agentType tool policy to the base tool set. Used to
+ * enforce `requiredTools`/`preferredTools` against what the agent gets rather
+ * than against a possibly-undefined available list.
+ *
+ * - `baseToolNames`: the names of the tools the agent starts from. Defaults to
+ *   the canonical coding tools when `options.tools` is undefined.
+ * - `allow`/`deny`: the effective harness/agentType allowlist/denylist.
+ * - `readOnly`: the effective read-only fence (strips write tools last).
+ *
+ * Returns the surviving tool names. An explicit empty allowlist yields `[]`
+ * (deny-all), matching `applyToolPolicy` semantics.
+ */
+function effectiveAvailableToolNames(
+  baseToolNames: readonly string[],
+  allow: string[] | undefined,
+  deny: string[] | undefined,
+  readOnly: boolean | undefined,
+): string[] {
+  const base = baseToolNames.map((name) => ({ name }));
+  return applyToolPolicy(base, allow, deny, { readOnly }).map((tool) => tool.name);
+}
+
 export async function runWorkflow<T = unknown>(
   script: string,
   options: WorkflowRunOptions = {},
@@ -745,9 +780,23 @@ export async function runWorkflow<T = unknown>(
     logger.log(text);
   };
 
-  const availableTools = options.tools?.map((t) => t.name);
+  // Tool-requirement enforcement: check requiredTools/preferredTools against the tools
+  // the agent will ACTUALLY receive, not a possibly-undefined available list. When
+  // `options.tools` is undefined (the default path — the WorkflowAgent builds its own
+  // coding tools), the effective set is the canonical coding tools narrowed by the
+  // harness tool policy (allow/deny/readOnly). This closes the gap where a required
+  // tool (e.g. web_search) was declared but never provided, yet the check passed
+  // because `availableTools` was `undefined` (checkToolRequirements treats undefined as
+  // "all tools available"). An explicit `options.tools` overrides the base set.
+  const runLevelBaseToolNames = options.tools?.map((tool) => tool.name) ?? [...DEFAULT_CODING_TOOL_NAMES];
+  const runLevelAvailableTools = effectiveAvailableToolNames(
+    runLevelBaseToolNames,
+    harnessExpansion.tools,
+    harnessExpansion.disallowedTools,
+    options.readOnly,
+  );
   const toolResult = checkToolRequirements(
-    availableTools,
+    runLevelAvailableTools,
     harnessExpansion.requiredTools,
     harnessExpansion.preferredTools,
   );
@@ -1111,6 +1160,47 @@ export async function runWorkflow<T = unknown>(
       }
     }
 
+    // Per-call tool-requirement re-check (PR #108 finding 2): a per-call harness_config
+    // override re-resolves the expansion (and its requiredTools/preferredTools) but the
+    // run-level check above only validated the RUN-level config. When the per-call config
+    // requires a tool the run-level config lacks, the tool would be silently absent from
+    // the agent's effective tool set instead of triggering a clean-skip. Re-run
+    // checkToolRequirements against the per-call effective tool set. On a required-miss,
+    // throw a non-recoverable error (clean failure: the step cannot run under this config
+    // without the tool); on a preferred-miss, log a degradation warning and mark the
+    // expansion degraded so the missing-tool state folds into the resume hash (finding 4).
+    const perCallAvailableTools = effectiveAvailableToolNames(
+      runLevelBaseToolNames,
+      effectiveHarnessExpansion.tools,
+      effectiveHarnessExpansion.disallowedTools,
+      effectiveReadOnly,
+    );
+    const perCallToolResult = checkToolRequirements(
+      perCallAvailableTools,
+      effectiveHarnessExpansion.requiredTools,
+      effectiveHarnessExpansion.preferredTools,
+    );
+    if (!perCallToolResult.ok) {
+      throw new WorkflowError(
+        `Per-call harness (config=${effectiveHarnessExpansion.harness_config}) is missing required tool(s): ${
+          perCallToolResult.missingRequired?.join(", ") ?? perCallToolResult.reason ?? "unknown"
+        }; refusing to run without the required tool.`,
+        WorkflowErrorCode.HARNESS_NOT_WIRED,
+        { recoverable: false, agentLabel: requestedLabel },
+      );
+    }
+    if (perCallToolResult.degraded) {
+      // Mark the effective expansion degraded so downstream consumers (telemetry,
+      // /workflows) and the resume hash see the missing-preferred-tool state. Do NOT
+      // mutate the shared run-level harnessExpansion.
+      effectiveHarnessExpansion = {
+        ...effectiveHarnessExpansion,
+        degraded: true,
+        degradeReason: perCallToolResult.reason,
+      };
+      log(`[warn] ${perCallToolResult.reason}`);
+    }
+
     // Resolve the context-inheritance posture once: the harness expansion is the
     // lowest-precedence layer, agentType frontmatter is mid, agent() call options highest.
     // The result is passed to run() as explicit primitives (which win over any bare
@@ -1254,6 +1344,13 @@ export async function runWorkflow<T = unknown>(
               disallowedTools: effectiveHarnessExpansion.disallowedTools ?? null,
             },
             ctxReadGuardrail: effectiveHarnessCtxReadGuardrail ?? null,
+            // Fold preferred-tool degradation state into the resume hash (PR #108 finding 4):
+            // a cached result produced with a preferred tool available must NOT replay
+            // after that tool disappears (the degradation warning would be stale). The
+            // missing-tool state is part of the call identity, so a change in degradation
+            // busts the cache and forces a live re-run.
+            degraded: effectiveHarnessExpansion.degraded === true,
+            degradeReason: effectiveHarnessExpansion.degradeReason ?? null,
           });
     const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(

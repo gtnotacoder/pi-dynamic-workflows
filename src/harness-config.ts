@@ -47,6 +47,10 @@ export interface HarnessConfig {
   requiredTools?: string[];
   /** Optional preferred tools for this harness. If unavailable, we degrade gracefully with a warning. */
   preferredTools?: string[];
+  /** `requiredTools` was present but malformed (bare string, mixed array, empty array, non-array); loader warns and clean-skips. */
+  requiredToolsMalformed?: boolean;
+  /** `preferredTools` was present but malformed; loader warns and clean-skips (a preferred list must be a string array). */
+  preferredToolsMalformed?: boolean;
   /** Loader skipped this descriptor (e.g. engine.min above the running engine); kept in the registry so an explicit `--harness-config <id>` can clean-skip with the reason instead of silently falling back to pi. */
   skipped?: boolean;
   skipReason?: string;
@@ -93,6 +97,26 @@ function stringArrayField(value: unknown): string[] | undefined {
     return value;
   }
   return undefined;
+}
+
+/**
+ * Whether a `requiredTools`/`preferredTools` declaration is present but malformed
+ * (a bare string, a mixed-type array, an empty array, or a non-array object).
+ * A well-formed non-empty string array returns false; an absent field returns false
+ * (no declaration ⇒ nothing to validate). Used to surface a loader warning and
+ * clean-skip instead of silently dropping the requirement (the bare `stringArrayField`
+ * return of `undefined` would otherwise let the run proceed without the tool).
+ */
+function isMalformedToolList(raw: Record<string, unknown>, key: string): boolean {
+  if (!(key in raw)) return false;
+  const value = raw[key];
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) {
+    // Empty array or an array with any non-string element is malformed.
+    return value.length === 0 || !value.every((item) => typeof item === "string");
+  }
+  // A bare string, number, boolean, or non-array object is malformed.
+  return true;
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -174,6 +198,8 @@ export function parseHarnessConfigDescriptor(
   const rawEngineMin = isRecord(raw.engine) ? raw.engine.min : undefined;
   const engineMin = typeof rawEngineMin === "string" && rawEngineMin.trim() ? rawEngineMin.trim() : undefined;
   const engineMinMalformed = isRecord(raw.engine) && "min" in raw.engine && typeof rawEngineMin !== "string";
+  const requiredToolsMalformed = isMalformedToolList(raw, "requiredTools");
+  const preferredToolsMalformed = isMalformedToolList(raw, "preferredTools");
 
   return {
     schemaVersion: raw.schemaVersion,
@@ -186,6 +212,8 @@ export function parseHarnessConfigDescriptor(
     engineMinMalformed,
     requiredTools: stringArrayField(raw.requiredTools),
     preferredTools: stringArrayField(raw.preferredTools),
+    requiredToolsMalformed,
+    preferredToolsMalformed,
     displayName: stringField(raw.displayName) ?? stringField(raw.name),
     description: stringField(raw.description),
     trigger: triggerSummary(raw),
@@ -252,6 +280,33 @@ function readConfigsFromDir(
       }
       if (config.worktreeRequiredMalformed) {
         onWarning?.(`Harness_config descriptor ${path}: worktreeRequired must be a boolean (ignoring).`);
+      }
+      // Malformed requiredTools/preferredTools: a bare string, mixed array, empty array, or
+      // non-array would silently drop the requirement (stringArrayField returns undefined),
+      // letting the run proceed WITHOUT the tool and skipping the clean-skip/degrade gate.
+      // Fail closed: warn and clean-skip the descriptor so the misdeclaration is surfaced
+      // instead of silently running a harness whose tool requirements were dropped.
+      if (config.requiredToolsMalformed) {
+        onWarning?.(`Skipping harness_config descriptor ${path}: requiredTools must be a non-empty string array.`);
+        configs.push({
+          ...config,
+          path,
+          skipped: true,
+          skipReason: "requiredTools must be a non-empty string array",
+          wired: false,
+        });
+        continue;
+      }
+      if (config.preferredToolsMalformed) {
+        onWarning?.(`Skipping harness_config descriptor ${path}: preferredTools must be a non-empty string array.`);
+        configs.push({
+          ...config,
+          path,
+          skipped: true,
+          skipReason: "preferredTools must be a non-empty string array",
+          wired: false,
+        });
+        continue;
       }
       if (config.engineMin) {
         if (!engineVersion) {
