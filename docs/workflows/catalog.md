@@ -44,6 +44,10 @@ over the prototype default when a saved workflow exposes them.
 | Canonical | Legacy aliases | Kind | Source | Status | Notes |
 |---|---|---|---|---|---|
 | `/issue-delivery` | `/fugu` | built-in command | `src/issue-delivery.ts` | active | DAG issue-to-draft-PR workflow. `/fugu` remains a deprecated alias. Supports the ad-hoc `--prototype` lane. |
+| `/deep-research` | — | built-in command | `src/builtin-commands.ts` | active | Multi-agent web research with cross-checked sources. Workflow script in `src/deep-research.ts`. |
+| `/adversarial-review` | — | built-in command | `src/builtin-commands.ts` | active | Investigate a task, then cross-check each finding with skeptical reviewers. Workflow script in `src/adversarial-review.ts`. |
+| `/code-review` | — | built-in command | `src/builtin-commands.ts` | active | Multi-angle code review with independent verification and synthesis. Workflow script in `src/code-review.ts`. |
+| `/workflow-telemetry-report` | — | built-in command | `src/workflow-telemetry-command.ts` | active | Summarize workflow cache, cost, context, trace, and compaction telemetry. Report engine in `src/workflow-telemetry-report.ts`. |
 | `/issue_delivery` | — | saved workflow | `~/.pi/workflows/saved/issue_delivery.json` | active | Saved implementation engine (Scout→Thinker→Worker→LocalChecks→Verifier→Telemetry) invoked inline by `/closed_loop_issue_delivery` via `workflow('issue_delivery')`. Promoted from `issue-delivery-lc`, which remains installed as a local variant. |
 | `/closed_loop_issue_delivery` | `/fugu_closed_loop` | saved workflow | `~/.pi/workflows/saved/closed_loop_issue_delivery.json` | active | Issue/plan-driven closed-loop delivery. Implementation delegates to the saved `issue_delivery` engine (no dependence on the deprecated `/fugu` alias). Accepts `prototype=true` only for explicit harness smoke runs; legacy `/fugu_closed_loop` remains installed. |
 | `/surgical_pr_repair` | `/fugu_repair` | saved workflow | `~/.pi/workflows/saved/surgical_pr_repair.json` | active | Repair loop for existing PR/worktree failures; legacy `/fugu_repair` remains installed. |
