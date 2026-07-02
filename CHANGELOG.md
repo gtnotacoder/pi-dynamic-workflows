@@ -9,11 +9,14 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ### Removed
 
+- Remove `docs/issues.md` (stale local issue index — GitHub is canonical) and `docs/plans/` (plans for closed issues #64/#82/#87; content preserved in their issues/PRs). Both were stale-planning-artifact context poison of the same class as the upstream roadmap removed in #97. (#102)
+
 - Remove `docs/2.0-roadmap.md` — a stale pre-fork upstream planning artifact (upstream implemented and deleted it in their own tree); it misled planning sessions into treating upstream's completed backlog as ours. (#97)
 - Remove `docs/fugu-test.md`, the naming-migration compatibility pointer; `docs/issue-delivery-smoke-test.md` is the canonical page. (#97)
 
 ### Changed
 
+- Docs staleness deep-clean (#102): every `docs/*.md` now opens with a status banner (research note vs reference vs historical/roadmap) so agents don't consume point-in-time research as current spec; README descriptor-schema table documents the shipped `triggerRules`, `description`, `worktreeRequired`, and `engine.min` fields (loader-skip + clean-skip semantics); README command table gains `/workflow-telemetry-report`; "Our patches" reframed as historical initial-derivation edits pointing at this CHANGELOG; hardcoded test-count dropped from the README status line (it went stale within hours — the gate itself is the claim).
 - Reposition PROVENANCE/README/CHANGELOG upstream language: the projects have diverged and upstream is now a read-only idea source (reviewed ~quarterly, concepts ported as issues — never diffs). Records the 2026-07-02 review of upstream v2.10.0 (one portable fix → #98). Stale test counts refreshed. (#97)
 
 ### Added

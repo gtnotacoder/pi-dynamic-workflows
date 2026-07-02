@@ -1,5 +1,7 @@
 # Provider-behavior benchmarks (caching, throughput, context)
 
+> **Status:** Reference — reusable benchmark fixture; describes current shipped behavior.
+
 A reusable workflow fixture for measuring **provider behavior** — prompt caching,
 fan-out vs sequential reuse, and context handling — across pinned models, using the
 harness's own telemetry (persisted run state + Langfuse traces). It is deliberately

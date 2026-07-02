@@ -211,7 +211,10 @@ A **harness_config** is a JSON descriptor that declares how a workflow harness i
   "id": "frontend-react-shadcn",
   "harness_type": "pi",
   "trigger": "auto",
-  "displayName": "React + shadcn UI"
+  "displayName": "React + shadcn UI",
+  "description": "Frontend work in React + shadcn repos",
+  "worktreeRequired": false,
+  "engine": { "min": "0.1.7" }
 }
 ```
 
@@ -221,7 +224,11 @@ A **harness_config** is a JSON descriptor that declares how a workflow harness i
 | `id` | `string` | Unique identifier for the harness config. |
 | `harness_type` | `string` | Runtime axis — see [Runtime axis](#runtime-axis) below. |
 | `trigger` | `string` | Trigger mode summary (e.g. `"auto"`, `"manual"`). |
+| `triggerRules` | `object` (optional) | Structured auto-detection rules consumed by the harness selector; shown by `/harness-configs`. |
 | `displayName` | `string` | Human-readable label shown in listings. |
+| `description` | `string` (optional) | Longer human description shown in listings. |
+| `worktreeRequired` | `boolean` (optional) | When `true`, any run resolving this config demands run-level git-worktree isolation — the runner auto-isolates even without an explicit `isolation` run option. A non-boolean value warns and is treated as not-required. |
+| `engine` | `object` (optional) | `{ "min": "<semver>" }` — minimum engine version floor. A descriptor whose floor is above the running engine is **skipped by the loader**; explicitly selecting a skipped config via `--harness-config` **clean-skips the run with the reason** instead of silently falling back to Pi defaults. The same floor is enforced for `meta.engine.min` declared inside workflow scripts. |
 
 ### Runtime axis
 
@@ -269,6 +276,7 @@ Run `/harness-configs` to list all harness configs with their id, harness_type, 
 | `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
 | `/workflows-progress-max` | `<1-1000>` | Cap agents shown per phase in detailed mode. |
+| `/workflow-telemetry-report` | `[window]` (e.g. `24h`, `7d`) | Summarize workflow cache, cost, context, trace, and compaction telemetry across recent runs. |
 
 ### Issue Delivery workflow
 
@@ -454,9 +462,9 @@ with an actionable `nextAction` instead of silently claiming success.
 
 ---
 
-## Our patches
+## Initial derivation patches (historical)
 
-All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full table and per-edit commits.
+The first seven edits made on top of upstream v2.7.0, kept for provenance — the project has since diverged far beyond this list (harness-agnostic broker, issue-delivery workflows, run-level worktree isolation, catalog/lock-gated commands). The **[CHANGELOG](./CHANGELOG.md)** is the authoritative feature history; see **[PROVENANCE.md](./PROVENANCE.md)** for the upstream relationship.
 
 | Patch | Summary |
 |-------|---------|
@@ -475,7 +483,7 @@ All merged into `main`. See **[PROVENANCE.md](./PROVENANCE.md)** for the full ta
 
 ## Status & acknowledgements
 
-**Status:** **1298/1298** unit tests pass; full `npm test` gate (biome + build + unit) green. Tracked issues are indexed in [docs/issues.md](./docs/issues.md).
+**Status:** the full `npm test` gate (biome + build + unit tests) is green on `main`. Issues are tracked on [GitHub](https://github.com/gtnotacoder/pi-dynamic-workflows/issues); command naming is governed by the [workflow catalog](./docs/workflows/catalog.md).
 
 Originally derived from [`@quintinshaw/pi-dynamic-workflows`](https://github.com/QuintinShaw/pi-dynamic-workflows)
 (MIT, by QuintinShaw; original `pi-dynamic-workflows` by Michael Livs), now

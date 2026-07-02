@@ -1,5 +1,7 @@
 # Context modes — per-subagent context governance
 
+> **Status:** Reference — describes current shipped behavior.
+
 OpenCode-style **context governance** for the dynamic-workflows engine. The
 headline behavior: **rules you put on the main agent do not leak into the
 subagents it spawns.** `AGENTS.md` stays small and shared (general instructions

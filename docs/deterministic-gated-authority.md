@@ -1,5 +1,7 @@
 # Deterministic Gated Authority Research
 
+> **Status:** Design rationale (2026-06, issue #12) — the StageCheck/LocalChecks gate described here is implemented; details may lag the code.
+
 ## Goal
 
 Issue Delivery routes mechanical verification through the `LocalChecks` phase. Earlier Fugu/Trinity prototypes used a lightweight check agent; the current design moves that hard gate into the Node orchestration boundary. A deterministic `StageCheck` layer runs known project checks directly, returns structured JSON, and lets the Verifier LLM reason over facts rather than raw terminal output.

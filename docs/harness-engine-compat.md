@@ -1,5 +1,7 @@
 # Engine ⇄ repo-artifact compatibility
 
+> **Status:** Reference — describes current shipped behavior.
+
 Repos pin harness artifacts locally (`.pi/workflows/harnesses/<id>.json` descriptors + thin in-repo workflow scripts), but the engine (`pi-dynamic-workflows`) loads at whatever version is installed. This document defines the compatibility discipline so a saved harness does not break silently when the engine floats.
 
 ## Two guards, one shape
