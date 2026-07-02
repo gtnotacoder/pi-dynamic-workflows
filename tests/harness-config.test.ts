@@ -459,14 +459,32 @@ describe("parseHarnessConfigDescriptor: malformed tool lists", () => {
     assert.equal(config.requiredToolsMalformed, true);
   });
 
-  it("flags an empty requiredTools array as malformed", () => {
+  // PR #108 round-4 finding 3: an explicitly EMPTY array is a benign serialized
+  // default meaning "no requirement" — it must NOT be flagged malformed (the previous
+  // behavior marked it malformed and the loader clean-skipped the descriptor, making
+  // generated descriptors with `requiredTools: []` / `preferredTools: []` unusable).
+  it("does NOT flag an empty requiredTools array as malformed (empty = no requirement)", () => {
     const config = parseHarnessConfigDescriptor(
       JSON.stringify({ schemaVersion: 1, id: "empty", harness_type: "pi", requiredTools: [] }),
       "project",
     );
     assert.ok(config);
-    assert.equal(config.requiredTools, undefined);
-    assert.equal(config.requiredToolsMalformed, true);
+    assert.equal(
+      config.requiredTools,
+      undefined,
+      "empty array yields no requirement (stringArrayField returns undefined)",
+    );
+    assert.equal(config.requiredToolsMalformed, false, "an empty array is NOT malformed");
+  });
+
+  it("does NOT flag an empty preferredTools array as malformed (empty = no preference)", () => {
+    const config = parseHarnessConfigDescriptor(
+      JSON.stringify({ schemaVersion: 1, id: "emptypref", harness_type: "pi", preferredTools: [] }),
+      "project",
+    );
+    assert.ok(config);
+    assert.equal(config.preferredTools, undefined);
+    assert.equal(config.preferredToolsMalformed, false, "an empty preferred array is NOT malformed");
   });
 
   it("flags a bare-string preferredTools as malformed", () => {
@@ -550,7 +568,7 @@ describe("loadHarnessConfigRegistry: malformed tool lists clean-skip + warn", ()
       assert.equal(cfg?.skipped, true, "malformed requiredTools clean-skips the descriptor");
       assert.equal(cfg?.wired, false);
       assert.ok(
-        warnings.some((w) => w.includes("requiredTools must be a non-empty string array")),
+        warnings.some((w) => w.includes("requiredTools must be a string array")),
         `warning emitted; got: ${JSON.stringify(warnings)}`,
       );
     } finally {
@@ -577,7 +595,7 @@ describe("loadHarnessConfigRegistry: malformed tool lists clean-skip + warn", ()
       assert.ok(cfg);
       assert.equal(cfg?.skipped, true, "malformed preferredTools clean-skips the descriptor");
       assert.ok(
-        warnings.some((w) => w.includes("preferredTools must be a non-empty string array")),
+        warnings.some((w) => w.includes("preferredTools must be a string array")),
         `warning emitted; got: ${JSON.stringify(warnings)}`,
       );
     } finally {
@@ -606,8 +624,45 @@ describe("loadHarnessConfigRegistry: malformed tool lists clean-skip + warn", ()
       assert.ok(cfg, "descriptor is retained (skipped, not dropped)");
       assert.equal(cfg?.skipped, true, "null requiredTools clean-skips the descriptor");
       assert.ok(
-        warnings.some((w) => w.includes("requiredTools must be a non-empty string array")),
+        warnings.some((w) => w.includes("requiredTools must be a string array")),
         `warning emitted; got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // PR #108 round-4 finding 3: an explicitly EMPTY requiredTools/preferredTools array
+  // is a benign "no requirement" default — the descriptor must NOT be clean-skipped and
+  // must remain wired/usable.
+  it("does NOT skip a descriptor with empty requiredTools/preferredTools arrays (empty = no requirement)", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-empty-req-"));
+    const projectDir = join(root, "project");
+    const warnings: string[] = [];
+    try {
+      writeJson(
+        projectDir,
+        "emptyok.json",
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "emptyok",
+          harness_type: "pi",
+          requiredTools: [],
+          preferredTools: [],
+        }),
+      );
+      const registry = loadHarnessConfigRegistry(root, {
+        projectDir,
+        userDir: projectDir,
+        onWarning: (m) => warnings.push(m),
+      });
+      const cfg = registry.get("emptyok");
+      assert.ok(cfg, "descriptor is retained");
+      assert.notEqual(cfg?.skipped, true, "an empty tool list must NOT clean-skip the descriptor");
+      assert.equal(cfg?.wired, true, "an empty tool list keeps the descriptor wired and usable");
+      assert.ok(
+        !warnings.some((w) => /requiredTools must be a string array/.test(w)),
+        `no requiredTools malformed warning; got: ${JSON.stringify(warnings)}`,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

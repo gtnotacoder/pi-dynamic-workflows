@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -432,39 +433,88 @@ return a`,
 //    run-level options.tools override is DROPPED — the harness check must not treat
 //    those dropped tools as still available. ──
 
-test("round-3 finding 1: worktree isolation drops a custom run-level tool from the available base (required tool only in options.tools fails under isolation)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f1-"));
+test("round-3/round-4 finding 1+2: worktree isolation fallback (non-git cwd) retains the run-level custom tool base — harness requiring a custom options.tools tool does NOT throw on fallback", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f2-fallback-"));
   try {
     // Run-level options.tools supplies a custom tool "custom_x" that is NOT in the default
-    // coding tool set. A harness requires "custom_x". Without worktree isolation the
-    // run-level base includes custom_x (from options.tools), so the check passes. With
-    // per-agent isolation:"worktree" the agent rebuilds via createCodingTools(runCwd),
-    // dropping custom_x — the required tool is now absent and the agent call must fail
-    // closed (clean failure), not silently run.
+    // coding tool set. A harness requires "custom_x". The cwd is NOT a git repo, so
+    // createWorktree falls back (isolated === false) and the agent runs in the shared cwd
+    // retaining the run-level options.tools base — custom_x is still available, so the
+    // harness requirement is satisfied and the agent MUST run. PR #108 round-4 finding 2:
+    // the pre-check must not swap to DEFAULT_CODING_TOOL_NAMES and throw before the
+    // fallback path can run.
     const harnessDir = writeHarness(dir, "needs-custom.json", {
       schemaVersion: 1,
       id: "needs-custom",
       harness_type: "pi",
       requiredTools: ["custom_x"],
     });
-    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r3-f1-user-"));
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f2-fallback-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    await runWorkflow(
+      `export const meta = { name: 'r4f2', description: 'worktree fallback retains custom tool' }
+const a = await agent('step', { label: 'step', isolation: 'worktree' })
+return a`,
+      {
+        agent: capturingRunner(calls),
+        harness_config: "needs-custom",
+        tools: [
+          { name: "custom_x", description: "x", schema: {}, run: async () => "ok" },
+          { name: "read", description: "r", schema: {}, run: async () => "ok" },
+        ],
+        harnessConfigRegistry: registry,
+        cwd: dir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    assert.equal(calls.length, 1, "the agent runs when worktree isolation falls back (run-level custom tool retained)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("round-4 finding 2: when worktree isolation actually happens (git repo), a required tool only in options.tools fails closed inside the limiter", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "wf-gating-r4-f2-git-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", ".");
+    git("commit", "--no-verify", "-q", "-m", "init");
+
+    // A real git repo: createWorktree succeeds (isolated === true). The agent rebuilds
+    // coding tools via createCodingTools(runCwd), whose output is exactly the default
+    // coding tools (read/bash/edit/write) — the run-level options.tools custom tool
+    // "custom_x" is DROPPED. The harness requires custom_x, so the inside-limiter
+    // re-check must fail closed (non-recoverable throw) and the agent must NOT run.
+    const harnessDir = writeHarness(repo, "needs-custom-git.json", {
+      schemaVersion: 1,
+      id: "needs-custom-git",
+      harness_type: "pi",
+      requiredTools: ["custom_x"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f2-git-user-"));
     const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
     const calls: CapturedCall[] = [];
     let thrown: unknown;
     try {
       await runWorkflow(
-        `export const meta = { name: 'r3f1', description: 'worktree drops custom tool' }
+        `export const meta = { name: 'r4f2iso', description: 'isolated worktree drops custom tool' }
 const a = await agent('step', { label: 'step', isolation: 'worktree' })
 return a`,
         {
           agent: capturingRunner(calls),
-          harness_config: "needs-custom",
+          harness_config: "needs-custom-git",
           tools: [
             { name: "custom_x", description: "x", schema: {}, run: async () => "ok" },
             { name: "read", description: "r", schema: {}, run: async () => "ok" },
           ],
           harnessConfigRegistry: registry,
-          cwd: dir,
+          cwd: repo,
           concurrency: 1,
           persistLogs: false,
         } as Record<string, unknown>,
@@ -472,12 +522,12 @@ return a`,
     } catch (error) {
       thrown = error;
     }
-    assert.equal(calls.length, 0, "the agent must NOT run when worktree isolation drops the required custom tool");
+    assert.equal(calls.length, 0, "the agent must NOT run when isolated worktree drops the required custom tool");
     assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
     assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
     assert.match((thrown as Error).message, /custom_x/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
   }
 });
 
@@ -593,6 +643,108 @@ return a`,
       } as Record<string, unknown>,
     );
     assert.equal(calls.length, 1, "the agent runs when 'none' + narrowing still contains the run-level required tool");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round-4 finding 1: per-call requiredTools must be validated in their OWN right
+//    against the narrowed per-agent tool set — UNION semantics, not intersection.
+//    Previously, when both run-level and per-call configs declared requiredTools, the
+//    per-call list was intersected with the run-level list, dropping any per-call
+//    requirement absent from the run-level list. A run-level config requiring `bash`
+//    plus a per-call config requiring `read` (both present in the default coding tools)
+//    must keep BOTH requirements binding; the agent runs only if both are available. ──
+
+test("round-4 finding 1: per-call requiredTools UNION with run-level requiredTools (both bind, both satisfied → agent runs)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f1-union-ok-"));
+  try {
+    // Run-level requires bash; per-call requires read. Both are in the default coding
+    // tools. Union semantics: both bind. The agent runs because both are available.
+    const harnessDir = writeHarness(dir, "needs-bash-rl2.json", {
+      schemaVersion: 1,
+      id: "needs-bash-rl2",
+      harness_type: "pi",
+      requiredTools: ["bash"],
+    });
+    const perCallHarnessDir = writeHarness(dir, "needs-read-pc.json", {
+      schemaVersion: 1,
+      id: "needs-read-pc",
+      harness_type: "pi",
+      requiredTools: ["read"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f1-union-ok-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    await runWorkflow(
+      `export const meta = { name: 'r4f1ok', description: 'union required both present' }
+const a = await agent('step', { label: 'step', harness_config: 'needs-read-pc' })
+return a`,
+      {
+        agent: capturingRunner(calls),
+        harness_config: "needs-bash-rl2",
+        harnessConfigRegistry: registry,
+        cwd: perCallHarnessDir,
+        concurrency: 1,
+        persistLogs: false,
+      } as Record<string, unknown>,
+    );
+    assert.equal(calls.length, 1, "the agent runs when the union of run-level + per-call requiredTools is satisfied");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("round-4 finding 1: per-call requiredTools absent from run-level list still binds (union, not intersection) — missing per-call required tool fails closed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f1-union-miss-"));
+  try {
+    // Run-level requires bash (present in default coding tools → run-level gate passes).
+    // Per-call requires web_search (NOT in the default coding tools). Under the OLD
+    // intersection semantics the per-call web_search requirement was dropped (bash ∩
+    // web_search = []), so the agent ran without its per-call harness's mandatory tool.
+    // Under UNION semantics both bind; web_search is absent from the effective tool set,
+    // so the per-call re-check must fail closed and the agent must NOT run.
+    const harnessDir = writeHarness(dir, "needs-bash-rl3.json", {
+      schemaVersion: 1,
+      id: "needs-bash-rl3",
+      harness_type: "pi",
+      requiredTools: ["bash"],
+    });
+    const perCallHarnessDir = writeHarness(dir, "needs-web-pc.json", {
+      schemaVersion: 1,
+      id: "needs-web-pc",
+      harness_type: "pi",
+      requiredTools: ["web_search"],
+    });
+    const userDir = mkdtempSync(join(tmpdir(), "wf-gating-r4-f1-union-miss-user-"));
+    const registry = loadHarnessConfigRegistry("/unused", { projectDir: harnessDir, userDir });
+    const calls: CapturedCall[] = [];
+    let thrown: unknown;
+    try {
+      await runWorkflow(
+        `export const meta = { name: 'r4f1miss', description: 'per-call required absent from run-level still binds' }
+const a = await agent('step', { label: 'step', harness_config: 'needs-web-pc' })
+return a`,
+        {
+          agent: capturingRunner(calls),
+          harness_config: "needs-bash-rl3",
+          harnessConfigRegistry: registry,
+          cwd: perCallHarnessDir,
+          concurrency: 1,
+          persistLogs: false,
+        } as Record<string, unknown>,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(
+      calls.length,
+      0,
+      "the agent must NOT run when a per-call required tool (absent from run-level list) is missing",
+    );
+    assert.ok(thrown instanceof WorkflowError, `expected WorkflowError, got ${(thrown as Error)?.name ?? thrown}`);
+    assert.equal((thrown as WorkflowError).code, WorkflowErrorCode.HARNESS_NOT_WIRED);
+    assert.match((thrown as Error).message, /web_search/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

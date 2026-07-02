@@ -475,6 +475,16 @@ function unionToolDenylists(lists: ReadonlyArray<readonly string[] | undefined>)
 }
 
 /**
+ * Union (de-duplicated) of defined tool-name lists, returning `undefined` when no
+ * list is defined. Used to combine per-call and run-level requiredTools/preferredTools
+ * for validation (PR #108 round-4 finding 1): each layer's requirement binds the
+ * narrowed per-agent tool set, so the combined list is validated in its own right.
+ */
+function uniqueToolNames(lists: ReadonlyArray<readonly string[] | undefined>): string[] | undefined {
+  return unionToolDenylists(lists);
+}
+
+/**
  * Canonical names of the tools `createCodingTools(cwd)` actually returns: read,
  * bash, edit, write. The read-only tools (grep, find, ls) are NOT created by the
  * default `createCodingTools(cwd)` constructor — they come from the separate
@@ -1137,19 +1147,25 @@ export async function runWorkflow<T = unknown>(
           // requirements here, a per-step narrowing (tools allowlist) could silently drop a
           // run-level required tool — the per-call/per-agent re-check below would see no
           // requiredTools and pass. Inherit so the run-level requirement still binds the
-          // narrowed set. A per-call config that DOES declare requiredTools/preferredTools
-          // overrides (narrows) the run-level list, mirroring the tools narrowing policy:
-          // intersect so a step can only tighten, never widen, the run-level requirement.
-          const narrowedRequiredTools = candidateExpansion.requiredTools
-            ? harnessExpansion.requiredTools
-              ? candidateExpansion.requiredTools.filter((tool) => harnessExpansion.requiredTools!.includes(tool))
-              : candidateExpansion.requiredTools
-            : harnessExpansion.requiredTools;
-          const narrowedPreferredTools = candidateExpansion.preferredTools
-            ? harnessExpansion.preferredTools
-              ? candidateExpansion.preferredTools.filter((tool) => harnessExpansion.preferredTools!.includes(tool))
-              : candidateExpansion.preferredTools
-            : harnessExpansion.preferredTools;
+          // narrowed set.
+          //
+          // PR #108 round-4 finding 1: a per-call config that DOES declare requiredTools/
+          // preferredTools must be validated in its OWN right against the narrowed per-agent
+          // tool set — UNION semantics, not intersection. The previous intersection dropped
+          // every per-call requirement not also present in the run-level list (e.g. a
+          // run-level config requiring `bash` plus a per-call config requiring `web_search`
+          // produced `[]`, so the checks below saw no required tools and the agent ran
+          // without the per-call harness's mandatory tool). Union both lists so each layer's
+          // requirement still binds the narrowed tool set; checkToolRequirements below then
+          // fails closed if the union references a tool the agent will not actually receive.
+          const narrowedRequiredTools =
+            candidateExpansion.requiredTools || harnessExpansion.requiredTools
+              ? uniqueToolNames([candidateExpansion.requiredTools, harnessExpansion.requiredTools])
+              : undefined;
+          const narrowedPreferredTools =
+            candidateExpansion.preferredTools || harnessExpansion.preferredTools
+              ? uniqueToolNames([candidateExpansion.preferredTools, harnessExpansion.preferredTools])
+              : undefined;
           effectiveHarnessExpansion = {
             ...candidateExpansion,
             contextMode: candidateExpansion.contextMode ?? harnessExpansion.contextMode,
@@ -1203,11 +1219,17 @@ export async function runWorkflow<T = unknown>(
     // the worktree cwd via `createCodingTools(runCwd)` (see agent.ts), which DROPS any
     // run-level `options.tools` override — the harness check must not treat those dropped
     // tools as still available. The worktree base is exactly the default coding tool names
-    // (the createCodingTools output), regardless of `options.tools`. Fail closed: an
-    // unknown isolation base falls back to the default coding tools too, never to the
-    // (possibly custom) run-level base.
-    const perAgentBaseToolNames =
-      agentOptions.isolation === "worktree" ? [...DEFAULT_CODING_TOOL_NAMES] : runLevelBaseToolNames;
+    // (the createCodingTools output), regardless of `options.tools`.
+    //
+    // PR #108 round-4 finding 2: BUT the worktree is only created inside the limiter
+    // below, and `createWorktree` can fall back (not a git repo / `git worktree add`
+    // failure), in which case the agent runs in the shared cwd and RETAINS the run-level
+    // `options.tools` base. Swapping to `DEFAULT_CODING_TOOL_NAMES` here would throw
+    // before the fallback path can run for a harness requiring a custom/web tool supplied
+    // via `options.tools`. Use the run-level base for the pre-check (the fallback reality);
+    // a worktree-isolated re-check inside the limiter (after `worktree.isolated` is known)
+    // fails closed against `DEFAULT_CODING_TOOL_NAMES` when isolation actually happens.
+    const perAgentBaseToolNames = runLevelBaseToolNames;
     const perCallAvailableTools = effectiveAvailableToolNames(
       perAgentBaseToolNames,
       effectiveHarnessExpansion.tools,
@@ -1257,9 +1279,11 @@ export async function runWorkflow<T = unknown>(
     const narrowedAgentDeny =
       agentOptions.disallowedTools ??
       unionToolDenylists([agentDef?.disallowedTools, effectiveHarnessExpansion.disallowedTools]);
-    // PR #108 round-3 finding 1: mirror the same per-agent worktree base as the per-call
-    // re-check above. A worktree-isolated agent's base is the default coding tools
-    // (createCodingTools output), not the possibly-custom run-level `options.tools`.
+    // PR #108 round-3/round-4 finding 1+2: mirror the same per-agent base as the
+    // per-call re-check above — now the run-level base (the worktree fallback reality).
+    // A worktree-isolated agent's real base (default coding tools) is re-checked inside
+    // the limiter after `worktree.isolated` is known, so this pre-check must not swap to
+    // `DEFAULT_CODING_TOOL_NAMES` and throw before the fallback path can run.
     const narrowedAvailableTools = effectiveAvailableToolNames(
       perAgentBaseToolNames,
       narrowedAgentAllow,
@@ -1633,6 +1657,44 @@ export async function runWorkflow<T = unknown>(
       // Fall back to the run-level baseCwd (run-level isolation) so the agent receives the
       // worktree cwd and rebuilds coding tools for it (agent.ts), not primary-cwd tools.
       const runCwd = worktree?.isolated ? worktree.cwd : baseCwd;
+
+      // PR #108 round-4 finding 2: the pre-validation above used the run-level base (the
+      // fallback reality) so a harness requiring a custom/web tool supplied via
+      // `options.tools` does not throw before the worktree fallback path can run. Now that
+      // the worktree actually exists, re-check tool requirements against the REAL
+      // per-agent base when isolation happened: a worktree-isolated agent rebuilds coding
+      // tools via `createCodingTools(runCwd)`, whose output is exactly
+      // `DEFAULT_CODING_TOOL_NAMES` — any run-level `options.tools` override is DROPPED.
+      // Fail closed (non-recoverable throw) if a required tool is absent from the default
+      // coding tools after isolation. Preferred-miss only logs here; the pre-check already
+      // folded run-level preferred degradation into the resume hash, and a throw on
+      // required-miss means no cached result is stored for this call anyway.
+      if (worktree?.isolated) {
+        const isolatedBaseToolNames = [...DEFAULT_CODING_TOOL_NAMES];
+        const isolatedAvailableTools = effectiveAvailableToolNames(
+          isolatedBaseToolNames,
+          narrowedAgentAllow,
+          narrowedAgentDeny,
+          effectiveReadOnly,
+        );
+        const isolatedToolResult = checkToolRequirements(
+          isolatedAvailableTools,
+          effectiveHarnessExpansion.requiredTools,
+          effectiveHarnessExpansion.preferredTools,
+        );
+        if (!isolatedToolResult.ok) {
+          throw new WorkflowError(
+            `Agent "${requestedLabel ?? "agent"}" isolated worktree base is missing required tool(s): ${
+              isolatedToolResult.missingRequired?.join(", ") ?? isolatedToolResult.reason ?? "unknown"
+            }; refusing to run without the required tool (worktree isolation drops run-level options.tools).`,
+            WorkflowErrorCode.HARNESS_NOT_WIRED,
+            { recoverable: false, agentLabel: requestedLabel },
+          );
+        }
+        if (isolatedToolResult.degraded) {
+          log(`[warn] ${isolatedToolResult.reason}`);
+        }
+      }
 
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0). Usage is reset
