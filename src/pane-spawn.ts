@@ -31,6 +31,16 @@ export interface HerdrInvoker {
   worktreeCreate(opts: { cwd: string; branch: string }): Promise<HerdrWorktree>;
 
   /**
+   * `herdr worktree remove --workspace <id>` (or `--cwd <path>`/`--branch <name>`) —
+   * deletes a Herdr-managed worktree/checkout through Herdr's own CLI so Herdr's
+   * internal workspace/group bookkeeping stays consistent. Used to clean up a
+   * Herdr-created worktree when the pane spawn fails (e.g. agentStart returned no
+   * pane id) instead of reaching behind Herdr's back with the local git
+   * `removeWorktree()` helper.
+   */
+  worktreeRemove(opts: { cwd: string; branch: string }): Promise<void>;
+
+  /**
    * `herdr agent start <name> --cwd <cwd> [--workspace <id>] [--tab <id>] [--split <dir>] -- <argv...>`
    * Starts a new herdr agent pane, nested under the caller when workspace/tab are set.
    */
@@ -138,6 +148,27 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
         // Degrade: return a best-effort placeholder — caller sees a broken
         // worktree path and the run will fail with an actionable message.
         return { cwd: "", branch: opts.branch };
+      }
+    },
+
+    async worktreeRemove(opts: { cwd: string; branch: string }): Promise<void> {
+      // `herdr worktree remove` (docs §2 CLI reference: `worktree list|open|remove ...`).
+      // Herdr worktrees are Herdr workspaces, so removing the checkout behind Herdr's
+      // back via local git can leave a stale Herdr workspace/group entry. Route the
+      // deletion through Herdr's own CLI, scoped by the branch we created. Swallow
+      // errors so a missing/already-removed worktree does not throw into the runtime.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn("herdr", ["worktree", "remove", "--branch", opts.branch, "--cwd", opts.cwd]);
+          child.on("error", reject);
+          child.on("close", (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`herdr worktree remove exited ${code}`));
+          });
+          child.unref();
+        });
+      } catch {
+        // Already gone / Herdr binary missing — silently degrade.
       }
     },
 

@@ -37,6 +37,9 @@ function createFakeInvoker(): {
         calls.push({ method: "worktreeCreate", args: [opts] });
         return { cwd: `/tmp/wt/${opts.branch}`, branch: opts.branch };
       },
+      async worktreeRemove(opts): Promise<void> {
+        calls.push({ method: "worktreeRemove", args: [opts] });
+      },
       async agentStart(opts, argv): Promise<{ paneId: string }> {
         calls.push({ method: "agentStart", args: [opts, argv] });
         return { paneId: "wH:p4" };

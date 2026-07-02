@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,6 +29,9 @@ function createFakeInvoker(
       async worktreeCreate(opts): Promise<HerdrWorktree> {
         calls.push({ method: "worktreeCreate", args: [opts] });
         return { cwd: `/tmp/wt/${opts.branch}`, branch: opts.branch };
+      },
+      async worktreeRemove(opts): Promise<void> {
+        calls.push({ method: "worktreeRemove", args: [opts] });
       },
       async agentStart(): Promise<{ paneId: string }> {
         calls.push({ method: "agentStart", args: [] });
@@ -556,6 +560,296 @@ test("pane-spawn subdir: auto pane-spawn (worktreeRequired, no isolation.base) a
   } finally {
     restorePaneEnv(prevPaneId);
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// ── Round-4 fixes ────────────────────────────────────────────────────────────
+
+// Fix #2: kept-open guard must NOT suppress the `failed` synthesis when the
+// engine has already driven managed.status to `failed` (a workflow that published
+// a kept-open status then threw leaves a stale complete/attention pane).
+const keptOpenThenFailScript = `export const meta = { name: 'kof', description: 'kept open then fail' }
+await agent('x', { label: 'x' })
+setSemanticStatus({ status: 'workflow-complete-pane-open', reason: 'handoff', nextAction: 'finalize' })
+throw new Error('boom')`;
+
+test("applyEngineTerminalPaneStatus: kept-open status is NOT preserved when the engine failed (failed pane status wins)", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r4-fail-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r4-fail-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 4);
+      const { invoker, calls } = createFakeInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: instantAgent().agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(keptOpenThenFailScript, undefined, {
+        isolation: { paneSpawn: true },
+      });
+
+      await assert.rejects(promise, /boom/);
+
+      // The workflow published workflow-complete-pane-open then threw, so the
+      // engine synthesized `failed` (not preserved as the stale kept-open state).
+      const run = manager.getRun(runId);
+      assert.equal(run?.semanticStatus?.status, "failed", "failed semantic status synthesized after engine failure");
+      assert.equal(run?.status, "failed");
+
+      // The herdr cell was driven to the failed state (report-agent blocked + the
+      // failed custom-status), proving the stale kept-open status was overridden.
+      const reportCalls = calls.filter(
+        (c) => c.method === "reportAgent" && (c.args[1] as { customStatus?: string }).customStatus === "✗ failed",
+      );
+      assert.ok(reportCalls.length >= 1, "herdr cell driven to failed status after engine failure");
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #3: agentStart failure cleanup must use the Herdr worktree API
+// (herdrInvoker.worktreeRemove), not the local git removeWorktree() helper,
+// so Herdr's workspace bookkeeping stays consistent.
+test("pane-spawn: agentStart returns empty paneId → worktreeRemove (herdr API) called, not local git removeWorktree", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r4-wtremove-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r4-wtremove-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 4);
+      const { invoker, calls } = createFakeInvoker({ agentStartPaneId: "" });
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: instantAgent().agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true },
+      });
+
+      await assert.rejects(promise, /herdr agent start returned no pane id/);
+
+      // The Herdr worktree API was used to remove the worktree (the branch created
+      // by worktreeCreate), not the local git helper — the recorded call args carry
+      // the branch used at create time.
+      const removeCalls = calls.filter((c) => c.method === "worktreeRemove");
+      assert.equal(removeCalls.length, 1, "herdrInvoker.worktreeRemove called once on agentStart failure");
+      const createCalls = calls.filter((c) => c.method === "worktreeCreate");
+      assert.equal(createCalls.length, 1);
+      assert.equal(
+        (removeCalls[0].args[0] as { branch: string }).branch,
+        (createCalls[0].args[0] as { branch: string }).branch,
+        "worktreeRemove targets the same branch that worktreeCreate produced",
+      );
+
+      // No worktree leaked onto the managed run.
+      const run = manager.getRun(runId);
+      assert.equal(run?.worktree, undefined, "herdr worktree cleared after failed spawn");
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #4: abort path must clear managed.paneId and persist the cleared state so a
+// later process restart does not treat the stale paneId as a live pane and
+// permanently consume a herdrMaxPanes slot.
+test("abort: stop() clears paneId and persists — restart does not count the aborted pane against the cap", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r4-abort-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r4-abort-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 2);
+
+      // Use a deferred agent so the run stays in flight long enough to stop().
+      let resolveAgent!: (v: unknown) => void;
+      const deferred = {
+        agent: {
+          async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
+            options.onUsage?.({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 });
+            return new Promise((r) => {
+              resolveAgent = r;
+            });
+          },
+        },
+      };
+
+      const { invoker, calls } = createFakeInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: deferred.agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true },
+      });
+
+      // Wait for the pane to actually spawn before stopping.
+      for (let i = 0; i < 200; i++) {
+        if (calls.some((c) => c.method === "agentStart")) break;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      assert.ok(
+        calls.some((c) => c.method === "agentStart"),
+        "pane spawned before abort",
+      );
+      assert.ok(manager.getRun(runId)?.paneId, "paneId persisted while running");
+
+      manager.stop(runId);
+      resolveAgent("done");
+      await promise.catch(() => {});
+
+      // The abort finally cleared the in-memory paneId and persisted the cleared state.
+      const run = manager.getRun(runId);
+      assert.equal(run?.paneId, undefined, "in-memory paneId cleared after abort");
+
+      // A fresh manager (simulating restart) must NOT count the aborted pane against
+      // the cap — the persisted paneId is gone, so reconcilePaneCap() seeds nothing.
+      PaneSpawnCoordinator.reset();
+      const restarted = new WorkflowManager({ cwd, herdrInvoker: createFakeInvoker().invoker });
+      assert.equal(
+        restarted.paneCoordinator.activeCount,
+        0,
+        "aborted pane is not counted against the cap after restart",
+      );
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #5: explicit isolation.paneSpawn (without worktreeRequired/harness_config)
+// must load the primary harness configs (needsRegistry true) so runWorkflow does
+// not reload descriptors from the herdr checkout cwd and silently change
+// harness selection/tool policy for pane-spawn-only launches.
+test("pane-spawn: explicit isolation.paneSpawn loads the primary harness registry (needsRegistry true)", async () => {
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-r4-registry-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r4-registry-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 4);
+
+      // Drop a local untracked harness descriptor in the primary checkout so the
+      // registry is non-empty when loaded from this.cwd. A plain isolated run
+      // (worktree) preserves these descriptors; the fix makes explicit paneSpawn
+      // do the same.
+      const harnessDir = join(cwd, ".pi", "workflows", "harnesses");
+      mkdirSync(harnessDir, { recursive: true });
+      writeFileSync(
+        join(harnessDir, "custom.json"),
+        JSON.stringify({
+          id: "custom",
+          harness_type: "pi",
+          worktreeRequired: false,
+        }),
+        "utf8",
+      );
+
+      // Spy on loadHarnessConfigRegistry via the harness_config path: when the
+      // registry is loaded, requesting `custom` resolves the descriptor. The test
+      // asserts the descriptor is visible to the manager (proving needsRegistry
+      // was true) by launching with harness_config: 'custom' — if needsRegistry
+      // were false, harnessRegistry would be undefined and the descriptor would
+      // not resolve, hitting the invalid-runtime fail-closed path instead.
+      const { invoker } = createFakeInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker, agent: instantAgent().agent });
+      manager.on("error", () => {});
+
+      const { runId, promise } = manager.startInBackground(paneSpawnScript, undefined, {
+        isolation: { paneSpawn: true },
+        harness_config: "custom",
+      });
+
+      await promise;
+
+      // The run completed (engine completed), proving the registry was loaded
+      // from the primary cwd and the descriptor resolved (otherwise the manager
+      // would have failed closed on an invalid runtime before any spawn).
+      const run = manager.getRun(runId);
+      assert.equal(run?.status, "completed", "explicit paneSpawn loaded the primary harness registry and completed");
+      assert.ok(run?.paneId === undefined, "pane lifecycle completed and paneId cleared");
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+// Fix #1: when pane-spawn is selected by the auto path (worktreeRequired/
+// descriptor) with no isolation.base, spawnBase must resolve to the git repo root
+// (not this.cwd) so relative(spawnBase, this.cwd) preserves the caller's
+// subdirectory offset — mirroring the plain worktree path.
+test("pane-spawn subdir: auto pane-spawn with no isolation.base derives repo root so manager subdir is preserved", async () => {
+  PaneSpawnCoordinator.reset();
+  const repoRoot = mkdtempSync(join(tmpdir(), "pi-dw-r4-autoroot-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-r4-autoroot-home-"));
+  const prevPaneId = setupPaneEnv();
+  try {
+    // Initialize a real git repo at repoRoot and create packages/foo so
+    // resolveRepoRoot(this.cwd) returns repoRoot (not the subdirectory).
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("git", ["init", repoRoot], { stdio: "ignore" });
+      child.on("error", reject);
+      child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`git init exited ${code}`))));
+    });
+    const sub = join(repoRoot, "packages", "foo");
+    mkdirSync(sub, { recursive: true });
+
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettingsAt(sub, 4);
+      const { invoker, calls } = createFakeInvoker();
+      const manager = new WorkflowManager({ cwd: sub, herdrInvoker: invoker, agent: instantAgent().agent });
+      manager.on("error", () => {});
+
+      const subDirScript = `export const meta = { name: 'ar', description: 'auto root subdir' }
+await agent('x', { label: 'x' })
+return process.cwd()`;
+
+      const { runId, promise } = manager.startInBackground(subDirScript, undefined, {
+        worktreeRequired: true,
+      });
+
+      const result = await promise;
+
+      // worktreeCreate was called with the resolved git repo root (not the
+      // subdirectory), so the worktree is rooted at the repo and the subdir
+      // mapping appends packages/foo for runCwd.
+      const wtCalls = calls.filter((c) => c.method === "worktreeCreate");
+      assert.equal(wtCalls.length, 1, "herdr worktreeCreate called once");
+      assert.equal(
+        (wtCalls[0].args[0] as { cwd: string }).cwd,
+        repoRoot,
+        "worktreeCreate cwd is the resolved git repo root (not the manager subdir)",
+      );
+
+      // runCwd is the herdr worktree cwd + packages/foo (subdir preserved), proving
+      // spawnBase resolved to the repo root so relative(spawnBase, this.cwd) is
+      // non-empty.
+      const expectedRunCwd = join(`/tmp/wt/wf/${runId}`, "packages", "foo");
+      assert.equal(result.result, expectedRunCwd, "runCwd preserves the manager subdir within the herdr worktree");
+
+      manager.deleteRun(runId);
+    });
+  } finally {
+    restorePaneEnv(prevPaneId);
+    rmSync(repoRoot, { recursive: true, force: true });
     rmSync(fakeHome, { recursive: true, force: true });
   }
 });

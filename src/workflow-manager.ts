@@ -53,7 +53,7 @@ import {
 } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 import { loadWorkflowSettings, type WorkflowSettings } from "./workflow-settings.js";
-import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
+import { createWorktree, removeWorktree, resolveRepoRoot, type Worktree } from "./worktree.js";
 
 export interface ManagedRun {
   runId: string;
@@ -713,7 +713,13 @@ export class WorkflowManager extends EventEmitter {
     // descriptor (auto-detected harnesses are resolved inside runWorkflow; their
     // worktreeRequired is a deeper follow-up). Load the registry once when needed
     // (including on resume, so a reused isolated run keeps the primary's descriptors).
-    const needsRegistry = !!(isolation?.worktree || worktreeRequired || reuseWorktree || harness_config);
+    const needsRegistry = !!(
+      isolation?.worktree ||
+      isolation?.paneSpawn ||
+      worktreeRequired ||
+      reuseWorktree ||
+      harness_config
+    );
     const harnessRegistry = needsRegistry ? loadHarnessConfigRegistry(this.cwd) : undefined;
     const harnessDescriptor = harness_config ? harnessRegistry?.get(harness_config) : undefined;
     // The EFFECTIVE runtime is the caller's `harness_type` override (if valid) else
@@ -892,7 +898,17 @@ export class WorkflowManager extends EventEmitter {
       // herdr worktree create — single source of truth, no double bookkeeping.
       // docs §2: --base is a git *ref*, --cwd is the repo path. Pass the repo path
       // via --cwd; the herdr-managed branch is the wf/<runId> ref.
-      const spawnBase = isolation?.base ?? this.cwd;
+      //
+      // When the caller did not supply `isolation.base`, derive the repo root via
+      // `git rev-parse --show-toplevel` (the same call `createWorktree` uses) instead
+      // of falling back to `this.cwd`. If the manager is rooted at a repo subdirectory
+      // (e.g. packages/foo), using `this.cwd` as `spawnBase` makes the later
+      // `relative(spawnBase, this.cwd)` empty by construction, so the caller's
+      // subdirectory is lost and the run lands at the herdr worktree root instead of
+      // `worktree/packages/foo`. Resolving the toplevel preserves the subdirectory
+      // offset the same way the plain worktree path does. When not inside a git
+      // repo (or `isolation.base` is explicit), fall back to the prior behavior.
+      const spawnBase = isolation?.base ?? (await resolveRepoRoot(this.cwd)) ?? this.cwd;
       const herdrWt = await this.herdrInvoker.worktreeCreate({
         cwd: spawnBase,
         branch: `wf/${managed.runId}`,
@@ -948,13 +964,11 @@ export class WorkflowManager extends EventEmitter {
         managed.error = spawnError;
         spawnSlot.release();
         // The herdr worktree was created but no pane attaches to it; remove it so a
-        // failed spawn does not leave a stray worktree + branch behind.
-        await removeWorktree({
-          isolated: true,
-          cwd: herdrWt.cwd,
-          branch: herdrWt.branch,
-          repoRoot: spawnBase,
-        });
+        // failed spawn does not leave a stray worktree + branch behind. Use the
+        // Herdr worktree API (not the local git `removeWorktree` helper) so Herdr's
+        // internal workspace/group bookkeeping stays consistent — deleting the
+        // checkout behind Herdr's back can leave a stale Herdr workspace entry.
+        await this.herdrInvoker.worktreeRemove({ cwd: spawnBase, branch: herdrWt.branch });
         managed.worktree = undefined;
         this.persistRun(managed);
         this.releaseRunLease(managed);
@@ -1246,6 +1260,16 @@ export class WorkflowManager extends EventEmitter {
           managed.paneHandle.close();
           managed.paneHandle = undefined;
         }
+        // Clear the persisted pane id too: the catch block above persisted the run
+        // with paneId still set, so after a process restart reconcilePaneCap()
+        // would treat the stale paneId as a live pane and permanently consume a
+        // herdrMaxPanes slot until the user manually deletes the run. Mirror the
+        // completed-path cleanup (setSemanticStatus) by clearing paneId and
+        // persisting the cleared state once the pane is actually closed.
+        if (managed.paneId) {
+          managed.paneId = undefined;
+          this.persistRun(managed);
+        }
       }
     }
   }
@@ -1474,7 +1498,18 @@ export class WorkflowManager extends EventEmitter {
     // documented kept-open handoff. Skip synthesis whenever an existing semantic
     // status is one of the conductor-owned kept-open/attention states, not only
     // when it exactly equals `completed`.
-    if (managed.semanticStatus && KEPT_OPEN_PANE_STATUSES.has(managed.semanticStatus.status)) return;
+    //
+    // Only apply this kept-open skip on successful engine completion: when the
+    // engine has already driven `managed.status` to `failed` (e.g. a workflow that
+    // published `workflow-complete-pane-open` then threw), the kept-open status is
+    // stale and must NOT suppress the `failed` synthesis — otherwise the Herdr pane
+    // keeps showing the prior complete/attention state instead of the failed run.
+    if (
+      engineStatus === "completed" &&
+      managed.semanticStatus &&
+      KEPT_OPEN_PANE_STATUSES.has(managed.semanticStatus.status)
+    )
+      return;
     this.setSemanticStatus(managed.runId, semantic);
   }
 
