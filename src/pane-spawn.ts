@@ -384,8 +384,24 @@ export class PaneSpawnCoordinator {
    * Acquire a concurrency slot for `runId`.
    * Returns a lease on success, `null` when the cap is exceeded.
    * Never throws.
+   *
+   * Idempotent for the same `runId`: a failed/paused pane-spawn run intentionally
+   * keeps its lease while the pane stays open (see executeRun's finally), and
+   * `resume()` builds a fresh `ManagedRun` for the same `runId`. Re-acquiring
+   * would count the run's own retained pane against the cap and return null
+   * under `herdrMaxPanes: 1`, blocking the run from reattaching to its own pane.
+   * When `runId` is already active, return a lease without re-adding it (release is
+   * a no-op idempotent delete) so resume reuses the retained slot.
    */
   acquire(runId: string): SpawnLease | null {
+    if (this.active.has(runId)) {
+      return {
+        runId,
+        release: () => {
+          this.active.delete(runId);
+        },
+      };
+    }
     if (this.active.size >= this.cap) {
       return null;
     }
@@ -406,6 +422,28 @@ export class PaneSpawnCoordinator {
   /** Configured concurrency cap (for observability / error messages). */
   get maxPanes(): number {
     return this.cap;
+  }
+
+  /**
+   * Reconcile the in-memory `active` set with persisted pane-spawn runs after a
+   * process restart. A persisted run with a live `paneId` kept its Herdr pane
+   * open (failed/paused/attention states retain the pane), so it must still count
+   * against the cap — otherwise a fresh manager permits another full cap of
+   * pane-spawn runs and defeats the VM memory ceiling. Each `runId` is seeded via
+   * the idempotent `acquire()` so existing membership is not double-counted.
+   * Returns the runIds that were newly seeded (already-active ones are skipped).
+   */
+  reconcile(persistedPaneRunIds: Iterable<string>): string[] {
+    const seeded: string[] = [];
+    for (const runId of persistedPaneRunIds) {
+      if (this.active.has(runId)) continue;
+      // Seed membership directly (bypass the cap check): the pane is already open,
+      // so the run is legitimately active regardless of the configured cap. New
+      // acquisitions still enforce the cap against this seeded count.
+      this.active.add(runId);
+      seeded.push(runId);
+    }
+    return seeded;
   }
 }
 
