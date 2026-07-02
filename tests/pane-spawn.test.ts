@@ -53,6 +53,9 @@ function createFakeInvoker(): {
       paneClose(pane): void {
         calls.push({ method: "paneClose", args: [pane] });
       },
+      notify(pane, opts): void {
+        calls.push({ method: "notify", args: [pane, opts] });
+      },
     },
   };
 }
@@ -327,6 +330,45 @@ test("createPaneHandle: updateStatus(finalizing) → report-agent working + no c
   assert.equal(releaseCalls.length, 0);
 });
 
+test("createPaneHandle: updateStatus(needs-finalize) → notify request raised", () => {
+  const { invoker, calls } = createFakeInvoker();
+  const handle = createPaneHandle(invoker, "wH:p4");
+
+  handle.updateStatus(status("needs-finalize"));
+
+  // The docs §6 notify=request mapping is routed through the invoker so the
+  // operator gets a desktop toast/sound for kept-open attention states.
+  const notifyCalls = calls.filter((c) => c.method === "notify");
+  assert.equal(notifyCalls.length, 1);
+  const [pane, opts] = notifyCalls[0].args as [string, { title: string; sound: string }];
+  assert.equal(pane, "wH:p4");
+  assert.equal(opts.sound, "request");
+  assert.equal(opts.title, "! needs finalize");
+});
+
+test("createPaneHandle: updateStatus(completed) → notify done raised", () => {
+  const { invoker, calls } = createFakeInvoker();
+  const handle = createPaneHandle(invoker, "wH:p4");
+
+  handle.updateStatus(status("completed"));
+
+  const notifyCalls = calls.filter((c) => c.method === "notify");
+  assert.equal(notifyCalls.length, 1);
+  const opts = notifyCalls[0].args[1] as { sound: string; title: string };
+  assert.equal(opts.sound, "done");
+  assert.equal(opts.title, "✓ done");
+});
+
+test("createPaneHandle: updateStatus(workflow-running) → no notify (non-terminal)", () => {
+  const { invoker, calls } = createFakeInvoker();
+  const handle = createPaneHandle(invoker, "wH:p4");
+
+  handle.updateStatus(status("workflow-running"));
+
+  const notifyCalls = calls.filter((c) => c.method === "notify");
+  assert.equal(notifyCalls.length, 0);
+});
+
 // ── 6. WorkflowManager concurrency-cap fail-closed path ───────────────────
 
 /** Write project workflow settings enabling pane-spawn with a maxPanes cap. */
@@ -369,6 +411,10 @@ test("WorkflowManager: paneSpawn cap exceeded → WORKFLOW_ABORTED, no spawn", a
   PaneSpawnCoordinator.reset();
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-pane-cap-"));
   const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-pane-cap-home-"));
+  // paneSpawn auto mode is feature-gated on HERDR_PANE_ID; set it explicitly so
+  // the test is portable and does not depend on the ambient dev-VM herdr env.
+  const prevPaneId = process.env.HERDR_PANE_ID;
+  process.env.HERDR_PANE_ID = "wH:test-pane";
   try {
     await withFakeHomeAsync(fakeHome, async () => {
       // herdrMaxPanes=1: a single in-flight pane-spawn run saturates the cap.
@@ -433,6 +479,57 @@ test("WorkflowManager: paneSpawn cap exceeded → WORKFLOW_ABORTED, no spawn", a
       first.deleteRun(firstRunId);
     });
   } finally {
+    if (prevPaneId === undefined) delete process.env.HERDR_PANE_ID;
+    else process.env.HERDR_PANE_ID = prevPaneId;
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowManager: paneSpawn + explicit tools → fail closed (WORKFLOW_ABORTED), no spawn", async () => {
+  // Ensures a restricted/read-only tool fence is not silently dropped on the
+  // pane-spawn path (which sets managed.worktree and would pass tools=undefined
+  // into runWorkflow, rebuilding mutating coding tools).
+  PaneSpawnCoordinator.reset();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-pane-tools-"));
+  const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-pane-tools-home-"));
+  const prevPaneId = process.env.HERDR_PANE_ID;
+  process.env.HERDR_PANE_ID = "wH:test-pane";
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      writePaneSpawnSettings(cwd, 4);
+      const { invoker, calls } = createFakeInvoker();
+      const manager = new WorkflowManager({ cwd, herdrInvoker: invoker });
+      manager.on("error", () => {});
+
+      const { promise } = manager.startInBackground(
+        "export const meta = { name: 'r', description: 'tools fence' }; return 1",
+        undefined,
+        { isolation: { paneSpawn: true }, tools: [] },
+      );
+
+      await assert.rejects(
+        promise,
+        (err: unknown) => {
+          const e = err as { code?: string; message?: string };
+          return (
+            e?.code === WorkflowErrorCode.WORKFLOW_ABORTED &&
+            /Pane-spawn isolation cannot preserve an explicit tools policy/.test(e.message || "")
+          );
+        },
+        "pane-spawn + explicit tools is rejected with WORKFLOW_ABORTED",
+      );
+
+      // No spawn occurred — the invoker was never touched.
+      assert.equal(
+        calls.filter((c) => c.method === "worktreeCreate" || c.method === "agentStart").length,
+        0,
+        "the tools-conflict run never called worktreeCreate or agentStart",
+      );
+    });
+  } finally {
+    if (prevPaneId === undefined) delete process.env.HERDR_PANE_ID;
+    else process.env.HERDR_PANE_ID = prevPaneId;
     rmSync(cwd, { recursive: true, force: true });
     rmSync(fakeHome, { recursive: true, force: true });
   }

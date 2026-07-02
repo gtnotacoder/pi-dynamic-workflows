@@ -119,6 +119,9 @@ export interface ManagedRun {
   semanticStatus?: ConductorRunStatus;
   /** Optional herdr-pane handle (only when paneSpawn isolation is active). */
   paneHandle?: RunPaneHandle;
+  /** Persisted herdr pane id for a pane-spawn run, so resume can recreate the
+   *  pane handle and keep driving the pane's lifecycle/finalization. */
+  paneId?: string;
   /** Optional pane-spawn coordinator lease (released in executeRun's finally). */
   _spawnLease?: SpawnLease;
 }
@@ -727,12 +730,44 @@ export class WorkflowManager extends EventEmitter {
       throw conflict;
     }
     const wantWorktree = !!(isolation?.worktree || worktreeRequired || descriptorRequiresWorktree);
-    // Pane-spawn takes precedence over a plain worktree when BOTH are requested:
-    // per docs §4.6, an active herdr pane-spawn replaces src/worktree.ts (single
-    // source of truth). Without this precedence, an isolated run that also sets
-    // paneSpawn would take the plain-worktree `else if` and never call
-    // worktreeCreate/agentStart on herdr.
-    const wantPaneSpawn = !!(isolation?.paneSpawn && this.herdrPaneSpawnSetting !== "off");
+    // Pane-spawn takes precedence over a plain worktree when active. Per docs
+    // §4.6 an active herdr pane-spawn replaces src/worktree.ts (single source of
+    // truth). Two selection paths enable it:
+    //   1. An explicit caller opt-in via `isolation.paneSpawn: true` (e.g. a
+    //      saved workflow that knows it wants a dedicated pane).
+    //   2. The `herdrPaneSpawn: "auto"` setting, which docs define as enabling
+    //      pane-spawn for isolated runs ONLY when inside herdr
+    //      (`HERDR_PANE_ID` present). Without this, an operator enabling the
+    //      setting still gets the plain `createWorktree` path for
+    //      worktree-required runs.
+    // The `HERDR_PANE_ID` feature gate is applied to the auto path so a normal
+    // terminal with the setting enabled does not attempt `herdr worktree create`
+    // (which degrades to an empty cwd and aborts the run instead of no-op'ing).
+    const insideHerdr = !!process.env.HERDR_PANE_ID?.trim();
+    const wantPaneSpawn =
+      (!!isolation?.paneSpawn || (this.herdrPaneSpawnSetting === "auto" && wantWorktree && insideHerdr)) &&
+      this.herdrPaneSpawnSetting !== "off" &&
+      insideHerdr;
+    // Pane-spawn sets `managed.worktree`, so `runWorkflow` would receive
+    // `tools: undefined` below and a default WorkflowAgent rebuilds the normal
+    // mutating coding tools for the worktree cwd. That silently strips a
+    // read-only/restricted tool fence from a review-style run launched with
+    // pane-spawn — exactly the silent-fence-drop the descriptorRequiresWorktree
+    // conflict above guards against. Fail closed here too until a cwd-bound
+    // tool factory that preserves policy under pane-spawn isolation exists (#93).
+    if (wantPaneSpawn && tools) {
+      const conflict = new WorkflowError(
+        `Pane-spawn isolation cannot preserve an explicit tools policy; drop tools or use a cwd-bound tool factory (#93)`,
+        WorkflowErrorCode.WORKFLOW_ABORTED,
+        { recoverable: false },
+      );
+      managed.status = "failed";
+      managed.error = conflict;
+      this.persistRun(managed);
+      this.releaseRunLease(managed);
+      this.emit("error", { runId: managed.runId, error: conflict });
+      throw conflict;
+    }
     let runWorktree: Worktree | undefined;
     let runCwd = this.cwd;
     if (reuseWorktree && existsSync(reuseWorktree.cwd)) {
@@ -743,6 +778,29 @@ export class WorkflowManager extends EventEmitter {
         branch: reuseWorktree.branch,
         repoRoot: reuseWorktree.repoRoot,
       };
+      // Reattach a pane-spawn run: the prior pane handle was lost when the
+      // managed run was torn down, so recreate it from the persisted pane id and
+      // re-acquire the coordinator lease. Without this, resumed failed/paused
+      // pane-spawn workflows continue in the worktree with no pane updates and
+      // later semantic/finalization statuses leave the Herdr pane stale/open.
+      if (managed.paneId) {
+        const spawnSlot = this.paneCoordinator.acquire(managed.runId);
+        if (!spawnSlot) {
+          const capError = new WorkflowError(
+            `herdr pane concurrency cap reached on resume (${this.paneCoordinator.activeCount}/${this.paneCoordinator.maxPanes}); raise herdrMaxPanes or wait`,
+            WorkflowErrorCode.WORKFLOW_ABORTED,
+            { recoverable: false },
+          );
+          managed.status = "failed";
+          managed.error = capError;
+          this.persistRun(managed);
+          this.releaseRunLease(managed);
+          this.emit("error", { runId: managed.runId, error: capError });
+          throw capError;
+        }
+        managed._spawnLease = spawnSlot;
+        managed.paneHandle = createPaneHandle(this.herdrInvoker, managed.paneId);
+      }
     } else if (reuseWorktree) {
       // A persisted worktree was required for resume but is gone (the failed run's
       // tree was removed on terminal settle). Refuse to resume in the primary
@@ -782,8 +840,9 @@ export class WorkflowManager extends EventEmitter {
       // herdr worktree create — single source of truth, no double bookkeeping.
       // docs §2: --base is a git *ref*, --cwd is the repo path. Pass the repo path
       // via --cwd; the herdr-managed branch is the wf/<runId> ref.
+      const spawnBase = isolation?.base ?? this.cwd;
       const herdrWt = await this.herdrInvoker.worktreeCreate({
-        cwd: isolation.base ?? this.cwd,
+        cwd: spawnBase,
         branch: `wf/${managed.runId}`,
       });
       if (!herdrWt.cwd) {
@@ -802,7 +861,7 @@ export class WorkflowManager extends EventEmitter {
       }
 
       // Persist the herdr-managed worktree onto managed.worktree.
-      managed.worktree = { cwd: herdrWt.cwd, branch: herdrWt.branch, repoRoot: isolation.base ?? this.cwd };
+      managed.worktree = { cwd: herdrWt.cwd, branch: herdrWt.branch, repoRoot: spawnBase };
       this.persistRun(managed);
 
       // Resolve nesting so the spawned pane is nested under the caller pane.
@@ -819,26 +878,24 @@ export class WorkflowManager extends EventEmitter {
         ["pi", ...runArgs],
       );
 
-      // Store the pane handle for lifecycle management.
+      // Store the pane handle for lifecycle management, and persist the pane id
+      // so resume() can recreate the handle and keep driving the pane lifecycle.
       if (agentResult.paneId) {
+        managed.paneId = agentResult.paneId;
         managed.paneHandle = createPaneHandle(this.herdrInvoker, agentResult.paneId);
+        this.persistRun(managed);
       }
 
       // Set runCwd (same subdir-adjustment logic as normal worktree path).
       runCwd = herdrWt.cwd;
-      if (isolation.base) {
+      if (isolation?.base) {
         const sub = relative(isolation.base, this.cwd);
         if (sub && !sub.startsWith("..") && !isAbsolute(sub)) {
           runCwd = join(herdrWt.cwd, sub);
         }
       }
-      if (tools) {
-        this.emit("log", {
-          runId: managed.runId,
-          message:
-            "[isolation] explicit ExecOptions.tools dropped (primary-cwd bound); the agent builds worktree-cwd tools. Use a cwd-bound factory for custom policy (#93)",
-        });
-      }
+      // Note: explicit ExecOptions.tools are rejected above (fail-closed) before
+      // this point, so no tools-drop warning is needed here.
     } else if (wantWorktree) {
       runWorktree = await createWorktree(isolation?.base ?? this.cwd, `run-${managed.runId}`);
       if (!runWorktree.isolated) {
@@ -1000,6 +1057,10 @@ export class WorkflowManager extends EventEmitter {
       managed.status = "completed";
       managed.result = result;
       managed.harnessSelection = result.harnessSelection;
+      // Route the engine terminal state through the pane handle in case the
+      // workflow completed without the conductor setting a semantic `completed`
+      // (otherwise the pane would stay stale/open after the engine completes).
+      this.applyEngineTerminalPaneStatus(managed);
       this.emit("complete", { runId: managed.runId, result });
 
       // Persist final state
@@ -1033,6 +1094,11 @@ export class WorkflowManager extends EventEmitter {
         managed.status = "failed";
       }
       managed.error = workflowError;
+      // Route the engine terminal state through the pane handle. A pane-spawn run
+      // that throws before the conductor sets a semantic `failed` would otherwise
+      // leave its pane stale/open; an abort maps to a failed pane cell. Paused
+      // (usage-limit) runs keep their pane open and lease retained.
+      this.applyEngineTerminalPaneStatus(managed);
       if (usageLimitPaused) {
         this.emit("paused", {
           runId: managed.runId,
@@ -1065,11 +1131,36 @@ export class WorkflowManager extends EventEmitter {
       // semantic statuses (needs-human/needs-finalize) are the issue-delivery
       // repair/finalize handoff and must keep their worktree. Explicit deleteRun()
       // cleans up the rest; finalization removes a delivered worktree.
+      // Pane-spawn runs set `managed.worktree` directly (herdr owns the worktree)
+      // and leave `runWorktree` undefined, so wrap `managed.worktree` here too —
+      // otherwise an aborted pane-spawn run skips removal and leaves the herdr
+      // worktree + branch behind until a later manual deleteRun(), regressing the
+      // existing isolation contract for stop()/abort.
       if (runWorktree?.isolated && managed.status === "aborted") await removeWorktree(runWorktree);
-      // Release the pane-spawn coordinator lease.
-      if (managed._spawnLease) {
+      else if (!runWorktree?.isolated && managed.worktree && managed.status === "aborted")
+        await removeWorktree({
+          isolated: true,
+          cwd: managed.worktree.cwd,
+          branch: managed.worktree.branch,
+          repoRoot: managed.worktree.repoRoot,
+        });
+      // Release the pane-spawn coordinator lease ONLY when the pane is actually
+      // closed/gone. Kept-open conductor states (workflow-complete-pane-open,
+      // needs-finalize, needs-human) and resumable terminal states (failed,
+      // paused) intentionally leave the Herdr pane running, so releasing the
+      // lease here would drop `activeCount` while the real pane is still open —
+      // repeated runs could then exceed `herdrMaxPanes` and defeat the memory
+      // cap. The lease is released when the pane is truly closed: on `completed`
+      // (setSemanticStatus closes it), on deleteRun(), or here on abort (the run
+      // unwound and the worktree is gone, so the pane is stale/closed).
+      if (managed._spawnLease && managed.status === "aborted") {
         managed._spawnLease.release();
         managed._spawnLease = undefined;
+        // The pane is stale after an abort — close it so it doesn't linger.
+        if (managed.paneHandle) {
+          managed.paneHandle.close();
+          managed.paneHandle = undefined;
+        }
       }
     }
   }
@@ -1136,6 +1227,7 @@ export class WorkflowManager extends EventEmitter {
         harnessSelection: saveHarnessSelection(managed.harnessSelection),
         semanticStatus: managed.semanticStatus,
         worktree: managed.worktree,
+        paneId: managed.paneId,
       });
     } catch (err) {
       // Persistence is best-effort: the run is still healthy in memory.
@@ -1218,6 +1310,10 @@ export class WorkflowManager extends EventEmitter {
       transcriptDir: this.resolveTranscriptDir(runId),
       runStatePath: this.runStatePathFor(runId),
       semanticStatus: persisted.semanticStatus,
+      // Restore the persisted pane id so executeRun's reuse-worktree branch can
+      // recreate the pane handle and keep driving the pane lifecycle for a
+      // resumed pane-spawn run (otherwise the pane is left stale/open).
+      paneId: persisted.paneId,
     };
     this.runs.set(runId, managed);
 
@@ -1256,6 +1352,38 @@ export class WorkflowManager extends EventEmitter {
   }
 
   /**
+   * Push the engine terminal state through the pane handle.
+   *
+   * Pane updates normally flow from `setSemanticStatus` (the conductor's
+   * `onSemanticStatus` callback), but a pane-spawn workflow that completes
+   * without setting a semantic `completed` — or throws before setting semantic
+   * `failed` — would leave its `paneHandle` stale and open after the engine
+   * emits complete/error. Route the manager's terminal `completed`/`failed`/
+   * `aborted` transitions through the pane handle here so generic pane-spawn runs
+   * and early failures still apply the documented close/failed mapping.
+   */
+  private applyEngineTerminalPaneStatus(managed: ManagedRun): void {
+    if (!managed.paneHandle) return;
+    const engineStatus = managed.status;
+    // Map the engine status to the closest conductor semantic status. We only
+    // synthesize the terminal ones here; non-terminal/kept-open states are still
+    // driven by the conductor via setSemanticStatus.
+    const semantic: ConductorRunStatus | null =
+      engineStatus === "completed"
+        ? { status: "completed", reason: "engine completed" }
+        : engineStatus === "failed"
+          ? { status: "failed", reason: "engine failed" }
+          : engineStatus === "aborted"
+            ? { status: "failed", reason: "aborted" }
+            : null;
+    if (!semantic) return;
+    // Don't double-push: if the conductor already set the same semantic status,
+    // setSemanticStatus already drove the pane (and may have closed it).
+    if (managed.semanticStatus?.status === semantic.status) return;
+    this.setSemanticStatus(managed.runId, semantic);
+  }
+
+  /**
    * Set the conductor-level semantic status for a run.
    * The status is persisted (so it survives resume) and returned by
    * listRuns() alongside the existing engine `status`.
@@ -1275,6 +1403,19 @@ export class WorkflowManager extends EventEmitter {
         managed.paneHandle.updateStatus(semanticStatus);
         if (mapping.closePane) {
           managed.paneHandle.close();
+          managed.paneHandle = undefined;
+          // The pane is now closed — release the coordinator lease retained for
+          // kept-open states so activeCount reflects reality and the cap stays
+          // meaningful. Also clear the persisted pane id so a later resume does
+          // not try to drive a closed pane.
+          if (managed._spawnLease) {
+            managed._spawnLease.release();
+            managed._spawnLease = undefined;
+          }
+          if (managed.paneId) {
+            managed.paneId = undefined;
+            this.persistRun(managed);
+          }
         }
       }
     }
@@ -1324,6 +1465,18 @@ export class WorkflowManager extends EventEmitter {
     // mid-flight would strand its in-process agents. Stop/await it first.
     if (managed?.worktree && managed.status === "running") return false;
     if (managed) this.releaseRunLease(managed);
+    // Close the pane and release the retained coordinator lease for a kept-open
+    // pane-spawn run (needs-finalize/needs-human/workflow-complete-pane-open).
+    // deleteRun() is the explicit terminal cleanup path, so the pane must close
+    // and the lease must return here — not linger after the run is gone.
+    if (managed?.paneHandle) {
+      managed.paneHandle.close();
+      managed.paneHandle = undefined;
+    }
+    if (managed?._spawnLease) {
+      managed._spawnLease.release();
+      managed._spawnLease = undefined;
+    }
     // Tear down an isolated run's worktree (in-memory or persisted-only) so a
     // deleted run doesn't leave a .pi/worktrees/<id> + pi/wf branch behind. Best-effort.
     const wt = managed?.worktree ?? this.persistence.load(runId)?.worktree;

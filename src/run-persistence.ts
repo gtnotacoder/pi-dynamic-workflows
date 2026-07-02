@@ -103,6 +103,10 @@ export interface PersistedRunState {
    * primary checkout); resume reuses it via `reuseWorktree`.
    */
   worktree?: { cwd: string; branch?: string; repoRoot?: string };
+  /** Persisted herdr pane id for a pane-spawn run, so resume can recreate the
+   *  pane handle and keep driving the pane's lifecycle/finalization. Absent on
+   *  non-pane-spawn and older runs. */
+  paneId?: string;
 }
 
 export interface RunPersistence {

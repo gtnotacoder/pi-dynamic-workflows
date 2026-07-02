@@ -87,6 +87,14 @@ export interface HerdrInvoker {
 
   /** `herdr pane close <pane>` — closes the spawned pane. */
   paneClose(pane: string): void;
+
+  /**
+   * `herdr notification show <title> --sound <done|request>` — raises a desktop
+   * toast/sound so a kept-open pane's terminal state (needs-finalize,
+   * needs-human, completed, failed) is surfaced even when the operator is not
+   * watching the pane. Fire-and-forget; never throws.
+   */
+  notify(pane: string, opts: { title: string; sound: "done" | "request" }): void;
 }
 
 // ── Default invoker (spawn-based, fire-and-forget) ──────────────────────────
@@ -213,6 +221,10 @@ export function createDefaultHerdrInvoker(): HerdrInvoker {
 
     paneClose(pane: string): void {
       runSync(["pane", "close", pane]);
+    },
+
+    notify(_pane: string, opts: { title: string; sound: "done" | "request" }): void {
+      runSync(["notification", "show", opts.title, "--sound", opts.sound]);
     },
   };
 }
@@ -454,6 +466,16 @@ export function createPaneHandle(invoker: HerdrInvoker, paneId: string): RunPane
         invoker.releaseAgent(paneId, {
           source: PANE_SPAWN_SOURCE,
           agent: PANE_SPAWN_AGENT,
+        });
+      }
+      // Route the docs §6 notify mapping through the invoker so kept-open
+      // terminal/attention states (needs-finalize, needs-human, completed,
+      // failed) raise a herdr desktop toast/sound. Without this the pane cell
+      // changes but the operator can miss the finalization/attention prompt.
+      if (mapping.notify) {
+        invoker.notify(paneId, {
+          title: mapping.customStatus,
+          sound: mapping.notify,
         });
       }
     },
