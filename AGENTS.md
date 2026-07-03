@@ -73,3 +73,7 @@ npm test
 ## When suggesting a fix
 
 Keep fixes surgical. Identify exact files to edit and tests to run. If a problem belongs in another repository (for example the Pi SDK or lean-ctx bridge implementation), say so and recommend filing an issue rather than editing across repos in this repo's PR.
+
+## Memory hygiene (hindsight_retain)
+
+Retain only **durable** facts into Hindsight: decisions, preferences, architecture contracts, hard-won lessons. **Never retain ephemeral pipeline state** — CI pass/fail, PR open/draft/merged state, "X is running". Date every retained fact (`as of YYYY-MM-DD`) and supersede explicitly (`supersedes "<prior claim>"`) so contradictory durable claims never co-exist silently. Recall is tuned cheap (`autoRecallBudget` low, `maxRecallTokens` ≈ 1200); reserve `reflect` for deep synthesis, not routine turns. Use the `memory_gardener` saved workflow (report-first, gated `apply=true`, cheap tiers) for Graphiti-style eager staleness resolution (duplicate/supersede/expire) on shared banks. Full policy + examples: [docs/memory-hygiene.md](docs/memory-hygiene.md).
