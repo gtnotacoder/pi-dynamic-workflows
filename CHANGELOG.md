@@ -7,6 +7,34 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-05
+
+Naming cleanup, FastContext removal, context documentation, and per-agent skills allowlist.
+
+### ⚠️ Breaking
+
+- Rename the `/ultracode` command to `/maxeffort` (registered maximal-effort command in `src/effort-command.ts`, user-facing strings, README commands table, tests). The `EffortLevel` "ultra" tier value is unchanged — that is `/effort`, not the command name.
+
+### Removed
+
+- FastContext integration is removed: the upstream exploration tool was discontinued. The Scout phase now uses the existing codegraph exploration stack (`codegraph_explore`/`codegraph_context`/`codegraph_search`/`codegraph_files`, `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, `lsp_navigation`), and the scout `agentType` is now `code-scout`. The discontinued tool's read-only allowlist entries, transient path (`.gitignore`, Biome excludes, finalization-ignore guidance), and fixture wording are all retired.
+
+### Added
+
+- Per-agent **skills allowlist**: `agent()` accepts `skills: ["name", ...]` to load only the named skills for that subagent, regardless of `inheritSkills`/`contextMode`. An empty array is a **fence** (zero skills); unknown names warn and are skipped; the run never fails. Precedence: `skills` > `inheritSkills`/`contextMode`. The allowlist is folded into the resume call-hash so changing it busts the cached result. Pure helper `filterSkillsByName` is exported from `src/context-mode.ts` for direct unit testing. Documented in README and `docs/context-modes.md`.
+- `docs/context-toolchain.md` (new): documents the context-handling companions — the Autocompactor (modes, pre-compaction accounting, durable-artifact preservation, `vcc_recall` scopes), Hindsight memory (`retain`/`recall`/`reflect`, `memory_gardener` saved workflow), and how the three tiers (within-turn / across-compaction / across-restarts) compose.
+- Authoring payload rule added to `docs/prompt-guidance-style.md` ("Verdicts, not payloads"): the agent-result channel carries verdicts, not payloads; anything over ~10KB goes to a file and the ack is `{ok, path, count}`.
+- `CONTEXT.md` (new, repo root): a pure ubiquitous-language glossary — one term, one crisp definition each (harness, herdr, conductor, issue delivery, closed-loop delivery, hopper, clean-skip, prototype mode, scout firewall, model tiers, worktree isolation, workflow lock, agent-result channel, effort mode, gardener, autocompactor, hindsight, durable artifact, and more). No implementation details.
+
+### Acknowledgements
+
+- The glossary practice and skill-design principles adopted this release follow Matt Pocock's skills repo ([https://github.com/mattpocock/skills](https://github.com/mattpocock/skills)).
+
+### Verification
+
+- `npm test` passes (1398 tests / 0 fail) — no worse than the 0.2.1 baseline (1385/0).
+- Exhaustive greps across the repo (excluding this CHANGELOG's history) return **zero** hits for both `ultracode` and `fastcontext` (case-insensitive).
+
 ## [0.2.0] — 2026-07-02
 
 First milestone release since 0.1.7 — consolidates ~20 merged PRs: the harness-agnostic broker (`harness_type`/`harness_config`), run-level worktree isolation, host-shared ModelRegistry for subagents, the upstream-provenance/docs deep-clean, and the `.fugu`/`.fastcontext` vocabulary retirement. (Changelog was behind since 0.1.3; 0.1.4–0.1.7 shipped without sections — this entry folds in everything since.)
