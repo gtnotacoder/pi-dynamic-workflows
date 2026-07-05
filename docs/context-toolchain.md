@@ -171,6 +171,12 @@ map-reduce gardener over the Hindsight API. It runs in five phases:
      you target the topics you care about.
    - **`window`** — keep only memories whose `date` falls in an inclusive
      `[from, to]` ISO window.
+
+   In every mode, collection skips memories whose `state` is `invalidated`
+   **and** memories whose `fact_type` is `observation`: observations are
+   derived and regenerate from their source facts, and the Hindsight API
+   only allows curation of world/experience facts — so observations are
+   never gardened.
 2. **Shards** (small tier, parallel) — each shard agent extracts its shard
    from the manifest, fetches those memories **fully** by id (the manifest's
    preview is truncated and is not the body), and identifies candidate
@@ -229,6 +235,12 @@ The gardener is **report-only by default** (`apply=false`). Even with
 - **Filtered** — `flag_contradiction` rows are always skipped, never applied
   or patched, even when `apply=true`.
 - **Scoped** — `supersede`/`expire` only; `keep` is a no-op.
+- **Verified** — an apply counts only after the PATCH returns HTTP 2xx *and*
+  a re-GET confirms `state == "invalidated"` (verify-after-write). Failures
+  are reported honestly as `failedApply` with the API's error detail — never
+  folded into the applied count. (This rule exists because the first live
+  apply run showed that word-matching a success phrase in response bodies
+  silently counted API rejections as successes.)
 
 This makes gardening a safe, repeatable hygiene operation: run it
 report-only to see what's stale, then run with `apply=true` to retire
