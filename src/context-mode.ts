@@ -239,6 +239,32 @@ export function resourceLoaderFlags(
 }
 
 /**
+ * Filter a discovered skill set down to a name allowlist, matching by skill
+ * `name`. Returns the filtered skills plus a list of requested names that
+ * matched nothing (so the caller can warn — never fail — on typos).
+ *
+ * Pure + exported so the per-agent skills allowlist enforcement is unit-tested
+ * directly rather than only through the SDK glue in agent.ts. An empty
+ * `requested` array yields zero skills (equivalent to `inheritSkills:false`),
+ * NOT "all skills": an explicit allowlist is a fence, mirroring `applyToolPolicy`.
+ *
+ * Used by the `agent(prompt, { skills: ["name", ...] })` option: when set, the
+ * subagent's `DefaultResourceLoader` is built with `noSkills:false` (so the FULL
+ * skill set is discovered) and this function is wired as the loader's
+ * `skillsOverride` to keep only the named skills.
+ */
+export function filterSkillsByName<T extends { name: string }>(
+  discovered: readonly T[],
+  requested: readonly string[],
+): { skills: T[]; unknown: string[] } {
+  const want = new Set(requested);
+  const skills = discovered.filter((s) => want.has(s.name));
+  const known = new Set(discovered.map((s) => s.name));
+  const unknown = requested.filter((name) => !known.has(name));
+  return { skills, unknown };
+}
+
+/**
  * Merge project-defined modes over the built-ins. Reserved built-in names cannot
  * be shadowed (a project entry reusing one is ignored). Returns a frozen registry
  * ready for resolveContextMode.

@@ -363,6 +363,15 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   systemPromptMode?: SystemPromptMode;
   /** Load skills into this subagent. Default true. */
   inheritSkills?: boolean;
+  /**
+   * Per-agent **skills allowlist**: load ONLY these named skills into the
+   * subagent, regardless of `inheritSkills`/`contextMode`. An empty array is a
+   * fence that loads ZERO skills (equivalent to `inheritSkills:false`).
+   * `undefined` preserves the resolved context posture's skill behavior.
+   * Unknown names warn and are skipped (the run never fails). Wins over
+   * `inheritSkills`/`contextMode` for the skills channel.
+   */
+  skills?: string[];
   /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
   inheritMainRules?: boolean;
   /** Per-call coding-tool allowlist. Undefined = agentType/default tool policy. */
@@ -1827,6 +1836,9 @@ export async function runWorkflow<T = unknown>(
                   systemPromptMode: ctx.systemPromptMode,
                   inheritSkills: ctx.inheritSkills,
                   inheritMainRules: ctx.inheritMainRules,
+                  // Per-agent skills allowlist wins over the resolved skill posture.
+                  // Forwarded verbatim (undefined vs [] matters: [] is a fence → no skills).
+                  skills: agentOptions.skills,
                   // Role prompt → system prompt only under "replace"; otherwise undefined.
                   systemPromptText: roleSystemPrompt,
                   cwd: runCwd,
@@ -2636,6 +2648,9 @@ function hashAgentCall(
       tools: options.tools ?? null,
       disallowedTools: options.disallowedTools ?? null,
     },
+    // Per-agent skills allowlist (undefined vs [] matters for the hash, so cast
+    // rather than ?? null). Changing the allowlist invalidates cached results.
+    skills: options.skills ?? null,
     // Resolved definition (tools/model/prompt/context) so editing an agent .md
     // invalidates this call's cached result on a later resume.
     agentDef: agentDefKey,

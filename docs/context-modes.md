@@ -126,6 +126,26 @@ agent("debug with full context", { contextMode: "legacy" });        // opt back 
 agent("worker", { inheritMainRules: true });                        // per-field override of the default
 ```
 
+### Per-agent skills allowlist
+
+Skill inheritance is otherwise binary (`inheritSkills` true/false). Narrow it per
+call so a cheap mechanical subagent doesn't carry irrelevant skill descriptions:
+
+```js
+agent("grep for X", { skills: ["langfuse"] });   // load ONLY the langfuse skill
+agent("scout", { skills: [] });                   // fence: load ZERO skills
+```
+
+- `skills: ["name", ...]` loads only the named skills (matched by skill `name`),
+  regardless of `inheritSkills`/`contextMode`. An **empty array is a fence** →
+  zero skills (equivalent to `inheritSkills: false`), *not* "all skills".
+- Omitting the option preserves the resolved context posture's skill behavior.
+- Unknown names **warn** and are skipped; the run never fails on a typo.
+- Precedence for the skills channel: **`skills` > `inheritSkills`/`contextMode`**.
+  When set, a custom resource loader is always constructed (even under `legacy`)
+  and a `skillsOverride` filter keeps only the named skills; the allowlist is
+  folded into the resume call-hash so changing it re-runs the agent.
+
 ### Run level (bundled commands) & listing
 
 ```
@@ -165,7 +185,7 @@ shared `AGENTS.md` and a main-only `.pi/APPEND_SYSTEM.md`:
 
 | File | Role |
 |---|---|
-| `src/context-mode.ts` | Primitives (incl. `inheritMainRules`), registry, resolver, `resourceLoaderFlags` (incl. `appendSystemPrompt`), `needsResourceLoader` gate, reserved names. |
+| `src/context-mode.ts` | Primitives (incl. `inheritMainRules`), registry, resolver, `resourceLoaderFlags` (incl. `appendSystemPrompt`), `needsResourceLoader` gate, reserved names, `filterSkillsByName` (skills allowlist). |
 | `src/agent.ts` | Builds a `DefaultResourceLoader` when non-default; maps primitives → loader flags incl. `appendSystemPrompt:[]`. |
 | `src/workflow.ts` | Surfaces the fields; resolves run/frontmatter/runtime layers; folds into the call-hash. |
 | `src/agent-registry.ts` | Parses `inheritMainRules` (+ the others) from frontmatter; folds into the resume key. |

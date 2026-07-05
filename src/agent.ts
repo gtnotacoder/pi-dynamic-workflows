@@ -28,6 +28,7 @@ import {
 import { emitCompactionTelemetry } from "./compaction-telemetry.js";
 import {
   DEFAULT_CONTEXT_MODE,
+  filterSkillsByName,
   needsResourceLoader,
   resolveContextMode,
   resourceLoaderFlags,
@@ -378,6 +379,20 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   systemPromptMode?: SystemPromptMode;
   /** Load skills into the subagent session. Default true. */
   inheritSkills?: boolean;
+  /**
+   * Per-agent **skills allowlist**: when set, the subagent loads ONLY the named
+   * skills (matched by skill `name`), regardless of `inheritSkills`/`contextMode`
+   * skill posture. An empty array is a fence that yields ZERO skills (equivalent
+   * to `inheritSkills:false`); `undefined` preserves today's behavior (the
+   * resolved context posture decides whether skills load at all).
+   *
+   * Precedence: `skills` wins over `inheritSkills`/`contextMode` for the skills
+   * channel — when set, a custom resource loader is always constructed (even
+   * under `legacy`) and a `skillsOverride` filter keeps only the named skills.
+   * Names that match no discovered skill warn (console) and are skipped; the run
+   * never fails on an unknown name.
+   */
+  skills?: string[];
   /**
    * Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`) into this
    * subagent. Default false: the main session's orchestration-only rules do not
@@ -748,7 +763,14 @@ export class WorkflowAgent {
       console.warn(`[workflow] unknown contextMode "${unknownMode}"; using "${DEFAULT_CONTEXT_MODE}"`);
     }
     let resourceLoader: ResourceLoader | undefined;
-    if (needsResourceLoader(ctx)) {
+    // A per-agent skills allowlist forces a custom loader even under `legacy`
+    // (where needsResourceLoader is false): the full skill set is discovered with
+    // noSkills:false, then skillsOverride filters it down to the named skills.
+    // An empty allowlist is a fence → zero skills (noSkills:true), mirroring
+    // applyToolPolicy's empty-allowlist semantics.
+    const skillsAllowlist = Array.isArray(options.skills) ? options.skills : undefined;
+    const skillsAllowlistActive = skillsAllowlist !== undefined;
+    if (skillsAllowlistActive || needsResourceLoader(ctx)) {
       // Enforcement mapping lives in resourceLoaderFlags (pure + unit-tested):
       // inheritProjectContext:false → noContextFiles; inheritSkills:false → noSkills;
       // inheritMainRules:false → appendSystemPrompt:[] (block `.pi/APPEND_SYSTEM.md`);
@@ -756,14 +778,28 @@ export class WorkflowAgent {
       // The SDK's own default loader uses exactly { cwd, agentDir, settingsManager }
       // (createAgentSession), so adding only these overrides loses no other config.
       const flags = resourceLoaderFlags(ctx, options.systemPromptText);
+      // When the allowlist is active, skills load (noSkills:false) so the override
+      // has a full set to filter — UNLESS the allowlist is empty (fence → no skills).
+      const allowlist = skillsAllowlist ?? [];
+      const noSkills = skillsAllowlistActive ? allowlist.length === 0 : flags.noSkills;
+      const skillsOverride = skillsAllowlistActive
+        ? (base: { skills: { name: string }[]; diagnostics: unknown }) => {
+            const filtered = filterSkillsByName(base.skills, allowlist);
+            for (const name of filtered.unknown) {
+              console.warn(`[workflow] skills allowlist: no skill named "${name}" (skipped)`);
+            }
+            return { skills: filtered.skills, diagnostics: base.diagnostics } as typeof base;
+          }
+        : undefined;
       const loader = new DefaultResourceLoader({
         cwd: runCwd,
         agentDir,
         settingsManager,
         noContextFiles: flags.noContextFiles,
-        noSkills: flags.noSkills,
+        noSkills,
         systemPrompt: flags.systemPrompt,
         appendSystemPrompt: flags.appendSystemPrompt,
+        ...(skillsOverride ? { skillsOverride: skillsOverride as never } : {}),
       });
       await loader.reload();
       resourceLoader = loader;
