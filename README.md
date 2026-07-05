@@ -60,7 +60,7 @@ launch diagnostics.
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/harness-configs` | — | List harness configs: id, harness_type, wired status, and trigger summary — see [Harness configs](#harness-configs). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
-| `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
+| `/maxeffort` | `[off]` | Standing maximal-effort mode; `/maxeffort off` to stop. |
 | `/workflows-models` | — | View and edit model tiers (small/medium/big). |
 | `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |

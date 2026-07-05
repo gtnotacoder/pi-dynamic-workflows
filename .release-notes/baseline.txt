@@ -1,0 +1,5 @@
+Baseline test run: chore/0.2.1-cleanup @ 4e55964
+Command: npm test (biome check + tsc build + tsx unit tests)
+Result: PASS — 1385 tests passed, 0 failed, 0 skipped
+Duration: ~40s
+Date: 2026-07-05

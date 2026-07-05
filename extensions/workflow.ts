@@ -64,7 +64,7 @@ export default function extension(pi: ExtensionAPI) {
   registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
-  // messages, like CC's ultracode. Shared with the editor's input hook below.
+  // messages, like pi's maximal-effort mode. Shared with the editor's input hook below.
   const effort = createEffortState();
   registerEffortCommand(pi, effort);
   // "Workflows mode": type `workflow-run` to arm a forced workflow (animated),
