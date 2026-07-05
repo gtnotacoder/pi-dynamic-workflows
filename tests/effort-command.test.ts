@@ -53,15 +53,15 @@ test("registerEffortCommand: /effort toggles the shared state", async () => {
   assert.equal(state.level, "off", "unknown arg leaves the level unchanged");
 });
 
-test("registerEffortCommand: /ultracode turns ultra on, /ultracode off turns it off", async () => {
+test("registerEffortCommand: /maxeffort turns ultra on, /maxeffort off turns it off", async () => {
   const state = createEffortState();
-  const ultracode = registerAndCapture(state).get("ultracode");
-  assert.ok(ultracode, "/ultracode registered");
+  const maxeffort = registerAndCapture(state).get("maxeffort");
+  assert.ok(maxeffort, "/maxeffort registered");
 
-  await ultracode?.handler("", {});
-  assert.equal(state.level, "ultra", "/ultracode (no arg) sets ultra");
-  await ultracode?.handler("off", {});
-  assert.equal(state.level, "off", "/ultracode off turns it off");
-  await ultracode?.handler("anything", {});
-  assert.equal(state.level, "ultra", "/ultracode <anything-but-off> sets ultra");
+  await maxeffort?.handler("", {});
+  assert.equal(state.level, "ultra", "/maxeffort (no arg) sets ultra");
+  await maxeffort?.handler("off", {});
+  assert.equal(state.level, "off", "/maxeffort off turns it off");
+  await maxeffort?.handler("anything", {});
+  assert.equal(state.level, "ultra", "/maxeffort <anything-but-off> sets ultra");
 });

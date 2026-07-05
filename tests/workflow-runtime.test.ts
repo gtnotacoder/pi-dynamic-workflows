@@ -1008,6 +1008,7 @@ function legacyDefaultAgentHash(prompt: string): string {
           tools: null,
           disallowedTools: null,
         },
+        skills: null,
         agentDef: null,
         schema: null,
       }),

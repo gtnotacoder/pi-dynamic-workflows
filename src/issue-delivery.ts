@@ -75,7 +75,6 @@ const PROTOTYPE_READ_ONLY_TOOLS = [
   'read', 'grep', 'find', 'ls',
   'ctx_read', 'ctx_grep', 'ctx_find', 'ctx_ls',
   'ffgrep', 'fffind',
-  'fastcontext_health', 'fastcontext_explore', 'fastcontext_explore_with_trace',
   'codegraph_search', 'codegraph_context', 'codegraph_files', 'codegraph_explore',
   'module_report', 'read_symbol',
   'lsp_navigation', 'lsp_diagnostics', 'lens_diagnostics',
@@ -249,15 +248,15 @@ if (PROTOTYPE_LANE) {
 
 // --- Phase 0: Scout firewall ---
 phase('Scout')
-log('[IssueDelivery:Scout] Spawning fastcontext-scout (small tier) to create a compact Code Map before Thinker planning...')
+log('[IssueDelivery:Scout] Spawning code-scout (small tier) to create a compact Code Map before Thinker planning...')
 
 const codeMap = await agent(
-  'Use FastContext and targeted reads to produce a compact Code Map for this task. Do not edit files. Return only relevant files, line ranges, exported APIs, tests, and caveats. Keep it under 1200 words.\\n' +
+  'Use the codegraph exploration stack (codegraph_explore, codegraph_context, codegraph_search, codegraph_files), ffgrep/fffind, and targeted ctx_read to produce a compact Code Map for this task. Do not edit files. Return only relevant files, line ranges, exported APIs, tests, and caveats. Keep it under 1200 words.\\n' +
   'Task: "' + TASK_CONTEXT + '"',
   {
     label: 'issue-scout',
     tier: 'small',
-    agentType: 'fastcontext-scout',
+    agentType: 'code-scout',
     tools: PROTOTYPE_DRY_RUN ? PROTOTYPE_READ_ONLY_TOOLS : undefined
   }
 )

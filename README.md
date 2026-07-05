@@ -13,6 +13,16 @@ closed-loop workflow (Scout → Thinker → Worker → Checks → Verifier → P
 
 ---
 
+## Docs index
+
+- **[CONTEXT.md](./CONTEXT.md)** — glossary / ubiquitous language for this project's domain terms (harness, conductor, fugu, hopper, clean-skip, scout firewall, model tiers, worktree isolation, workflow lock, agent-result channel, effort mode, gardener, …).
+- **[docs/context-toolchain.md](./docs/context-toolchain.md)** — the context-handling companions that make long Pi sessions work: autocompactor (compaction + durable-artifact preservation + `vcc_recall`) and Hindsight memory + the `memory_gardener` saved workflow.
+- **[docs/architecture.md](./docs/architecture.md)** — full architecture diagram with expanded detail.
+- **[docs/context-modes.md](./docs/context-modes.md)** — per-subagent context governance (`focused` default).
+- **[docs/workflows/catalog.md](./docs/workflows/catalog.md)** — workflow catalog and naming lock.
+- **[docs/prompt-guidance-style.md](./docs/prompt-guidance-style.md)** — how we write behavioral guidance for agents (principles, anti-patterns, "say this, not that").
+- **[docs/issue-delivery-smoke-test.md](./docs/issue-delivery-smoke-test.md)**, **[docs/model-routing-specialization.md](./docs/model-routing-specialization.md)**, **[docs/herdr-integration.md](./docs/herdr-integration.md)**, **[docs/supervisor-telemetry-env.md](./docs/supervisor-telemetry-env.md)** — topic deep-dives.
+
 ## Quickstart
 
 Point Pi's agent settings at this checkout, build, and restart Pi:
@@ -60,7 +70,7 @@ launch diagnostics.
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
 | `/harness-configs` | — | List harness configs: id, harness_type, wired status, and trigger summary — see [Harness configs](#harness-configs). |
 | `/effort` | `off \| high \| ultra` | Standing workflow effort — auto-arms a workflow for substantive messages. |
-| `/ultracode` | `[off]` | Standing maximal-effort mode; `/ultracode off` to stop. |
+| `/maxeffort` | `[off]` | Standing maximal-effort mode; `/maxeffort off` to stop. |
 | `/workflows-models` | — | View and edit model tiers (small/medium/big). |
 | `/workflows-trigger` | `on \| off \| status` | Keyword trigger: when on, typing the exact `workflow-run` phrase auto-arms workflows mode. |
 | `/workflows-progress` | `compact \| detailed \| status` | Bottom progress-panel render mode. |
@@ -142,6 +152,28 @@ isolated — subagents spawn with fresh sessions.)
 
 Full reference: **[docs/context-modes.md](./docs/context-modes.md)**.
 
+### Per-agent skills allowlist
+
+Skill inheritance is not binary. A `focused` subagent inherits *all* user + project
+skills, so a cheap-tier mechanical agent (e.g. a grep-only scout) carries irrelevant
+skill descriptions as pure context tax. Narrow it per call:
+
+```js
+await agent("grep the repo for X", { label: "scout", skills: ["langfuse"] })
+```
+
+`skills: ["name", ...]` loads **only** the named skills (matched by skill `name`),
+regardless of `inheritSkills`/`contextMode`. An **empty array is a fence** —
+`skills: []` loads zero skills (equivalent to `inheritSkills: false`), *not* "all
+skills". Omitting the option preserves today's behavior (the resolved context
+posture decides whether skills load). Names that match no discovered skill **warn**
+and are skipped; the run never fails on an unknown name.
+
+Precedence for the skills channel: **`skills` > `inheritSkills`/`contextMode`**.
+When `skills` is set, a custom resource loader is always constructed (even under
+`legacy`) and a `skillsOverride` filter keeps only the named skills, so the
+allowlist also busts the resume cache (changing the list re-runs the agent).
+
 ### Harness configs
 
 A **harness_config** is a JSON descriptor that declares how a workflow harness is configured. Descriptors live as `schemaVersion` 1 JSON files under user-level (`~/.pi/workflows/harnesses/`) or project-level (`.pi/workflows/harnesses/`) directories. The `harness_type` field (`pi`, `opencode`, `hermes`) determines runtime wiring; only `pi` is connected. Run `/harness-configs` to list active configs.
@@ -153,7 +185,7 @@ A **harness_config** is a JSON descriptor that declares how a workflow harness i
 ```text
 Task / issue text
   ↓
-Scout (small tier): FastContext firewall returns a compact Code Map
+Scout (small tier): codegraph exploration stack returns a compact Code Map
   ↓
 Thinker (big tier): plan a DAG from the compact Code Map
   ↓
@@ -174,7 +206,7 @@ PR delivery + Telemetry finalization: branch, commit, push, PR, clean/pushed/che
 
 | Component | Role |
 |-----------|------|
-| **Scout** | Runs `fastcontext-scout` on the small tier to gather targeted citations and API/test hints. The Thinker receives this compact Code Map instead of large raw files. |
+| **Scout** | Runs `code-scout` on the small tier to gather targeted citations and API/test hints via the codegraph exploration stack (codegraph_explore/context, ffgrep/fffind, ctx_read). The Thinker receives this compact Code Map instead of large raw files. |
 | **Thinker** | Plans from the task plus Code Map, then emits structured JSON: `summary` plus `steps[]` with `id`, `file`, `instructions`, `expectedOutput`, and optional `dependencies`. Same-file edits should be sequential; independent files can stay dependency-free. |
 | **DAG scheduler** | Runs inside the workflow VM, not inside a model. It repeatedly finds steps whose dependencies are complete, starts them together with `parallel()`, and rejects cyclic/deadlocked plans. |
 | **Worker** | Receives exactly one step and edits the repo directly with coding tools. First attempt uses `small`, second `medium`, third `big`; it sees only the current Correction Delta, not raw history. |

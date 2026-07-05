@@ -94,7 +94,7 @@ Each `agent()` call is assigned a stable call index (deterministic call-sequence
 
 `src/agent-registry.ts` hosts the agent-type system:
 
-- `loadAgentRegistry()` — loads agent-type definitions by scanning project (`.pi/agents/`-equivalent) and user (`~/.pi/agents/`) directories for `.md` files. No defaults are shipped in the extension source; names like `adversarial-evidence-reviewer`, `fastcontext-scout`, `specialized-worker`, and `trace-analyst` are runtime-installed definitions, not built-ins.
+- `loadAgentRegistry()` — loads agent-type definitions by scanning project (`.pi/agents/`-equivalent) and user (`~/.pi/agents/`) directories for `.md` files. No defaults are shipped in the extension source; names like `adversarial-evidence-reviewer`, `code-scout`, `specialized-worker`, and `trace-analyst` are runtime-installed definitions, not built-ins.
 - `resolveAgentType(name, registry)` — returns the `AgentDefinition` (role prompt, tool policy, model hints) for a named agent type.
 - `applyToolPolicy()` — merges explicit `tools`/`disallowedTools` with the agentType's policy and read-only fences.
 

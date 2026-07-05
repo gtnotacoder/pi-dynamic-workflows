@@ -1,8 +1,8 @@
 /**
- * Standing `/effort` opt-in (pi's answer to CC's ultracode): a session toggle that
+ * Standing `/effort` opt-in (pi's maximal-effort mode): a session toggle that
  * auto-arms a workflow for substantive interactive messages, with effort-tier
- * guidance nudging fan-out breadth and the hard caps (tokenBudget / maxAgents) the
- * model should set on the workflow tool call.
+ * guidance nudging fan-out breadth and the hard caps (tokenBudget / maxAgents)
+ * the model should set on the workflow tool call.
  *
  * Honest scope: the runtime cannot enforce "reviewer N / loop K" — those live in
  * the script the model writes — so the tiers are guidance plus the model setting
@@ -65,22 +65,22 @@ export function registerEffortCommand(pi: ExtensionAPI, state: EffortState): voi
     },
   });
 
-  // `/ultracode` — the headline name for the maximal-effort mode (Pi's ultracode):
-  // `/ultracode` turns it on, `/ultracode off` turns it off. Alias for /effort ultra.
-  pi.registerCommand("ultracode", {
+  // `/maxeffort` — the headline name for pi's maximal-effort mode:
+  // `/maxeffort` turns it on, `/maxeffort off` turns it off. Alias for /effort ultra.
+  pi.registerCommand("maxeffort", {
     description:
-      "Ultracode: standing maximal-effort mode — auto-arms an exhaustive workflow for substantive messages. /ultracode off to stop.",
+      "Max effort: standing maximal-effort mode — auto-arms an exhaustive workflow for substantive messages. /maxeffort off to stop.",
     async handler(args: string, _ctx: ExtensionCommandContext) {
       const arg = args.trim().toLowerCase();
       const say = (content: string) => pi.sendMessage({ customType: "effort", content, display: true });
       if (arg === "off") {
         state.level = "off";
-        await say("Ultracode off — messages are no longer auto-armed as workflows.");
+        await say("Max effort off — messages are no longer auto-armed as workflows.");
         return;
       }
       state.level = "ultra";
       await say(
-        "Ultracode ON — substantive messages now auto-arm an exhaustive workflow (wide fan-out, big-tier synthesis). Use /ultracode off to stop.",
+        "Max effort ON — substantive messages now auto-arm an exhaustive workflow (wide fan-out, big-tier synthesis). Use /maxeffort off to stop.",
       );
     },
   });

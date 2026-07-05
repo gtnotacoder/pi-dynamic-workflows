@@ -8,7 +8,7 @@ As our multi-agent pipelines scale to handle larger issues, reviews, and closed-
 
 This document outlines our **Model Specialization and Intelligent Routing Strategy**. By aligning each subagent role to its optimal model archetype, we can **offload up to 80% of our premium token usage** without sacrificing a single drop of quality.
 
-Our strategy locks in specific, highly-capable models for their exact sweet spots, introduces the **`fastcontext-scout`** as an exploration firewall, and structures our workflow chains to execute on a collaborative "sovereign-worker" architecture.
+Our strategy locks in specific, highly-capable models for their exact sweet spots, introduces the **`code-scout`** as an exploration firewall, and structures our workflow chains to execute on a collaborative "sovereign-worker" architecture.
 
 ---
 
@@ -71,24 +71,24 @@ We have defined four distinct model tiers, each mapped to its ideal execution sw
 
 ---
 
-## 3. The `fastcontext` Scout Firewall
+## 3. The `code-scout` Firewall
 
 The most significant token leak in our current workflows is the **Thinker reading large raw files** to figure out how to plan a change. Asking a premium model (GPT-5.5) to read 3,000 lines of code across 5 files just to plan a 10-line edit burns millions of tokens weekly on redundant inputs.
 
-We solve this by inserting a **`fastcontext-scout`** (running on `local-qwen27`) as an **exploration firewall** at the very beginning of our pipelines:
+We solve this by inserting a **`code-scout`** (running on `local-qwen27`) as an **exploration firewall** at the very beginning of our pipelines:
 
 ### The Workflow Pattern
 
-1. **The Task Arrives:** Instead of routing the task directly to the GPT-5.5 Thinker, we spawn a `fastcontext-scout` on the local Qwen model.
-2. **FastContext Search:** The Scout uses `fastcontext_explore` to scan the codebase. It returns compact candidate file/line citations (e.g. `src/workflow-manager.ts:120-150`).
-3. **Targeted Read:** The Scout reads only those cited ranges, verifies their relevance, and extracts a compact "Code Map" containing only the exact lines of interest and their surrounding API signatures.
+1. **The Task Arrives:** Instead of routing the task directly to the GPT-5.5 Thinker, we spawn a `code-scout` on the local Qwen model.
+2. **Codegraph Search:** The Scout uses `codegraph_explore` / `codegraph_context` to map the codebase semantically. It returns compact candidate file/line citations (e.g. `src/workflow-manager.ts:120-150`) and exported API signatures.
+3. **Targeted Read:** The Scout reads only those cited ranges (via `ctx_read` / `read_symbol`), verifies their relevance, and extracts a compact "Code Map" containing only the exact lines of interest and their surrounding API signatures.
 4. **Handoff to Thinker:** The Scout hands this compact "Code Map" (usually <1,000 tokens) to the GPT-5.5 Thinker.
 5. **High-Reasoning Plan:** The Thinker uses its maximum logical capability to draft a flawless execution plan, completely spared from having to ingest massive, un-compacted raw files.
 
 ### Token Savings Estimate
 
 * **Legacy Method:** Thinker reads 5 full files (15k tokens) + system instructions (4k tokens) = **19k input tokens** per planning pass.
-* **Scout Firewall Method:** Scout uses zero-cost local Qwen + FastContext to retrieve candidate snippets. Thinker receives a 1k-token Code Map + system instructions (4k tokens) = **5k input tokens** (an **84% reduction in premium planning costs**!).
+* **Scout Firewall Method:** Scout uses zero-cost local Qwen + the codegraph exploration stack to retrieve candidate snippets. Thinker receives a 1k-token Code Map + system instructions (4k tokens) = **5k input tokens** (an **84% reduction in premium planning costs**!).
 
 ---
 
@@ -98,7 +98,7 @@ To maintain absolute, un-compromised code quality while preserving our weekly bu
 
 | Phase | Task / Responsibility | Target Model | Reason for Assignment | Quality Impact |
 |---|---|---|---|---|
-| **Pre-flight Scout** | Run `fastcontext_explore`, gather file signatures, compile compact Code Map. | `local-qwen27` | Zero-cost, excellent tool calling, high-speed navigation. | **No Quality Loss:** Reading file signatures and retrieving exact lines requires no reasoning depth. |
+| **Pre-flight Scout** | Run `codegraph_explore` / `codegraph_context`, gather file signatures, compile compact Code Map. | `local-qwen27` | Zero-cost, excellent tool calling, high-speed navigation. | **No Quality Loss:** Reading file signatures and retrieving exact lines requires no reasoning depth. |
 | **Thinker (Planning)** | Evaluate the Code Map, architecture the modification plan, generate DAG steps. | `gpt-5.5` (Sovereign) | Highest-capacity logical reasoning for planning. | **Premium Quality:** Kept on the best model to ensure plans are perfect and dependency graphs are flawless. |
 | **Worker (Writing)** | Execute surgical edits on specific files based on focused step instructions. | `oc-glm52` | Powerful code writer, low-cost compared to GPT-5.5, great context. | **No Quality Loss:** GLM is directed by a strict plan from GPT-5.5, meaning it only needs to focus on localized edits. |
 | **LocalChecks (Testing)** | Execute linters (`biome check`), typescript compiler (`tsc`), and unit tests. | `local-qwen27` | Execution-only task; needs tool calling to run bash test scripts. | **No Quality Loss:** Parsing terminal stdout logs requires no frontier reasoning. |
