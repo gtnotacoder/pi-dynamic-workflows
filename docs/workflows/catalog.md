@@ -78,10 +78,9 @@ installation state.
 4. Transient workflow scratch state lives under `.issue-delivery/` only.
    `.fugu/` is fully retired (#104): nothing writes it, it is no longer
    git-ignored or lint-excluded, and a worktree still containing it blocks
-   finalization until cleaned. `.fastcontext/` is third-party tool output
-   (FastContext traces), kept git-ignored/lint-excluded as defensive hygiene
-   only — it is not workflow state and appears in no prompts or transient
-   lists.
+   finalization until cleaned. The discontinued Microsoft exploration tool
+   is no longer referenced by this project; the Scout phase now uses the
+   codegraph exploration stack (codegraph_*, ffgrep/fffind, ctx_read) instead.
 5. Use `prototype=true` / `--prototype` only for ad-hoc harness prototyping runs
    so the review system does not spend merge-gate effort on naming/catalog smoke
    tests. Normal delivery remains issue/plan driven.

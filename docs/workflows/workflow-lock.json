@@ -1,6 +1,6 @@
 {
   "schema": "pi-dynamic-workflows.workflow-lock.v1",
-  "generatedAt": "2026-07-02",
+  "generatedAt": "2026-07-05",
   "mode": "warning",
   "collisionPolicy": {
     "registrationOrder": ["builtin-command", "saved-workflow"],
@@ -13,7 +13,7 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "892bda45e96c551d758de3f83a486274736144e22dd64e82dd4495a82697732e",
+      "sha256": "a5fbc8383f3453cbe33bcea86321c3055bb1606c5fece26c00cc1d9627fd9099",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",

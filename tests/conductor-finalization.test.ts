@@ -80,10 +80,8 @@ test("evaluateFinalization: transient .issue-delivery/ paths are ignored", () =>
   assert.equal(r.status, "completed");
 });
 
-test("evaluateFinalization: retired .fugu/ and .fastcontext/ paths are no longer transient → needs-finalize", () => {
-  const r = evaluateFinalization(
-    cleanInput({ porcelain: "?? .fugu/run-30/state.json\n?? .fastcontext/trajectory.jsonl\n" }),
-  );
+test("evaluateFinalization: retired .fugu/ paths are no longer transient → needs-finalize", () => {
+  const r = evaluateFinalization(cleanInput({ porcelain: "?? .fugu/run-30/state.json\n" }));
   assert.equal(r.status, "needs-finalize");
 });
 

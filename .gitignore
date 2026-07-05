@@ -14,5 +14,4 @@ __pycache__/
 
 # Generated local sample decks/PDF outputs
 docs/sample-outputs/
-.fastcontext/
 node_modules

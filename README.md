@@ -153,7 +153,7 @@ A **harness_config** is a JSON descriptor that declares how a workflow harness i
 ```text
 Task / issue text
   ↓
-Scout (small tier): FastContext firewall returns a compact Code Map
+Scout (small tier): codegraph exploration stack returns a compact Code Map
   ↓
 Thinker (big tier): plan a DAG from the compact Code Map
   ↓
@@ -174,7 +174,7 @@ PR delivery + Telemetry finalization: branch, commit, push, PR, clean/pushed/che
 
 | Component | Role |
 |-----------|------|
-| **Scout** | Runs `fastcontext-scout` on the small tier to gather targeted citations and API/test hints. The Thinker receives this compact Code Map instead of large raw files. |
+| **Scout** | Runs `code-scout` on the small tier to gather targeted citations and API/test hints via the codegraph exploration stack (codegraph_explore/context, ffgrep/fffind, ctx_read). The Thinker receives this compact Code Map instead of large raw files. |
 | **Thinker** | Plans from the task plus Code Map, then emits structured JSON: `summary` plus `steps[]` with `id`, `file`, `instructions`, `expectedOutput`, and optional `dependencies`. Same-file edits should be sequential; independent files can stay dependency-free. |
 | **DAG scheduler** | Runs inside the workflow VM, not inside a model. It repeatedly finds steps whose dependencies are complete, starts them together with `parallel()`, and rejects cyclic/deadlocked plans. |
 | **Worker** | Receives exactly one step and edits the repo directly with coding tools. First attempt uses `small`, second `medium`, third `big`; it sees only the current Correction Delta, not raw history. |

@@ -19,7 +19,7 @@ test("generateIssueDeliveryWorkflow produces a valid, parseable script", () => {
   assert.match(body, /Directed Acyclic Graph/);
   assert.match(body, /parallel\(/);
   assert.match(body, /issue-pr-delivery/);
-  assert.match(body, /fastcontext-scout/);
+  assert.match(body, /code-scout/);
   assert.match(body, /stageCheck\(/);
   assert.match(body, /compactFeedback\(/);
   assert.match(body, /stateWriteQueue/, "sidecar writes should be serialized");

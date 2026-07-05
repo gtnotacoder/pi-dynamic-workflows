@@ -19,7 +19,7 @@ const legacyDescriptor = JSON.stringify({
   schemaVersion: 1,
   harnessType: "frontend.radix-shadcn",
   name: "React shadcn/ui Radix adversarial PR review",
-  description: "FastContext-backed PR adversarial review harness.",
+  description: "Codegraph-backed PR adversarial review harness.",
   triggerRules: {
     pathPrefixes: ["components/ui/"],
     importPatterns: ["@radix-ui/react-*"],
