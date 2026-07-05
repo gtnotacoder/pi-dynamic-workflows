@@ -13,6 +13,16 @@ closed-loop workflow (Scout → Thinker → Worker → Checks → Verifier → P
 
 ---
 
+## Docs index
+
+- **[CONTEXT.md](./CONTEXT.md)** — glossary / ubiquitous language for this project's domain terms (harness, conductor, fugu, hopper, clean-skip, scout firewall, model tiers, worktree isolation, workflow lock, agent-result channel, effort mode, gardener, …).
+- **[docs/context-toolchain.md](./docs/context-toolchain.md)** — the context-handling companions that make long Pi sessions work: autocompactor (compaction + durable-artifact preservation + `vcc_recall`) and Hindsight memory + the `memory_gardener` saved workflow.
+- **[docs/architecture.md](./docs/architecture.md)** — full architecture diagram with expanded detail.
+- **[docs/context-modes.md](./docs/context-modes.md)** — per-subagent context governance (`focused` default).
+- **[docs/workflows/catalog.md](./docs/workflows/catalog.md)** — workflow catalog and naming lock.
+- **[docs/prompt-guidance-style.md](./docs/prompt-guidance-style.md)** — how we write behavioral guidance for agents (principles, anti-patterns, "say this, not that").
+- **[docs/issue-delivery-smoke-test.md](./docs/issue-delivery-smoke-test.md)**, **[docs/model-routing-specialization.md](./docs/model-routing-specialization.md)**, **[docs/herdr-integration.md](./docs/herdr-integration.md)**, **[docs/supervisor-telemetry-env.md](./docs/supervisor-telemetry-env.md)** — topic deep-dives.
+
 ## Quickstart
 
 Point Pi's agent settings at this checkout, build, and restart Pi:
