@@ -137,6 +137,16 @@
       "aliases": [],
       "channel": "active",
       "notes": "Frontend-specific review saved workflow. Recorded for operator visibility; external saved workflow contents are local installation state."
+    },
+    {
+      "canonicalName": "foundation_ui_compliance",
+      "command": "/foundation_ui_compliance",
+      "kind": "saved-workflow",
+      "source": "~/.pi/workflows/saved/foundation_ui_compliance.json",
+      "sha256": null,
+      "aliases": [],
+      "channel": "active",
+      "notes": "Universal design-system compliance delivery engine. Generic template ships in docs/workflows/templates/foundation_ui_compliance.workflow.mjs; setup + Foundation Gate Contract in docs/workflows/foundation-ui-compliance.md. All gates run through the single entrypoint in the app's vendored foundation (<foundation>/scripts/run-foundation-gates.mjs — the foundation owns the gate list, so foundation changes propagate with zero workflow edits). App/org specifics arrive via args/per-repo harness JSON, never in the engine; orgs keep a pinned, CI-gated template of record in their own foundation repo and reinstall after updates. Hard rules: frontier judge, editScope-confined fixers (third_party/** always deny), gates every round, trace-assert."
     }
   ]
 }
