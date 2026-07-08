@@ -44,7 +44,7 @@ export const meta = {
 // ---- args (the workflow tool may deliver args as a JSON string) ----
 let A = {};
 try {
-  A = typeof args === "string" ? JSON.parse(args || "{}") : (args || {});
+  A = typeof args === "string" ? JSON.parse(args || "{}") : args || {};
 } catch (err) {
   throw new Error(`args must be valid JSON: ${err && err.message ? err.message : err}`);
 }
@@ -56,7 +56,14 @@ const urls = Array.isArray(A.urls) ? A.urls.map(String) : [];
 const loginUrl = A.loginUrl ? String(A.loginUrl) : null;
 const editAllow = Array.isArray(A.editAllow) ? A.editAllow.map(String) : [];
 if (editAllow.length === 0) throw new Error("args.editAllow is required");
-const editDeny = [...new Set([...(Array.isArray(A.editDeny) ? A.editDeny.map(String) : []), "third_party/**", ".github/**", "vendor/**"])];
+const editDeny = [
+  ...new Set([
+    ...(Array.isArray(A.editDeny) ? A.editDeny.map(String) : []),
+    "third_party/**",
+    ".github/**",
+    "vendor/**",
+  ]),
+];
 const maxRounds = Number(A.maxRounds || 2);
 const deliver = A.deliver === true || String(A.deliver) === "true";
 
@@ -121,9 +128,18 @@ if (/\bCLEAN\b/.test(diagnose) && !/must-fix/i.test(diagnose)) {
         "If summary.failed is 0, end with the exact token: ALL-CLEAR.",
         "Otherwise report the remaining must-fix items (same shape as before).",
       ].join("\n"),
-      { label: `regate-round-${round}`, contextMode: "focused", readOnly: true, inheritMainRules: false, tier: "medium" },
+      {
+        label: `regate-round-${round}`,
+        contextMode: "focused",
+        readOnly: true,
+        inheritMainRules: false,
+        tier: "medium",
+      },
     );
-    if (/\bALL-CLEAR\b/.test(regate)) { cleared = true; break; }
+    if (/\bALL-CLEAR\b/.test(regate)) {
+      cleared = true;
+      break;
+    }
     outstanding = regate;
   }
   if (!cleared) log(`maxRounds (${maxRounds}) reached with gates still red — surfacing for human review.`);
