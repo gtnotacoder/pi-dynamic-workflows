@@ -7,6 +7,10 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-09
+
+Model-tier routing hardening, machine-readable operator policy, and GPT-5.6 route qualification.
+
 ### Added
 
 - Add optional machine-local `routingNotes` to `model-tiers.json`; the workflow tool injects them alongside the concrete tier mapping so model-authored workflows can apply operator-specific specialization.
