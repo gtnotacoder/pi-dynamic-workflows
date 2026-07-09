@@ -724,6 +724,48 @@ return a`;
   assert.equal(changed.state.calls, 1, "changed run-level context policy should miss cache");
 });
 
+test("resume hash includes the concrete model resolved from a tier", async () => {
+  const script = `export const meta = { name: 'tier_model_resume', description: 'tier model resume' }
+const a = await agent('first', { label: 'a', tier: 'medium' })
+return a`;
+  const glmConfig = { tiers: { small: "local/qwen", medium: "cloud/glm", big: "frontier/sol" } };
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    modelTierConfig: glmConfig,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  const same = countingAgent();
+  await runWorkflow(script, {
+    agent: same.runner,
+    modelTierConfig: glmConfig,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(same.state.calls, 0, "an unchanged tier mapping should replay");
+
+  let forwardedConfig: unknown;
+  const changed = countingAgent();
+  const changedRunner = {
+    async run(prompt: string, options: Record<string, unknown>) {
+      forwardedConfig = options.modelTierConfig;
+      return changed.runner.run(prompt, options);
+    },
+  };
+  const lunaConfig = { tiers: { small: "local/qwen", medium: "openai/luna", big: "frontier/sol" } };
+  await runWorkflow(script, {
+    agent: changedRunner,
+    modelTierConfig: lunaConfig,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(changed.state.calls, 1, "changing the model behind a tier should miss the cache");
+  assert.equal(forwardedConfig, lunaConfig, "the run snapshot should be forwarded to the agent runner");
+});
+
 test("meta.model is parsed and routes as the default model for agents", async () => {
   let seenModel: string | undefined;
   const recorder = {
@@ -1056,6 +1098,7 @@ return a`;
   const replay = countingAgent();
   const result = await runWorkflow(script, {
     agent: replay.runner,
+    modelTierConfig: null,
     persistLogs: false,
     resumeJournal: new Map([[0, legacyEntry]]),
   });
@@ -1065,6 +1108,7 @@ return a`;
   const capped = countingAgent();
   await runWorkflow(script, {
     agent: capped.runner,
+    modelTierConfig: null,
     agentMaxContextTokens: 1000,
     persistLogs: false,
     resumeJournal: new Map([[0, legacyEntry]]),

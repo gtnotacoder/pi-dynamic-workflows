@@ -28,6 +28,12 @@ import { MODEL_TIERS_FILE } from "./config.js";
  */
 export interface ModelTierConfig {
   tiers: Record<string, string>;
+  /**
+   * Optional operator guidance injected into the model-facing workflow authoring
+   * prompt. Use this for machine-specific specialization that cannot be encoded
+   * by the three one-model tier slots (for example, a long-context fallback).
+   */
+  routingNotes?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +85,12 @@ export function loadModelTierConfig(configPath?: string): ModelTierConfig | null
     for (const val of Object.values(parsed.tiers)) {
       if (typeof val !== "string") return null;
     }
+    if (
+      parsed.routingNotes !== undefined &&
+      (!Array.isArray(parsed.routingNotes) || parsed.routingNotes.some((note: unknown) => typeof note !== "string"))
+    ) {
+      return null;
+    }
     return parsed as ModelTierConfig;
   } catch {
     return null;
@@ -114,4 +126,35 @@ export function sortedTierNames(config: ModelTierConfig): string[] {
   const names = Object.keys(config.tiers);
   const rank: Record<string, number> = { small: 0, medium: 1, big: 2 };
   return names.sort((a, b) => (rank[a] ?? 99) - (rank[b] ?? 99) || a.localeCompare(b));
+}
+
+/**
+ * Surface configuration shapes that make a small → medium → big escalation
+ * misleading. These are warnings rather than validation errors because a fresh
+ * install intentionally starts with all three tiers on the current Pi model.
+ */
+export function modelTierConfigWarnings(config: ModelTierConfig): string[] {
+  const warnings: string[] = [];
+  const standardTiers = ["small", "medium", "big"] as const;
+  const tiersByModel = new Map<string, string[]>();
+
+  for (const tier of standardTiers) {
+    const model = config.tiers[tier]?.trim();
+    if (!model) {
+      warnings.push(`The ${tier} tier has no model; it will fall back to the session model.`);
+      continue;
+    }
+    const names = tiersByModel.get(model) ?? [];
+    names.push(tier);
+    tiersByModel.set(model, names);
+  }
+
+  for (const [model, tiers] of tiersByModel) {
+    if (tiers.length < 2) continue;
+    warnings.push(
+      `${tiers.join("/")} tiers all resolve to "${model}"; escalation between them will retry the same model.`,
+    );
+  }
+
+  return warnings;
 }

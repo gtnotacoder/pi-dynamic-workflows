@@ -62,7 +62,7 @@ const ENGINE_PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta
 import { createWorkflowLogger } from "./logger.js";
 import { LoopDetector, type LoopGuardOptions } from "./loop-detector.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
-import { loadModelTierConfig, resolveTierModel } from "./model-tier-config.js";
+import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import {
   checkPrototypeWorktreeSafety,
   type PrototypeSafetyOptions,
@@ -161,6 +161,11 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * Injectable for tests.
    */
   agentRegistry?: AgentRegistry;
+  /**
+   * Model-tier snapshot for this run. undefined loads the machine config once;
+   * null explicitly disables it. Injectable for deterministic tests/embedders.
+   */
+  modelTierConfig?: ModelTierConfig | null;
   concurrency?: number;
   /** Retry attempts after a recoverable agent failure. Default 0. */
   agentRetries?: number;
@@ -571,6 +576,12 @@ export async function runWorkflow<T = unknown>(
   // Snapshot the agentType registry ONCE per run so two agent() calls can't
   // observe a mid-run edit (determinism); a later resume re-reads it.
   const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
+
+  // Snapshot model tiers ONCE per run. This prevents different agent() calls in
+  // one run from observing mid-run edits to model-tiers.json. A resumed run
+  // takes a fresh snapshot; the resolved model is part of each call hash, so a
+  // mapping change invalidates the affected cached suffix.
+  const modelTierConfig = options.modelTierConfig !== undefined ? options.modelTierConfig : loadModelTierConfig();
 
   // Load the harness config registry ONCE per run, mirroring agentRegistry snapshot discipline.
   const harnessConfigRegistry: HarnessConfigRegistry =
@@ -1398,7 +1409,6 @@ export async function runWorkflow<T = unknown>(
     const agentTypeModel = explicitAgentModel === undefined ? agentDef?.model : undefined;
     const phaseModel = resolveModelForPhase(assignedPhase, routingConfig);
     const explicitModel = explicitAgentModel ?? agentTypeModel;
-    const modelTierConfig = loadModelTierConfig();
     const configuredTierModel =
       agentOptions.tier && modelTierConfig ? resolveTierModel(agentOptions.tier, modelTierConfig) : undefined;
     const defaultTierModel =
@@ -1421,7 +1431,8 @@ export async function runWorkflow<T = unknown>(
     // For display in /workflows: the model this agent runs on — its explicit/phase
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
-    let displayModel = modelSpec ?? configuredTierModel ?? defaultTierModel ?? options.mainModel;
+    const routedModel = modelSpec ?? configuredTierModel ?? defaultTierModel ?? options.mainModel;
+    let displayModel = routedModel;
 
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
@@ -1512,7 +1523,7 @@ export async function runWorkflow<T = unknown>(
     const agentDefKey = agentDefinitionKey(agentDef);
     const callHash = hashAgentCall(
       prompt,
-      modelSpec,
+      routedModel,
       assignedPhase,
       hashAgentOptions,
       effectiveContextPolicy,
@@ -1522,7 +1533,7 @@ export async function runWorkflow<T = unknown>(
     );
     const legacyCallHash = hashAgentCall(
       prompt,
-      modelSpec,
+      routedModel,
       assignedPhase,
       hashAgentOptions,
       effectiveContextPolicy,
@@ -1534,7 +1545,7 @@ export async function runWorkflow<T = unknown>(
     const legacyNoHarnessCallHash = legacyNoHarnessSelectionHashKey
       ? hashAgentCall(
           prompt,
-          modelSpec,
+          routedModel,
           assignedPhase,
           hashAgentOptions,
           effectiveContextPolicy,
@@ -1546,7 +1557,7 @@ export async function runWorkflow<T = unknown>(
     const legacyNoHarnessNoContextCallHash = legacyNoHarnessSelectionHashKey
       ? hashAgentCall(
           prompt,
-          modelSpec,
+          routedModel,
           assignedPhase,
           hashAgentOptions,
           effectiveContextPolicy,
@@ -1562,8 +1573,7 @@ export async function runWorkflow<T = unknown>(
     const baseAgentConfig: WorkflowAgentTelemetryConfig = {
       tier: effectiveTier,
       agentType: agentOptions.agentType,
-      requestedModel:
-        modelSpec ?? configuredTierModel ?? defaultTierModel ?? (agentOptions.tier ? options.mainModel : undefined),
+      requestedModel: routedModel,
       modelSource,
       contextMode: agentOptions.contextMode ?? agentDef?.contextMode ?? options.contextMode ?? "focused",
       context: ctx,
@@ -1814,6 +1824,8 @@ export async function runWorkflow<T = unknown>(
                   instructions: agentInstructions,
                   model: modelSpec,
                   tier: agentOptions.tier,
+                  modelTierConfig,
+
                   // Tool policy: an explicit per-call `tools`/`disallowedTools` override wins
                   // (it is part of the resume call-hash, so it is safe to widen a single call).
                   // Otherwise narrow: intersect the agentType allowlist with the harness

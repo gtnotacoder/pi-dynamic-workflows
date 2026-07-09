@@ -124,6 +124,15 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
+    it("rejects malformed routing notes", async () => {
+      const { loadModelTierConfig } = await loadModule();
+      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
+      const cfgPath = join(tmpDir, "model-tiers.json");
+      writeFileSync(cfgPath, '{"tiers":{"small":"model"},"routingNotes":["valid",42]}', "utf-8");
+      assert.equal(loadModelTierConfig(cfgPath), null);
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
     it("accepts a config where a tier value is a valid string", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
@@ -132,6 +141,35 @@ describe("model-tier-config", () => {
       const result = loadModelTierConfig(cfgPath);
       assert.equal(result?.tiers.small, "gpt-4.1-mini");
       rmSync(tmpDir, { recursive: true, force: true });
+    });
+  });
+
+  describe("modelTierConfigWarnings", () => {
+    it("warns when adjacent escalation tiers use the same model", async () => {
+      const { modelTierConfigWarnings } = await loadModule();
+      const warnings = modelTierConfigWarnings({
+        tiers: { small: "local/qwen", medium: "local/qwen", big: "frontier/sol" },
+      });
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /small\/medium/);
+      assert.match(warnings[0], /retry the same model/);
+    });
+
+    it("warns for missing standard tiers", async () => {
+      const { modelTierConfigWarnings } = await loadModule();
+      const warnings = modelTierConfigWarnings({ tiers: { small: "local/qwen" } });
+      assert.ok(warnings.some((warning: string) => /medium tier has no model/.test(warning)));
+      assert.ok(warnings.some((warning: string) => /big tier has no model/.test(warning)));
+    });
+
+    it("returns no warnings for a distinct complete ladder", async () => {
+      const { modelTierConfigWarnings } = await loadModule();
+      assert.deepEqual(
+        modelTierConfigWarnings({
+          tiers: { small: "local/qwen", medium: "openai/luna", big: "openai/sol" },
+        }),
+        [],
+      );
     });
   });
 

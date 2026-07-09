@@ -7,6 +7,19 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [Unreleased]
 
+### Added
+
+- Add optional machine-local `routingNotes` to `model-tiers.json`; the workflow tool injects them alongside the concrete tier mapping so model-authored workflows can apply operator-specific specialization.
+- Add non-blocking tier diagnostics for missing or duplicate `small`/`medium`/`big` mappings. `/workflows-models` surfaces duplicate mappings that would make an escalation retry the same model.
+
+### Fixed
+
+- Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
+
+### Documentation
+
+- Replace the stale GPT-5.5-era routing research note with current local-first guidance for GPT-5.6 Sol/Terra/Luna, GLM-5.2, Claude Fable 5/Opus 4.8, Gemini 3.5 Flash, and local Qwen. GPT-5.5 is retained only as a temporary benchmark/control route.
+
 ## [0.2.1] — 2026-07-05
 
 Naming cleanup, FastContext removal, context documentation, and per-agent skills allowlist.

@@ -194,12 +194,12 @@ export async function resolveStructuredOutput<T>(
  * `loadConfig` is injectable for testing; it defaults to reading from disk.
  */
 export function resolveAgentModelSpec(
-  options: { model?: string; tier?: string },
+  options: { model?: string; tier?: string; modelTierConfig?: ModelTierConfig | null },
   mainModel: string | undefined,
   loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
 ): string | undefined {
   if (options.model) return options.model;
-  const config = loadConfig();
+  const config = Object.hasOwn(options, "modelTierConfig") ? (options.modelTierConfig ?? null) : loadConfig();
   if (options.tier) {
     return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
   }
@@ -318,6 +318,11 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * caring which concrete model backs that tier.
    */
   tier?: string;
+  /**
+   * Model-tier config snapshotted by runWorkflow. When present (including
+   * null), run() must not re-read model-tiers.json mid-run.
+   */
+  modelTierConfig?: ModelTierConfig | null;
   /**
    * Per-run ModelRegistry override (wins over the agent's shared registry and
    * the disk fallback). Lets a host thread its live registry into a single run.

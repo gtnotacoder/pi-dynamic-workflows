@@ -56,7 +56,7 @@ mode as part of the cache-equivalence key.
 
 | Param | Default | Meaning |
 |---|---|---|
-| `models` | `openai-codex/gpt-5.5,meridian/claude-opus-4-8:high` | Comma-separated `provider/modelId` specs to compare. |
+| `models` | `openai-codex/gpt-5.6-luna,litellm-ny2/oc-glm52,meridian/claude-opus-4-8:high` | Comma-separated `provider/modelId` specs to compare. |
 | `repeats` | `3` | Reuse calls per model after the prime (1–10). |
 | `contextBlocks` | `140` | Size of the stable reference prefix (20–4000; 140 ≈ a few thousand tokens). |
 | `readMode` | `sequential` | `sequential`, or `parallel` (prime once, then fan out readers). Use `sequential` for strict per-agent row inspection; see the parallel caveat below. |
@@ -71,7 +71,7 @@ Install and run it locally:
 3. Run the saved slash command with params:
 
 ```text
-/harness_cache_benchmark models=openai-codex/gpt-5.5,meridian/claude-opus-4-8:high repeats=3 readMode=parallel tag=ttl-10m
+/harness_cache_benchmark models=openai-codex/gpt-5.6-luna,litellm-ny2/oc-glm52,meridian/claude-opus-4-8:high repeats=3 readMode=parallel tag=ttl-10m
 ```
 
 If the JSON file is not installed locally and the session has not been restarted after
@@ -101,8 +101,8 @@ Every run flows through the WorkflowManager, so all of these capture it automati
   (per-agent `usage` incl. `cacheRead`/`cacheWrite`).
 - **Deterministic report:** `/workflow-telemetry-report runId=<runId>` — per-model
   cache-read fraction, anomalies, trace links.
-- **LLM analysis:** `/workflow_trace_analyzer runId=<runId>` — Spark `trace-analyst`
-  narrative + checklist.
+- **LLM analysis:** `/workflow_trace_analyzer runId=<runId>` — the configured
+  `trace-analyst` (currently GPT-5.6 Luna) produces the narrative + checklist.
 - **Langfuse:** trace id is `stableHex("trace:workflow:<runId>", 32)` (second arg truncates the 64-char sha256 digest to 32 chars); each subagent is a
   generation carrying `usageDetails` with `cache_read`/`cache_write`.
 
@@ -146,7 +146,7 @@ export const meta = {
 };
 
 const input = args || {};
-const models = String(input.models || 'openai-codex/gpt-5.5,meridian/claude-opus-4-8:high')
+const models = String(input.models || 'openai-codex/gpt-5.6-luna,litellm-ny2/oc-glm52,meridian/claude-opus-4-8:high')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
