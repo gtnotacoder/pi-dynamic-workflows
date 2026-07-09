@@ -14,6 +14,7 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ### Fixed
 
+- Distinguish GPT-5.6 public-API context (`1.05M`) from the ChatGPT Codex route (`372k`). Near-boundary probes with compaction disabled confirmed exact retrieval around 370k and `context_length_exceeded` around 375k for Sol, Terra, and Luna; Codex registry entries remain at 372k so compaction and occupancy telemetry do not overrun the provider.
 - Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
 
 ### Documentation

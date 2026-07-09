@@ -75,7 +75,7 @@ Kimi remains useful as a separate-family adversarial refuter. Model diversity is
 
 GPT-5.6 Luna is a credible medium-tier candidate, not merely a small model:
 
-- OpenAI documents a **1.05M context window** and 128k maximum output, so the old local `372000` registry value is stale.
+- OpenAI's public API card documents a **1.05M context window** and 128k maximum output, but the ChatGPT Codex catalog used by `openai-codex` exposes **372k**. Model capability and provider-route entitlement are separate.
 - It supports structured outputs, function calling, reasoning, and a 90% cached-input discount.
 - GPT-5.6 adds more reliable prompt caching with `prompt_cache_key`, 30-minute minimum retention, and explicit breakpoints.
 
@@ -162,14 +162,24 @@ Audit saved workflows whenever the model pack changes:
 
 ## Model-registry metadata
 
-The local Pi model registry controls context-window guardrails and occupancy reporting. As of 2026-07-09, OpenAI documents Sol, Terra, and Luna at:
+The local Pi model registry must describe the selected **provider route**, not the largest limit advertised for the model name. As of 2026-07-09:
 
-- context window: `1_050_000` tokens;
-- maximum output: `128_000` tokens;
-- input: text and image;
-- reasoning: supported.
+| Route | Sol / Terra / Luna context | Evidence |
+|---|---:|---|
+| OpenAI public API (`openai`) | `1_050_000` | Public model cards |
+| ChatGPT Codex (`openai-codex`) | `372_000` | OpenAI Codex model catalog and live route probes |
 
-A stale smaller `contextWindow` causes premature warnings/compaction and can reject valid prompts. It does not make the provider itself smaller.
+All three still advertise a 128k maximum output, text/image input, and reasoning support. This installation uses `openai-codex`, so its local entries must remain at `contextWindow: 372000`.
+
+The route boundary was tested with compaction disabled, no tools, and five retrieval markers spread through each prompt:
+
+| Model | Accepted with exact marker retrieval | Next probe |
+|---|---:|---|
+| Luna | 370,270 total tokens | ~375k rejected: `context_length_exceeded` |
+| Terra | 370,315 total tokens | ~375k rejected: `context_length_exceeded` |
+| Sol | 370,268 total tokens | ~375k rejected: `context_length_exceeded` |
+
+Setting these Codex entries to 1.05M is unsafe: Pi would defer compaction and occupancy warnings until long after the provider starts rejecting requests. A future direct-API `openai` entry may use 1.05M independently, subject to API-tier TPM limits and its own end-to-end probe.
 
 ## Sources and requalification
 
@@ -180,6 +190,7 @@ Capability claims are time-sensitive. Re-run local qualification after a provide
 - [GPT-5.6 Sol model card](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
 - [GPT-5.6 Terra model card](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
 - [GPT-5.6 Luna model card](https://developers.openai.com/api/docs/models/gpt-5.6-luna)
+- [OpenAI Codex model catalog (372k route metadata)](https://github.com/openai/codex/blob/2e8c3756f95789c215d9ea9a5ade6ec377934b3f/codex-rs/models-manager/models.json)
 - [Claude model overview](https://platform.claude.com/docs/en/about-claude/models/overview)
 - [Claude Fable 5](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5)
 - [Claude Opus 4.8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
