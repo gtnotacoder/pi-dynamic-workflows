@@ -202,6 +202,7 @@ export {
   buildDefaultTierConfig,
   getModelTierConfigPath,
   loadModelTierConfig,
+  modelTierConfigWarnings,
   resolveTierModel,
   saveModelTierConfig,
   sortedTierNames,

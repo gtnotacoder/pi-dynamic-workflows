@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import type { CollectFinalizationOptions, FinalizationCheckResult } from "../src/conductor-finalization.js";
 import type { ConductorRunStatus } from "../src/conductor-types.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
 function countingAgent() {
@@ -724,6 +728,48 @@ return a`;
   assert.equal(changed.state.calls, 1, "changed run-level context policy should miss cache");
 });
 
+test("resume hash includes the concrete model resolved from a tier", async () => {
+  const script = `export const meta = { name: 'tier_model_resume', description: 'tier model resume' }
+const a = await agent('first', { label: 'a', tier: 'medium' })
+return a`;
+  const glmConfig = { tiers: { small: "local/qwen", medium: "cloud/glm", big: "frontier/sol" } };
+  const journal: JournalEntry[] = [];
+
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    modelTierConfig: glmConfig,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  const same = countingAgent();
+  await runWorkflow(script, {
+    agent: same.runner,
+    modelTierConfig: glmConfig,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(same.state.calls, 0, "an unchanged tier mapping should replay");
+
+  let forwardedConfig: unknown;
+  const changed = countingAgent();
+  const changedRunner = {
+    async run(prompt: string, options: Record<string, unknown>) {
+      forwardedConfig = options.modelTierConfig;
+      return changed.runner.run(prompt);
+    },
+  };
+  const lunaConfig = { tiers: { small: "local/qwen", medium: "openai/luna", big: "frontier/sol" } };
+  await runWorkflow(script, {
+    agent: changedRunner,
+    modelTierConfig: lunaConfig,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(changed.state.calls, 1, "changing the model behind a tier should miss the cache");
+  assert.equal(forwardedConfig, lunaConfig, "the run snapshot should be forwarded to the agent runner");
+});
+
 test("meta.model is parsed and routes as the default model for agents", async () => {
   let seenModel: string | undefined;
   const recorder = {
@@ -982,6 +1028,44 @@ const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
 
+function preResolvedAgentHash(prompt: string, tier?: string): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        prompt,
+        model: null,
+        tier: tier ?? null,
+        phase: null,
+        agentType: null,
+        context: {
+          inheritProjectContext: true,
+          systemPromptMode: "append",
+          inheritSkills: true,
+          inheritMainRules: false,
+        },
+        rawContext: {
+          contextMode: null,
+          inheritProjectContext: null,
+          systemPromptMode: null,
+          inheritSkills: null,
+          inheritMainRules: null,
+        },
+        toolPolicy: {
+          tools: null,
+          disallowedTools: null,
+        },
+        skills: null,
+        agentDef: null,
+        schema: null,
+        contextPolicy: {
+          maxContextTokens: null,
+          contextReserveTokens: null,
+        },
+      }),
+    )
+    .digest("hex");
+}
+
 function legacyDefaultAgentHash(prompt: string): string {
   return createHash("sha256")
     .update(
@@ -1041,6 +1125,96 @@ test("resume replays cached results without re-running agents", async () => {
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
 });
 
+test("resume preserves pre-resolved tier hashes only while the recorded model matches", async () => {
+  const script = `export const meta = { name: 'tier_upgrade_resume', description: 'tier upgrade resume' }
+const a = await agent('first', { label: 'a', tier: 'medium' })
+return a`;
+  const oldEntry: JournalEntry = {
+    index: 0,
+    hash: preResolvedAgentHash("first", "medium"),
+    result: "cached-result",
+    label: "a",
+    model: "cloud/glm",
+    tokens: 7,
+  };
+
+  const same = countingAgent();
+  const replayed = await runWorkflow(script, {
+    agent: same.runner,
+    modelTierConfig: { tiers: { medium: "cloud/glm" } },
+    persistLogs: false,
+    resumeJournal: new Map([[0, oldEntry]]),
+  });
+  assert.equal(replayed.result, "cached-result");
+  assert.equal(same.state.calls, 0, "matching 0.2.1 tier journals should replay after upgrade");
+
+  const changed = countingAgent();
+  await runWorkflow(script, {
+    agent: changed.runner,
+    modelTierConfig: { tiers: { medium: "openai/luna" } },
+    persistLogs: false,
+    resumeJournal: new Map([[0, oldEntry]]),
+  });
+  assert.equal(changed.state.calls, 1, "a changed concrete tier model must invalidate the old hash");
+
+  const missingModel = countingAgent();
+  await runWorkflow(script, {
+    agent: missingModel.runner,
+    modelTierConfig: { tiers: { medium: "cloud/glm" } },
+    persistLogs: false,
+    resumeJournal: new Map([[0, { ...oldEntry, model: undefined }]]),
+  });
+  assert.equal(missingModel.state.calls, 1, "model-less tier journals cannot prove route compatibility");
+});
+
+test("resume preserves pre-resolved untagged-medium hashes while the recorded model matches", async () => {
+  const script = `export const meta = { name: 'medium_upgrade_resume', description: 'medium upgrade resume' }
+const a = await agent('first', { label: 'a' })
+return a`;
+  const oldEntry: JournalEntry = {
+    index: 0,
+    hash: preResolvedAgentHash("first"),
+    result: "cached-result",
+    label: "a",
+    model: "cloud/glm",
+    tokens: 7,
+  };
+  const same = countingAgent();
+  const result = await runWorkflow(script, {
+    agent: same.runner,
+    modelTierConfig: { tiers: { medium: "cloud/glm" } },
+    persistLogs: false,
+    resumeJournal: new Map([[0, oldEntry]]),
+  });
+  assert.equal(result.result, "cached-result");
+  assert.equal(same.state.calls, 0);
+});
+
+test("resume hashes a blank tier mapping as the actual main-model fallback", async () => {
+  const script = `export const meta = { name: 'blank_tier_resume', description: 'blank tier resume' }
+const a = await agent('first', { label: 'a', tier: 'medium' })
+return a`;
+  const journal: JournalEntry[] = [];
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    mainModel: "main/model-a",
+    modelTierConfig: { tiers: { medium: "   " } },
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+  assert.equal(journal[0].model, "main/model-a");
+
+  const changed = countingAgent();
+  await runWorkflow(script, {
+    agent: changed.runner,
+    mainModel: "main/model-b",
+    modelTierConfig: { tiers: { medium: "" } },
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(changed.state.calls, 1, "changing the actual fallback model must invalidate the cached result");
+});
+
 test("resume accepts legacy hashes without context policy only when policy is opt-out", async () => {
   const script = `export const meta = { name: 'legacy_policy_resume', description: 'legacy policy resume' }
 const a = await agent('first', { label: 'a' })
@@ -1056,6 +1230,7 @@ return a`;
   const replay = countingAgent();
   const result = await runWorkflow(script, {
     agent: replay.runner,
+    modelTierConfig: null,
     persistLogs: false,
     resumeJournal: new Map([[0, legacyEntry]]),
   });
@@ -1065,6 +1240,7 @@ return a`;
   const capped = countingAgent();
   await runWorkflow(script, {
     agent: capped.runner,
+    modelTierConfig: null,
     agentMaxContextTokens: 1000,
     persistLogs: false,
     resumeJournal: new Map([[0, legacyEntry]]),
@@ -1246,6 +1422,45 @@ return { a, nested }`;
 
   assert.equal(result.agentCount, 2);
   assert.equal(result.result.nested.child, "ran:child task");
+});
+
+test("workflow() forwards the parent's disk-loaded tier snapshot to a nested workflow", async () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "nested-tier-snapshot-home-"));
+  const configDir = join(fakeHome, ".pi", "workflows");
+  const configPath = join(configDir, "model-tiers.json");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(configPath, JSON.stringify({ tiers: { medium: "snapshot/glm" } }));
+
+  try {
+    await withFakeHomeAsync(fakeHome, async () => {
+      const seen: Array<string | undefined> = [];
+      const child = `export const meta = { name: 'child_tier_snapshot', description: 'child' }
+await agent('child task', { label: 'child', tier: 'medium' })
+return 'child done'`;
+      const parent = `export const meta = { name: 'parent_tier_snapshot', description: 'parent' }
+await agent('parent task', { label: 'parent', tier: 'medium' })
+return await workflow('child')`;
+
+      await runWorkflow(parent, {
+        agent: {
+          async run(_prompt: string, options: { modelTierConfig?: { tiers: Record<string, string> } | null }) {
+            seen.push(options.modelTierConfig?.tiers.medium);
+            return "ok";
+          },
+        },
+        persistLogs: false,
+        loadSavedWorkflow: (name) => {
+          if (name !== "child") return undefined;
+          writeFileSync(configPath, JSON.stringify({ tiers: { medium: "changed/luna" } }));
+          return child;
+        },
+      });
+
+      assert.deepEqual(seen, ["snapshot/glm", "snapshot/glm"]);
+    });
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
 });
 
 test("workflow() nesting is one level deep (second level throws)", async () => {

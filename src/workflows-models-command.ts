@@ -25,6 +25,7 @@ import { listAvailableModelSpecs } from "./agent.js";
 import {
   buildDefaultTierConfig,
   loadModelTierConfig,
+  modelTierConfigWarnings,
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";
@@ -44,6 +45,8 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
       const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
       let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel);
       let dirty = false;
+
+      notifyTierWarnings(ctx, config);
 
       const ensureFresh = (cfg: typeof config) => {
         config = cfg;
@@ -86,7 +89,7 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
             "This will reset every tier to your current Pi model. Continue?",
           );
           if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel));
+            ensureFresh({ ...buildDefaultTierConfig(currentModel), routingNotes: config.routingNotes });
             ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
           }
         }
@@ -95,12 +98,19 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
           if (choice === "Save and exit") {
             saveModelTierConfig(config);
             ctx.ui.notify("Model tiers saved.", "info");
+            notifyTierWarnings(ctx, config);
           }
           break;
         }
       }
     },
   });
+}
+
+function notifyTierWarnings(ctx: ExtensionCommandContext, config: { tiers: Record<string, string> }): void {
+  for (const warning of modelTierConfigWarnings(config)) {
+    ctx.ui.notify(warning, "warning");
+  }
 }
 
 /**

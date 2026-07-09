@@ -182,6 +182,21 @@ test("resolveAgentModelSpec: tier with no main model and no config yields undefi
   assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
 });
 
+test("resolveAgentModelSpec: a run snapshot wins over a later disk config", () => {
+  assert.equal(
+    resolveAgentModelSpec(
+      { tier: "medium", modelTierConfig: { tiers: { medium: "snapshot/luna" } } },
+      "main/model",
+      () => ({ tiers: { medium: "changed/glm" } }),
+    ),
+    "snapshot/luna",
+  );
+});
+
+test("resolveAgentModelSpec: an explicit null snapshot disables disk tiers", () => {
+  assert.equal(resolveAgentModelSpec({ tier: "medium", modelTierConfig: null }, "main/model", loadCfg), "main/model");
+});
+
 test("buildContextWindowStatsForSession uses current context tokens instead of cumulative usage", () => {
   const stats = buildContextWindowStatsForSession(
     { input: 150, total: 150 },

@@ -151,6 +151,31 @@ test("modelRoutingGuideline describes each tier purpose", () => {
   assert.ok(text.includes("synthesis"), "should contain synthesis");
 });
 
+test("modelRoutingGuideline advertises the concrete tier mapping", () => {
+  const text = modelRoutingGuideline(undefined, {
+    tiers: { small: "local/qwen", medium: "openai/luna", big: "openai/sol" },
+  });
+  assert.match(text, /small=local\/qwen/);
+  assert.match(text, /medium=openai\/luna/);
+  assert.match(text, /big=openai\/sol/);
+});
+
+test("modelRoutingGuideline injects machine-local operator routing notes", () => {
+  const text = modelRoutingGuideline(undefined, {
+    tiers: { small: "local/qwen", medium: "cloud/glm", big: "openai/sol" },
+    routingNotes: ["Use openai/luna for fast trace synthesis."],
+  });
+  assert.match(text, /Operator routing policy: Use openai\/luna for fast trace synthesis/);
+});
+
+test("modelRoutingGuideline warns that duplicate tiers do not escalate", () => {
+  const text = modelRoutingGuideline(undefined, {
+    tiers: { small: "local/qwen", medium: "local/qwen", big: "openai/sol" },
+  });
+  assert.match(text, /Tier warning: small\/medium tiers all resolve/);
+  assert.match(text, /Retries do not escalate models automatically/);
+});
+
 test("modelRoutingGuideline explains tier vs model priority", () => {
   const text = modelRoutingGuideline();
   assert.ok(text.includes("opts.tier"), "should mention opts.tier");

@@ -1,219 +1,200 @@
-# Model Specialization & Intelligent Routing Strategy
+# Model routing and specialization
 
-> **Status:** Research note (2026-06-28) — strategy exploration; not a spec of current behavior.
+> **Status:** Reference — reviewed 2026-07-09 for GPT-5.6, Claude Fable 5 / Opus 4.8, GLM-5.2, Gemini 3.5 Flash, and the local Qwen route.
 
-## 1. Executive Summary
+This document defines how this installation routes workflow roles without giving up final-output quality. The guiding policy is **local-first execution, evidence-first escalation, frontier verification**.
 
-As our multi-agent pipelines scale to handle larger issues, reviews, and closed-loop repairs across `pi-dynamic-workflows` and `kneutral-admin-portal`, our weekly `openai-codex/gpt-5.5` token allotment faces substantial consumption pressure. Monolithic model allocation—where a single premium model (GPT-5.5) handles planning, exploration, file editing, and verification—is financially and operationally unsustainable.
+## Runtime facts
 
-This document outlines our **Model Specialization and Intelligent Routing Strategy**. By aligning each subagent role to its optimal model archetype, we can **offload up to 80% of our premium token usage** without sacrificing a single drop of quality.
-
-Our strategy locks in specific, highly-capable models for their exact sweet spots, introduces the **`code-scout`** as an exploration firewall, and structures our workflow chains to execute on a collaborative "sovereign-worker" architecture.
-
----
-
-## 2. Core Model Archetypes & Specializations
-
-We have defined four distinct model tiers, each mapped to its ideal execution sweet spot:
-
-```
-                  ┌────────────────────────────────────────┐
-                  │          GPT-5.5 (Sovereign)           │
-                  │  - High-level Architectural Planning   │
-                  │  - Final Verification & Approvals      │
-                  └───────────────────┬────────────────────┘
-                                      │ (Detailed Plan / Compact Task)
-                                      ▼
-                  ┌────────────────────────────────────────┐
-                  │          GLM-5.2 (Worker)              │
-                  │  - Large-Scale Code Generation         │
-                  │  - Multi-File Surgical Edits           │
-                  └───────────────────┬────────────────────┘
-                                      │ (Implementation Diff)
-                                      ▼
-                  ┌────────────────────────────────────────┐
-                  │          GPT Spark (Analyst)           │
-                  │  - High-Speed Trace Post-Mortems       │
-                  │  - Telemetry Self-Optimization Reports │
-                  └───────────────────┬────────────────────┘
-                                      │ (Checks & Exploration)
-                                      ▼
-                  ┌────────────────────────────────────────┐
-                  │          Local Qwen (Scout)            │
-                  │  - Fast Repository Search / Navigation │
-                  │  - Local Checks & Linter/Unit Tests    │
-                  └────────────────────────────────────────┘
-```
-
-### A. Local Qwen (`litellm-ny2/local-qwen27`) — *The Scout & Local Tester*
-
-* **Sweet Spot:** Repository search, directory navigation, local compiling/linting, running unit tests, and small, highly-scoped single-file edits.
-* **Why it shines here:** Local Qwen is zero-cost, runs on our local Net-1 infrastructure with near-instant latency, and has superb compliance with tool-calling mechanics (e.g., executing `bash`, `grep`, and file lookups).
-* **Action:** Locked in as the default for all `checks`, pre-flight file discovery, and test execution.
-
-### B. GPT Spark (`openai-codex/gpt-5.3-codex-spark`) — *The High-Speed Analyst*
-
-* **Sweet Spot:** Processing extremely large, verbose log files, analyzing trace persistence JSONs, compiling post-mortem summaries, and synthesizing multi-agent outputs.
-* **Why it shines here:** GPT Spark has a generous, underutilized allotment, parses and structures large JSON datasets at incredibly high speeds, and has the logical capacity to detect anomalies, caching ratios, and duration bottlenecks.
-* **Action:** Locked in for telemetry analysis, trace optimization reports (`workflow_trace_analyzer`; legacy `workflow_trace_analyser` remains an alias), and cross-agent synthesis/reporting.
-
-### C. GLM-5.2 (`litellm-ny2/oc-glm52`) — *The Heavy Coding Worker*
-
-* **Sweet Spot:** Multi-file code generation, surgical line edits, writing new implementations from structured steps, and drafting code modifications.
-* **Why it shines here:** GLM-5.2 is an exceptionally capable code writer and editor. In typical closed-loop workflows, the **Worker** phase consumes ~75% of the total tokens because it must read and write full files. By routing worker steps to GLM-5.2, we offload massive volume from GPT-5.5.
-* **Action:** Locked in as the main **Worker** implementation engine.
-
-### D. GPT-5.5 (`openai-codex/gpt-5.5`) — *The High-Reasoning Sovereign*
-
-* **Sweet Spot:** System architecture design, high-level planning (creating the Directed Acyclic Graph of steps), strict security/governance validation, and final PR shipping decisions.
-* **Why it shines here:** GPT-5.5 has unmatched logical reasoning and edge-case detection. It acts as the "Sovereign" that plans what needs to be changed and verifies that the workers changed it correctly, while leaving the manual file-editing labor to specialized models.
-* **Action:** Reserved strictly for **Thinker** and **Verifier** roles.
-
----
-
-## 3. The `code-scout` Firewall
-
-The most significant token leak in our current workflows is the **Thinker reading large raw files** to figure out how to plan a change. Asking a premium model (GPT-5.5) to read 3,000 lines of code across 5 files just to plan a 10-line edit burns millions of tokens weekly on redundant inputs.
-
-We solve this by inserting a **`code-scout`** (running on `local-qwen27`) as an **exploration firewall** at the very beginning of our pipelines:
-
-### The Workflow Pattern
-
-1. **The Task Arrives:** Instead of routing the task directly to the GPT-5.5 Thinker, we spawn a `code-scout` on the local Qwen model.
-2. **Codegraph Search:** The Scout uses `codegraph_explore` / `codegraph_context` to map the codebase semantically. It returns compact candidate file/line citations (e.g. `src/workflow-manager.ts:120-150`) and exported API signatures.
-3. **Targeted Read:** The Scout reads only those cited ranges (via `ctx_read` / `read_symbol`), verifies their relevance, and extracts a compact "Code Map" containing only the exact lines of interest and their surrounding API signatures.
-4. **Handoff to Thinker:** The Scout hands this compact "Code Map" (usually <1,000 tokens) to the GPT-5.5 Thinker.
-5. **High-Reasoning Plan:** The Thinker uses its maximum logical capability to draft a flawless execution plan, completely spared from having to ingest massive, un-compacted raw files.
-
-### Token Savings Estimate
-
-* **Legacy Method:** Thinker reads 5 full files (15k tokens) + system instructions (4k tokens) = **19k input tokens** per planning pass.
-* **Scout Firewall Method:** Scout uses zero-cost local Qwen + the codegraph exploration stack to retrieve candidate snippets. Thinker receives a 1k-token Code Map + system instructions (4k tokens) = **5k input tokens** (an **84% reduction in premium planning costs**!).
-
----
-
-## 4. Model Specialization Matrix
-
-To maintain absolute, un-compromised code quality while preserving our weekly budget, we map our active workflows to the following strict routing boundaries:
-
-| Phase | Task / Responsibility | Target Model | Reason for Assignment | Quality Impact |
-|---|---|---|---|---|
-| **Pre-flight Scout** | Run `codegraph_explore` / `codegraph_context`, gather file signatures, compile compact Code Map. | `local-qwen27` | Zero-cost, excellent tool calling, high-speed navigation. | **No Quality Loss:** Reading file signatures and retrieving exact lines requires no reasoning depth. |
-| **Thinker (Planning)** | Evaluate the Code Map, architecture the modification plan, generate DAG steps. | `gpt-5.5` (Sovereign) | Highest-capacity logical reasoning for planning. | **Premium Quality:** Kept on the best model to ensure plans are perfect and dependency graphs are flawless. |
-| **Worker (Writing)** | Execute surgical edits on specific files based on focused step instructions. | `oc-glm52` | Powerful code writer, low-cost compared to GPT-5.5, great context. | **No Quality Loss:** GLM is directed by a strict plan from GPT-5.5, meaning it only needs to focus on localized edits. |
-| **LocalChecks (Testing)** | Execute linters (`biome check`), typescript compiler (`tsc`), and unit tests. | `local-qwen27` | Execution-only task; needs tool calling to run bash test scripts. | **No Quality Loss:** Parsing terminal stdout logs requires no frontier reasoning. |
-| **Verifier (Auditing)** | Strictly audit code modifications against planned instructions and test logs. | `gpt-5.5` (Sovereign) | Maximum capability needed to find hidden bugs and prevent regressions. | **Premium Quality:** Strictly keeps the gatekeeper role on GPT-5.5 to ensure zero buggy code gets staged. |
-| **Telemetry Optimizer** | Analyze JSON run persisted state files and logs to find bottlenecks. | `gpt-5.3-codex-spark` | Underutilized allotment, fast parsing, excellent pattern matching. | **Premium Quality:** Spark specializes in trace/log synthesis, finding optimization gaps in seconds. |
-
----
-
-## 5. Dynamic Gated Escalation (Cascading Model Routing)
-
-To maximize our use of **local Qwen** (`litellm-ny2/local-qwen27`), we establish a **Cascading Model Routing** pattern within our closed-loop execution engines (like Issue Delivery, closed-loop issue delivery, and surgical PR repair).
-
-Our testing demonstrates that local Qwen achieves the same functional scores on baseline coding tasks as GLM-5.2 while costing zero premium tokens and executing with local-net speed. Therefore, we default our implementation (Worker) pass to **local Qwen**, and escalate only when necessary.
-
-### The Gated Escalation Workflow
-* **First Pass (Attempt 1):** The worker runs on **local Qwen** (Small tier). This handles 80-90% of straightforward edits, additions, and deletions for zero token cost.
-* **Verification Gate:** The linter, compiler, and verifier (running on GPT-5.5) review the change.
-* **Escalation Gate (Attempt 2 & 3):** If verification fails, the workflow engine detects the failure and **escalates the retry to GLM-5.2** (Medium tier), feeding it the precise feedback and linter error logs. If that still fails, the third attempt is escalated to **GPT-5.5** (Big tier).
-
-```
-                  ┌────────────────────────────────────────┐
-                  │          Attempt 1: Local Qwen         │
-                  │  - Free, fast, local-net               │
-                  │  - Handles baseline coding/edits       │
-                  └───────────────────┬────────────────────┘
-                                      │ (Verifier Checks)
-                                      ▼
-                               [Verification]───► [PASSED] ──► Ship Draft PR
-                                      │
-                                      ▼ [FAILED]
-                  ┌───────────────────┴────────────────────┐
-                  │          Attempt 2: GLM-5.2            │
-                  │  - Escalated reasoning with error logs │
-                  │  - Resolves more complex dependencies  │
-                  └───────────────────┬────────────────────┘
-                                      │ (Verifier Checks)
-                                      ▼
-                               [Verification]───► [PASSED] ──► Ship Draft PR
-                                      │
-                                      ▼ [FAILED]
-                  ┌───────────────────┴────────────────────┐
-                  │          Attempt 3: GPT-5.5            │
-                  │  - Maximum capacity logic resolution    │
-                  │  - Surgical merge/architecture repair  │
-                  └────────────────────────────────────────┘
-```
-
-This "Pay-on-Demand" strategy ensures that we:
-
-1. Pay **zero premium tokens** for successful first-pass implementations.
-2. Only leverage GLM-5.2 or GPT-5.5 for coding when a task is genuinely complex (proven by a failing verification gate).
-3. Maximize overall pipeline safety, throughput, and token budget life without compromising on quality.
-
----
-
-## 6. Concrete Registry Adjustments
-
-We enforce these specializations in our workflow scripts and our `.pi/agents` configurations:
-
-### A. Updating `.pi/workflows/model-tiers.json`
-
-We align our standard tiers globally to support our local-net offloading strategy:
+The runtime has three portable tiers. Each tier maps to exactly one `provider/model` string in `~/.pi/workflows/model-tiers.json`:
 
 ```json
 {
   "tiers": {
     "small": "litellm-ny2/local-qwen27",
     "medium": "litellm-ny2/oc-glm52",
-    "big": "openai-codex/gpt-5.5"
+    "big": "openai-codex/gpt-5.6-sol"
   }
 }
 ```
 
-### B. Defining the Specialized Worker in `.pi/agents/worker.md`
+This is the conservative production profile while GPT-5.6 Luna is qualified in this harness.
 
-We lock the specialized worker agentType to the medium tier (`oc-glm52`) directly in its definition file:
+Binding precedence is:
 
-```markdown
----
-name: specialized-worker
-description: Heavy code editor and writer running on GLM-5.2 to offload premium GPT-5.5 tokens
-model: litellm-ny2/oc-glm52
-tools: [read, edit, write, bash]
-contextMode: focused
----
-You are the Specialized Worker. Your sole task is to implement the localized step plan assigned to you.
-Follow instructions strictly and keep edits highly surgical.
+1. `agent(..., { model })`
+2. model pinned by `agentType`
+3. `agent(..., { tier })`
+4. phase model in `meta.phases[]`
+5. configured `medium` tier for an untagged agent
+6. session model
+
+Important consequences:
+
+- A tier is **not** a fallback pool. There is no automatic provider failover.
+- `retries` rerun the same route. They do not move from small to medium or big.
+- An escalation ladder must explicitly select `small -> medium -> big` (or explicit models).
+- Pinning a model in an escalation-capable `agentType` defeats tier escalation.
+- Adjacent tiers mapped to the same model create the appearance of escalation without changing capability. `/workflows-models` warns about this shape.
+- The model-tier config is snapshotted once per run. On resume, changing the model behind a tier invalidates that call's cached journal suffix.
+
+Optional `routingNotes` in `model-tiers.json` are injected into the model-facing workflow-authoring prompt. They carry machine-specific specialization that cannot fit into three slots:
+
+```json
+{
+  "tiers": {
+    "small": "litellm-ny2/local-qwen27",
+    "medium": "litellm-ny2/oc-glm52",
+    "big": "openai-codex/gpt-5.6-sol"
+  },
+  "routingNotes": [
+    "Prefer local Qwen for high-volume first attempts; deterministic checks and a big-tier verifier remain mandatory for consequential changes.",
+    "Canary GPT-5.6 Luna for trace synthesis, fast structured-output loops, and selected medium work; use GLM-5.2 for proven project-scale execution and OpenAI-provider diversity.",
+    "Use Terra, Opus, Fable, Gemini, or Kimi only for a documented specialization, provider fallback, or independent model-family review."
+  ]
+}
 ```
 
-### C. Standardizing the Trace Analyst in `.pi/agents/trace-analyst.md`
+## Recommended roles
 
-We lock the trace analyst to our fast Spark model:
+| Model | Default posture | Use it for | Do not use it for |
+|---|---|---|---|
+| `litellm-ny2/local-qwen27` | `small` | Repo inventory, targeted reads, narrow edits, repetitive transformations, first worker attempt, low-risk reporting | Sole final verifier for consequential changes; ambiguous architecture/security decisions |
+| `litellm-ny2/oc-glm52` | `medium` (current proven route) | Multi-file implementation, long agent trajectories, project-scale context, correction rounds, independent non-OpenAI review | Final authority merely because it has a large context window |
+| `openai-codex/gpt-5.6-luna` | Explicit medium canary | Fast/high-volume structured work, trace analysis, CI/log synthesis, schema-heavy tool loops, selected second attempts | Automatic promotion to the production medium slot before harness-level success/latency data exists |
+| `openai-codex/gpt-5.6-terra` | Explicit medium-plus | A harder retry after Luna/GLM, balanced premium implementation, an OpenAI refuter when Sol is unnecessary | Routine local-first fan-out; final frontier gate when Sol is available |
+| `openai-codex/gpt-5.6-sol` | `big` | Thinker/planner, controller synthesis, final semantic verifier, security review, difficult debugging, high-consequence decisions | Mechanical checks, broad cheap fan-out, work already proved by deterministic tooling |
+| `meridian/claude-opus-4-8` | Explicit diverse frontier | Independent Anthropic verifier, cache-sensitive repeated context, long-running agentic coding, judgment/style review | Default big route when Sol is available; cheap bulk work |
+| `meridian/claude-fable-5` | Explicit maximum Anthropic | Exceptional long-horizon work, stubborn architecture/research problems, highest-risk second frontier opinion | Routine reviews or fan-out; a default route without refusal/fallback handling |
+| `google-ai-studio/gemini-3.5-flash` | Niche diversity only | Native audio/video/PDF or Google-grounded work, 1M multimodal context, independent family tie-breaks | Generic coding solely because it is fast; any slot already covered better by local Qwen/Luna/GLM |
+| `openai-codex/gpt-5.5` | Retired control | Temporary regression benchmark or emergency launch fallback only | Any normal tier, phase default, or active reviewer/worker role |
 
-```markdown
----
-name: trace-analyst
-description: High-speed telemetry and trace post-mortem compiler running on GPT Spark
-model: openai-codex/gpt-5.3-codex-spark
-tools: [read, grep, bash]
-disallowedTools: [edit, write]
-contextMode: focused
----
-You are the Expert Workflow Trace and Telemetry Optimizer.
-Analyze the multi-agent run state using Spark and compile a self-optimization report.
+Kimi remains useful as a separate-family adversarial refuter. Model diversity is valuable when reviewers fail differently; it is not a reason to run every available model.
+
+## Why Luna has not immediately replaced GLM
+
+GPT-5.6 Luna is a credible medium-tier candidate, not merely a small model:
+
+- OpenAI's public API card documents a **1.05M context window** and 128k maximum output, but the ChatGPT Codex catalog used by `openai-codex` exposes **372k**. Model capability and provider-route entitlement are separate.
+- It supports structured outputs, function calling, reasoning, and a 90% cached-input discount.
+- GPT-5.6 adds more reliable prompt caching with `prompt_cache_key`, 30-minute minimum retention, and explicit breakpoints.
+
+GLM-5.2 also supports first-party automatic context caching and a 1M context window. The current `oc-glm52` bridge has not reported cache fields in local workflow telemetry, but missing telemetry is not proof that the provider performs no caching.
+
+There is also a harness-specific limitation: Pi's `openai-codex` adapter derives `prompt_cache_key` from the subagent session ID. Every workflow `agent()` starts a fresh session, so cache reuse is strong within a multi-turn agent but separate fan-out agents may use different keys. Luna's cache therefore does not automatically make every fan-out cheaper. This SDK gap is tracked in [earendil-works/pi#6468](https://github.com/earendil-works/pi/issues/6468).
+
+A bounded route canary on 2026-07-09 sent two sequential calls per model with identical ~20k-token prefixes. Luna completed in 5.4s/4.2s and GLM in 5.0s/4.0s—effectively tied at this sample size—and both routes reported zero cache reads/writes. The result does **not** prove that neither route cached: Pi currently hardcodes GPT-5.6 `cacheWrite` to zero ([earendil-works/pi#6469](https://github.com/earendil-works/pi/issues/6469)), and the unique Luna session keys explain the cross-agent read miss. Cache support alone is therefore not evidence to replace GLM today.
+
+The production choice remains GLM until Luna passes representative local evaluations for:
+
+1. task success and semantic verifier pass rate;
+2. structured-output/tool-call reliability;
+3. wall-clock latency and timeout rate;
+4. total fresh input, cache-write, cache-read, and output tokens;
+5. provider quota/rate-limit behavior;
+6. correction rounds required per accepted change.
+
+If Luna wins those measures, promote it to `medium` and retain GLM as the explicit project-scale/provider-diversity route. This is a configuration change, not a code change.
+
+## Quality-preserving workflow patterns
+
+### Normal issue-sized implementation
+
+```text
+local Qwen worker
+  -> host stageCheck
+  -> GLM or Luna correction only if needed
+  -> host stageCheck
+  -> Sol semantic verifier
 ```
 
----
+The cheap model does most token-heavy work. Quality comes from constrained scope, mechanical checks, correction feedback, and an independent frontier gate—not from sending every token to the frontier model.
 
-## 7. Conclusion
+### Difficult or repository-scale implementation
 
-By implementing this sovereign-worker routing topology:
+```text
+local Qwen scout
+  -> Sol planner
+  -> GLM project-scale worker (or Terra when OpenAI-family behavior is required)
+  -> host checks
+  -> Sol verifier
+  -> Opus/Fable second opinion only for unresolved high-risk findings
+```
 
-1. **GPT-5.5** is relieved of all manual repository navigation and bulk code generation, reserving its high-reasoning tokens for pure orchestration planning and verification audits.
-2. **GLM-5.2** handles the bulk text editing labor, keeping our implementations clean and rapid.
-3. **Local Qwen** handles the mechanical tasks (tool navigation, testing, linting) for zero cost.
-4. **GPT Spark** acts as our real-time observer, analyzing traces in milliseconds.
+### Adversarial review
 
-This guarantees **flawless quality gates** while **drastically reducing premium weekly consumption**, ensuring our dev environments can operate scale runs indefinitely.
+```text
+Qwen finders
+  -> GLM/Luna consolidation
+  -> GLM/Kimi/Opus/Gemini family-diverse refuters as signaled by risk
+  -> Sol controller verdict
+```
+
+Do not use model count as a proxy for confidence. A source-backed refutation or deterministic test should outweigh majority voting.
+
+## Cache-aware routing
+
+Cache behavior belongs to the **provider route plus harness**, not just the model name.
+
+- GPT-5.6: writes cost 1.25x uncached input on API billing; reads cost 10% of input; the current API requires a stable cache key for improved matching. The Codex adapter supplies a session-derived key but does not currently expose explicit breakpoints from workflow scripts.
+- GLM-5.2: Z.AI documents automatic cache recognition and `usage.prompt_tokens_details.cached_tokens`; verify whether the selected LiteLLM/Ollama route forwards those fields.
+- Opus via Meridian: the dated local benchmark found reliable cache reuse across discrete calls with a shared prefix. Re-run before assuming that behavior for a different model or bridge version.
+- Local Qwen: no provider bill, so compaction/throughput and GPU occupancy matter more than cached-token price.
+
+Never route solely on advertised context size. Long prompts above 272k on GPT-5.6 receive higher long-context pricing, and excessive context can reduce focus even when it fits.
+
+## Saved-workflow policy
+
+Saved workflows should use tiers by default. An exact `model` is justified only for:
+
+- explicit provider/model-family diversity;
+- a measured capability unavailable from the configured tier;
+- a deliberate provider fallback;
+- a temporary qualification benchmark requested by the operator.
+
+Audit saved workflows whenever the model pack changes:
+
+1. Remove retired generation pins (`gpt-5.5`, old Opus revisions, stale Gemini defaults).
+2. Ensure `model` does not accidentally override a `tier` on a worker/verifier.
+3. Ensure retry rounds actually change route.
+4. Keep final controllers/verifiers on `big` unless a documented diverse frontier override is intentional.
+5. Keep model-specific benchmark fixtures pinned so historical comparisons remain reproducible; label them as controls, not defaults.
+
+## Model-registry metadata
+
+The local Pi model registry must describe the selected **provider route**, not the largest limit advertised for the model name. As of 2026-07-09:
+
+| Route | Sol / Terra / Luna context | Evidence |
+|---|---:|---|
+| OpenAI public API (`openai`) | `1_050_000` | Public model cards |
+| ChatGPT Codex (`openai-codex`) | `372_000` | OpenAI Codex model catalog and live route probes |
+
+All three still advertise a 128k maximum output, text/image input, and reasoning support. This installation uses `openai-codex`, so its local entries must remain at `contextWindow: 372000`.
+
+The route boundary was tested with compaction disabled, no tools, and five retrieval markers spread through each prompt:
+
+| Model | Accepted with exact marker retrieval | Next probe |
+|---|---:|---|
+| Luna | 370,270 total tokens | ~375k rejected: `context_length_exceeded` |
+| Terra | 370,315 total tokens | ~375k rejected: `context_length_exceeded` |
+| Sol | 370,268 total tokens | ~375k rejected: `context_length_exceeded` |
+
+Setting these Codex entries to 1.05M is unsafe: Pi would defer compaction and occupancy warnings until long after the provider starts rejecting requests. A future direct-API `openai` entry may use 1.05M independently, subject to API-tier TPM limits and its own end-to-end probe.
+
+## Sources and requalification
+
+Capability claims are time-sensitive. Re-run local qualification after a provider, bridge, model snapshot, system prompt, or tool schema changes.
+
+- [OpenAI GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model)
+- [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+- [GPT-5.6 Sol model card](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+- [GPT-5.6 Terra model card](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
+- [GPT-5.6 Luna model card](https://developers.openai.com/api/docs/models/gpt-5.6-luna)
+- [OpenAI Codex model catalog (372k route metadata)](https://github.com/openai/codex/blob/2e8c3756f95789c215d9ea9a5ade6ec377934b3f/codex-rs/models-manager/models.json)
+- [Claude model overview](https://platform.claude.com/docs/en/about-claude/models/overview)
+- [Claude Fable 5](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5)
+- [Claude Opus 4.8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
+- [GLM-5.2 overview](https://docs.z.ai/guides/llm/glm-5.2)
+- [Z.AI context caching](https://docs.z.ai/guides/capabilities/cache)
+- [Gemini 3.5 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash)
+- [Provider-behavior benchmark](./provider-behavior-benchmarks.md)

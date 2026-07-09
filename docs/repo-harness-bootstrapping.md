@@ -72,12 +72,15 @@ A harness is **two artifacts the repo pins locally** plus the engine that runs t
 > **`targetFile` semantics:** `targetFile: null` (or omitted) means biome checks the entire `cwd`; set it to a specific file to scope the check.
 
 ### `schemaVersion` + `engine.min`
+
 - `schemaVersion` (data shape) and `engine.min` (engine behavior) are the two compatibility guards — see [harness-engine-compat.md](./harness-engine-compat.md). Set `engine.min` to the oldest engine that supports the behavior this descriptor relies on. Both are advisory: a below-floor/incompatible descriptor is **warned + skipped** on load (and `validate-harness` flags it), never crashes the run.
 
 ### `harness_type`
+
 The runtime axis: `pi` (wired), `opencode` / `hermes` (placeholders, not wired). A descriptor whose runtime is not wired clean-skips on load and per-call selection (the engine throws `HARNESS_NOT_WIRED` for a per-call selection of an unwired runtime rather than running under the wrong harness).
 
 ### Per-role context / isolation profiles
+
 A harness selects a posture for its agents via the context/inheritance fields. Compose them deliberately — they are the isolation fence:
 
 | Field | What it controls | Typical for a UI harness |
@@ -93,10 +96,12 @@ A harness selects a posture for its agents via the context/inheritance fields. C
 
 **Tool policy — narrow-only by default, with one explicit exception.** When a call supplies an explicit `agent(..., { tools: [...] })`/`disallowedTools`, that override **wins** (it is part of the resume call-hash, so widening a single call is intentional and safe). When no explicit per-call tools are supplied, the resolved tool set is the **intersection** of the agentType and harness allowlists (denylists unioned); a disjoint intersection yields deny-all (`applyToolPolicy` treats an explicit empty allowlist as no-tools, not "all tools"). So a per-step config may only **select/narrow** the run-level harness authority unless the script explicitly widens a call.
 
-### Tiered model pools
+### Tiered model slots
+
 Model routing lives in the **machine-local** `~/.pi/workflows/model-tiers.json`, not the descriptor — descriptors stay portable. The config shape today is `tiers: Record<string, string>` (one model id per tier: `small`, `medium`, `big`); **per-tier fallback chains are not yet supported**. The workflow script assigns `tier: "small"|"medium"|"big"` per role — fanout workers on a cheap/local `small`/`medium` tier, judges/verifiers on a `big` (frontier) tier — and the run resolves each tier to its configured model. (Multi-model fallback pools are a planned addition; track via an engine issue, not the descriptor.)
 
 ### Gates incl. trace-assert
+
 Use `gate(workerThunk, validator, { attempts })` for the repair loop (worker → host `stageCheck` → feedback). `stageCheck` runs **host-side mechanical checks with zero LLM tokens**: auto-detected defaults are `tsc --noEmit` (if `tsconfig.json` AND `package.json` exist) + `biome check` (if `biome.json` AND `package.json` exist and `targetFile` is null or has a supported extension); a repo `build` script is **NOT auto-added** — supply it explicitly via `stageCheck.commands`. Defaults otherwise come from the descriptor's `stageCheck` block (package `cwd`, `targetFile`). For a per-step harness, pass the step's `harness_config` to `stageCheck` so checks run in the step's package, not the run-level default.
 
 **Trace-assert (planned, not yet shipped):** asserting telemetry spans/events from inside a workflow script (e.g. that a UI worker consulted the anchor doc / guardrail) is not yet an exposed API — the sandbox globals do not include a trace reader. Until it ships, encode the read-path guardrail via the descriptor's `componentExtensions`/`frontendPathTriggers` (enforced by the harness expansion) rather than a runtime trace assertion. Track the trace-assert capability via an engine issue.
@@ -114,16 +119,21 @@ If you find the script needing engine internals, that's a signal the descriptor 
 `validate-harness` (shipped via the package entry point) loads + parses a descriptor and checks required fields, `schemaVersion`, the `engine.min` floor, and (when referenced) parses the linked workflow script — **without spawning agents**. Use it in repo CI and as a post-engine-upgrade smoke.
 
 Programmatic:
+
 ```ts
 import { validateHarnessFile, runValidateHarness } from "pi-dynamic-workflows-oc-style";
 const result = validateHarnessFile(".pi/workflows/harnesses/portal-visual-refine.json", { engineVersion });
 // result.ok === false → result.findings has the errors
 ```
+
 CLI (the `validate-harness` bin ships with the package; exit non-zero on any error):
+
 ```sh
 npx validate-harness .pi/workflows/harnesses/portal-visual-refine.json --script .pi/workflows/portal-visual-refine.js
 ```
+
 CI snippet:
+
 ```yaml
 - name: Validate harnesses
   run: |
@@ -132,6 +142,7 @@ CI snippet:
     # Also validate each harness's linked thin script (descriptor-only validation skips it):
     npx validate-harness .pi/workflows/harnesses/portal-visual-refine.json --script .pi/workflows/portal-visual-refine.js
 ```
+
 After bumping the engine across dependent repos, run `validate-harness` over each repo's harnesses to catch silent breakage before a real run.
 
 ## Onboarding checklist (per repo)
@@ -139,7 +150,7 @@ After bumping the engine across dependent repos, run `validate-harness` over eac
 1. **Anchor doc** — write `docs/<area>-development.md` (the UX rules + file/path conventions).
 2. **Descriptor** — add `.pi/workflows/harnesses/<id>.json` with the schema above; set `engine.min` to the current engine; encode the anchor doc's conventions in `triggerRules` + the guardrail fields.
 3. **Thin script** — a minimal workflow script (or saved workflow) that orchestrates with `agent()`/`gate()`/`stageCheck()`.
-4. **Model tiers** — ensure `workflows/model-tiers.json` has the local/fallback pools the script's tiers resolve to.
+4. **Model tiers** — ensure `workflows/model-tiers.json` maps each tier to one intended model; encode fallback/escalation explicitly in the script.
 5. **CI** — wire `validate-harness` over `.pi/workflows/harnesses/*.json`.
 6. **Dogfood** — run a `--prototype` issue-delivery lane against a small change to confirm the harness routes workers/verifiers correctly and `stageCheck` runs in the right package.
 7. **Lock** — if the script is a built-in source, update `docs/workflows/workflow-lock.json` (`npm run check:workflow-lock`).

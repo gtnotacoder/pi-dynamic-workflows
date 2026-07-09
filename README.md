@@ -121,6 +121,8 @@ The `workflow` tool is the model-facing primitive for multi-agent orchestration.
 
 Agents are routed to concrete models by **tier** (`small`/`medium`/`big`), keeping workflow source portable. The mapping lives in `~/.pi/workflows/model-tiers.json` and is editable via `/workflows-models`. Untagged agents fall back to the `medium` tier (or the session main model when no tier config exists).
 
+Each tier holds **one model**, not a fallback chain, and retries do not escalate automatically. Encode `small -> medium -> big` attempts explicitly; `/workflows-models` warns when adjacent tiers point to the same model. The config is snapshotted once per run, and changing a tier's concrete model invalidates affected journal entries on resume. Optional `routingNotes` are injected into the model-facing workflow-authoring prompt for machine-specific specialization. Local-first routing is not a quality waiver: use host checks plus a `big` semantic verifier for consequential work. See [Model routing and specialization](./docs/model-routing-specialization.md).
+
 ### Context modes
 
 Per-subagent **context governance**, OpenCode-style: **rules you put on the main
@@ -222,6 +224,7 @@ PR delivery + Telemetry finalization: branch, commit, push, PR, clean/pushed/che
 **Prototype mode:** `--prototype` defaults to `dryRun=true`, `worktreeRequired=true`, `maxSteps=4`, `maxRepairRounds=1`, `maxReviewRounds=1`. Dry-runs use read-only agents and stop before Worker edits, git push, and PR creation. `--prototype --dry-run=false` allows bounded local edits but still stops before PR delivery.
 
 **Operational notes:**
+
 - Start from a clean git working tree when possible.
 - If a run fails before PR creation with useful changes, inspect `.issue-delivery/handoff.md`, repair, then rerun `/issue-delivery --finish ...`.
 - `gh` must be authenticated and the repo must allow pushing branches.

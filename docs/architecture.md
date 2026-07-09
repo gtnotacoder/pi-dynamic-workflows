@@ -104,10 +104,12 @@ When an `agent()` call specifies `agentType: 'specialized-worker'`, the registry
 
 `src/model-tier-config.ts` implements tier-based model routing:
 
-- `resolveTierModel(tier, config)` — resolves a tier name (`small`, `medium`, `big`) to a concrete `provider/model` string from the local `~/.pi/workflows/model-tiers.json` file.
-- `opts.model` on an `agent()` call always takes precedence over `opts.tier`. The tier system is a portability layer so workflows can ship without hardcoded model pins.
+- `resolveTierModel(tier, config)` — resolves a tier name (`small`, `medium`, `big`) to one concrete `provider/model` string from the local `~/.pi/workflows/model-tiers.json` file.
+- Resolution precedence is explicit `opts.model` → agentType model → tier → phase model → untagged `medium` → session model.
+- The tier config is snapshotted once per run. The concrete routed model is included in each journal hash, so changing the model behind a tier invalidates the affected resume suffix.
+- Optional `routingNotes` are added to the model-facing workflow authoring guidance for operator-specific specialization.
 
-This allows the same workflow to run on different machines with different model budgets — the operator configures tiers once in their `~/.pi/workflows/model-tiers.json` and workflows reference `tier: 'small'` etc.
+There are no per-tier fallback chains and retries do not escalate automatically. Workflow scripts must encode route changes explicitly. This keeps source portable while letting each machine choose its own cost/capability profile. See [Model routing and specialization](model-routing-specialization.md).
 
 ### 7. Subagent execution
 

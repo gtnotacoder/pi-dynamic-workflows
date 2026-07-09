@@ -39,8 +39,12 @@
 - **scout firewall** — The read-only `code-scout` agent run at the very start of
   a pipeline to produce a compact Code Map, so downstream planners receive
   targeted citations instead of large raw files.
-- **model tiers** — Named slots (`small` / `medium` / `big`) that map to one
-  concrete model each, keeping workflow source portable across providers.
+- **model tiers** — Portable capability/cost slots (`small` / `medium` / `big`)
+  that each map to one concrete model.
+- **escalation ladder** — An explicit sequence of stronger tier or model choices
+  across attempts; retries alone do not change routes.
+- **model pin** — An exact provider/model binding used only when portability is
+  intentionally traded for specialization, fallback, or model-family diversity.
 - **worktree isolation** — Running a workflow in a throwaway git worktree on its
   own branch so parallel agents can edit without conflicting the main checkout.
 - **workflow lock** — The contract (`docs/workflows/workflow-lock.json`) that

@@ -12,6 +12,12 @@ import {
 } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import type { LoopGuardOptions } from "./loop-detector.js";
+import {
+  loadModelTierConfig,
+  type ModelTierConfig,
+  modelTierConfigWarnings,
+  sortedTierNames,
+} from "./model-tier-config.js";
 import { parseWorkflowScript, type WorkflowRunResult } from "./workflow.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
@@ -25,20 +31,43 @@ import { loadWorkflowSettings } from "./workflow-settings.js";
  * This string is injected into the workflow tool's promptGuidelines and
  * therefore appears in the LLM's system prompt for every workflow execution.
  */
-export function modelRoutingGuideline(registry?: ModelRegistry): string {
+export function modelRoutingGuideline(
+  registry?: ModelRegistry,
+  tierConfig: ModelTierConfig | null = loadModelTierConfig(),
+): string {
   const available = listAvailableModelSpecs(registry);
-  const list = available.length
+  const modelScope = available.length
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
+  const mapping = tierConfig
+    ? `Current tier mapping: ${sortedTierNames(tierConfig)
+        .map((tier) => `${tier}=${tierConfig.tiers[tier]}`)
+        .join(", ")}.`
+    : "No saved tier mapping is available; unresolved tiers fall back to the session model.";
+  const operatorNotes =
+    tierConfig?.routingNotes?.flatMap((note) => {
+      const trimmed = note.trim();
+      return trimmed ? [`Operator routing policy: ${trimmed}`] : [];
+    }) ?? [];
+  const configWarnings = tierConfig
+    ? modelTierConfigWarnings(tierConfig).map((warning) => `Tier warning: ${warning}`)
+    : [];
+
   return [
     "For workflow, the user configures per-tier models (/workflows-models), so TAG EVERY agent with opts.tier by role so those models are actually used.",
     "opts.tier accepts 'small', 'medium', or 'big' and is enforced at runtime.",
-    "Small tier: lightweight exploration/search/inventory agents.",
-    "Medium tier: balanced analysis agents.",
-    "Big tier: synthesis/judgment/decision agents spanning the full context.",
+    mapping,
+    "Small tier: lowest-cost/local-first work such as lightweight exploration, search, inventory, mechanical checks, and narrow well-specified edits.",
+    "Medium tier: balanced implementation and analysis, or the next attempt after a small-tier failure.",
+    "Big tier: quality-first planning, synthesis, judgment, security review, final semantic verification, and consequential decisions spanning the full context.",
+    "Local-first is a routing preference, not a quality waiver: protect important small/medium work with deterministic checks and a big-tier semantic gate.",
+    "Retries do not escalate models automatically, and each tier maps to one model with no fallback chain; encode small -> medium -> big attempts explicitly and check that adjacent tiers resolve to different models.",
     "An agent with no opts.tier and no opts.model falls back to the user's medium tier; do not rely on that — tag agents explicitly so small/big are used where they fit.",
-    "If the user named a specific model, use opts.model with that exact provider/id; opts.model always takes precedence over opts.tier.",
-    list,
+    "Use opts.model only when the user requests an exact model or the workflow needs a documented model-specific capability, provider fallback, or independent model-family diversity.",
+    "An explicit opts.model overrides opts.tier, and an agentType model binding also overrides the tier; do not pin a model in an agentType that must participate in tier escalation.",
+    ...operatorNotes,
+    ...configWarnings,
+    modelScope,
   ].join(" ");
 }
 
