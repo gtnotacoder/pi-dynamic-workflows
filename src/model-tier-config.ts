@@ -118,7 +118,8 @@ export function saveModelTierConfig(config: ModelTierConfig, configPath?: string
  * is not configured.
  */
 export function resolveTierModel(tier: string, config: ModelTierConfig): string | undefined {
-  return config.tiers[tier];
+  const model = config.tiers[tier]?.trim();
+  return model || undefined;
 }
 
 /** Return all tier names sorted: small < medium < big, then alphabetically. */

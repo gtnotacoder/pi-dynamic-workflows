@@ -89,7 +89,7 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
             "This will reset every tier to your current Pi model. Continue?",
           );
           if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel));
+            ensureFresh({ ...buildDefaultTierConfig(currentModel), routingNotes: config.routingNotes });
             ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
           }
         }

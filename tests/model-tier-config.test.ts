@@ -63,9 +63,15 @@ describe("model-tier-config", () => {
       assert.equal(resolveTierModel("nonexistent", { tiers: { small: "gpt-4.1-mini" } }), undefined);
     });
 
-    it("returns empty string when tier exists but no model is assigned", async () => {
+    it("treats blank tier values as unconfigured", async () => {
       const { resolveTierModel } = await loadModule();
-      assert.equal(resolveTierModel("medium", { tiers: { small: "gpt-4.1-mini", medium: "" } }), "");
+      assert.equal(resolveTierModel("medium", { tiers: { small: "gpt-4.1-mini", medium: "" } }), undefined);
+      assert.equal(resolveTierModel("medium", { tiers: { medium: "   " } }), undefined);
+    });
+
+    it("trims configured model specs", async () => {
+      const { resolveTierModel } = await loadModule();
+      assert.equal(resolveTierModel("medium", { tiers: { medium: "  openai/luna  " } }), "openai/luna");
     });
   });
 

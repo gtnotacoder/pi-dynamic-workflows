@@ -18,6 +18,7 @@ Model-tier routing hardening, machine-readable operator policy, and GPT-5.6 rout
 
 ### Fixed
 
+- Preserve pre-0.2.2 tier/default-medium resume entries only when their recorded concrete model still matches; normalize blank tier values to the real session-model fallback; share the parent's tier snapshot with nested workflows; and preserve `routingNotes` when `/workflows-models` resets tiers.
 - Distinguish GPT-5.6 public-API context (`1.05M`) from the ChatGPT Codex route (`372k`). Near-boundary probes with compaction disabled confirmed exact retrieval around 370k and `context_length_exceeded` around 375k for Sol, Terra, and Luna; Codex registry entries remain at 372k so compaction and occupancy telemetry do not overrun the provider.
 - Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
 

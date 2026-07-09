@@ -8,9 +8,10 @@ Make workflow-authored model selection explicit, deterministic, locally configur
 
 - `ModelTierConfig` accepts optional `routingNotes`; these machine-local operator rules are injected into the workflow tool's model-facing authoring guidance.
 - The authoring guidance includes the concrete current tier map, available model IDs, tier purposes, precedence, and the fact that retries do not escalate automatically.
-- Every run snapshots model-tier configuration once, preventing mid-run config edits from routing different calls inconsistently.
-- Resume identities include the concrete routed model. Changing the model behind a tier invalidates the affected journal suffix instead of replaying output produced by a different model.
-- `/workflows-models` emits non-blocking warnings for missing standard tiers and duplicate mappings that make an escalation retry the same model.
+- Every logical run snapshots model-tier configuration once, including nested saved workflows, preventing mid-run config edits from routing different calls inconsistently.
+- Resume identities include the concrete routed model. Changing the model behind a tier invalidates the affected journal suffix instead of replaying output produced by a different model; compatible 0.2.1 journals still replay when their recorded concrete model matches.
+- Blank tier entries normalize to the actual session-model fallback before hashing and display.
+- `/workflows-models` emits non-blocking warnings for missing standard tiers and duplicate mappings that make an escalation retry the same model; resetting tiers preserves independent operator `routingNotes`.
 - `modelTierConfigWarnings` is exported for embedders and tests.
 
 Resolution precedence remains:
@@ -60,7 +61,7 @@ The machine-local `openai-codex` entries therefore remain at `contextWindow: 372
 
 ## Verification
 
-- `npm test`: 1,408 passed, 0 failed, 0 skipped.
+- `npm test`: 1,414 passed, 0 failed, 0 skipped.
 - `npm run check:workflow-lock`: 0 errors; expected warnings remain for externally stored saved workflows.
 - LSP and pi-lens: 0 blocking diagnostics in changed source files.
 - `npm pack --dry-run`: routing documentation, source, and built artifacts included; tests excluded.

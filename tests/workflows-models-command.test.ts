@@ -10,7 +10,11 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, mock } from "node:test";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 async function loadCommand() {
   const mod = await import("../src/workflows-models-command.js");
@@ -47,6 +51,57 @@ describe("workflows-models-command", () => {
       registerWorkflowModelsCommand(mockPi as never);
       assert.ok(capturedDescription.length > 0, "description should not be empty");
       assert.ok(capturedDescription.toLowerCase().includes("tier"), "description should mention tiers");
+    });
+
+    it("preserves routing notes when resetting only the tiers", async () => {
+      const { registerWorkflowModelsCommand } = await loadCommand();
+      const fakeHome = mkdtempSync(join(tmpdir(), "workflows-models-home-"));
+      const configPath = join(fakeHome, ".pi", "workflows", "model-tiers.json");
+      mkdirSync(join(fakeHome, ".pi", "workflows"), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          tiers: { small: "old/small", medium: "old/medium", big: "old/big" },
+          routingNotes: ["Keep this operator policy."],
+        }),
+      );
+
+      try {
+        await withFakeHomeAsync(fakeHome, async () => {
+          let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+          const mockPi = {
+            registerCommand: mock.fn(
+              (_name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+                handler = opts.handler;
+              },
+            ),
+          };
+          registerWorkflowModelsCommand(mockPi as never);
+          assert.ok(handler);
+
+          const selections = ["Reset to defaults", "Save and exit"];
+          const ctx = {
+            model: { provider: "openai-codex", id: "gpt-5.6-sol" },
+            waitForIdle: mock.fn(async () => undefined),
+            ui: {
+              select: mock.fn(async () => selections.shift()),
+              confirm: mock.fn(async () => true),
+              notify: mock.fn(),
+            },
+          };
+          await handler("", ctx);
+        });
+
+        const saved = JSON.parse(readFileSync(configPath, "utf8"));
+        assert.deepEqual(saved.routingNotes, ["Keep this operator policy."]);
+        assert.deepEqual(saved.tiers, {
+          small: "openai-codex/gpt-5.6-sol",
+          medium: "openai-codex/gpt-5.6-sol",
+          big: "openai-codex/gpt-5.6-sol",
+        });
+      } finally {
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
     });
   });
 

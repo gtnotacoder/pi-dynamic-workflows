@@ -1531,9 +1531,22 @@ export async function runWorkflow<T = unknown>(
       ctx,
       harnessHashKey,
     );
+    // 0.2.1 and earlier hashed modelSpec rather than the concrete tier/default
+    // route. Keep those identities readable during upgrade, but replay them only
+    // when the journal's recorded model still matches routedModel (see below).
+    const preResolvedModelCallHash = hashAgentCall(
+      prompt,
+      modelSpec,
+      assignedPhase,
+      hashAgentOptions,
+      effectiveContextPolicy,
+      agentDefKey,
+      ctx,
+      harnessHashKey,
+    );
     const legacyCallHash = hashAgentCall(
       prompt,
-      routedModel,
+      modelSpec,
       assignedPhase,
       hashAgentOptions,
       effectiveContextPolicy,
@@ -1545,7 +1558,7 @@ export async function runWorkflow<T = unknown>(
     const legacyNoHarnessCallHash = legacyNoHarnessSelectionHashKey
       ? hashAgentCall(
           prompt,
-          routedModel,
+          modelSpec,
           assignedPhase,
           hashAgentOptions,
           effectiveContextPolicy,
@@ -1557,7 +1570,7 @@ export async function runWorkflow<T = unknown>(
     const legacyNoHarnessNoContextCallHash = legacyNoHarnessSelectionHashKey
       ? hashAgentCall(
           prompt,
-          routedModel,
+          modelSpec,
           assignedPhase,
           hashAgentOptions,
           effectiveContextPolicy,
@@ -1614,13 +1627,21 @@ export async function runWorkflow<T = unknown>(
     // Claude Code's contract), so an edited upstream call never leaves stale
     // downstream results served from the journal.
     const cached = options.resumeJournal?.get(callIndex);
+    const preResolvedRouteMatches =
+      cached !== undefined && (cached.model !== undefined ? cached.model === routedModel : modelSpec === routedModel);
+    const preResolvedModelHashMatches =
+      cached !== undefined && cached.hash === preResolvedModelCallHash && preResolvedRouteMatches;
     const legacyHashMatches =
-      cached != null &&
+      cached !== undefined &&
       (cached.hash === legacyCallHash || cached.hash === legacyNoHarnessNoContextCallHash) &&
+      preResolvedRouteMatches &&
       effectiveMaxContextTokens === undefined &&
       effectiveContextReserveTokens === undefined;
-    const legacyNoHarnessHashMatches = cached != null && cached.hash === legacyNoHarnessCallHash;
-    const hashMatches = cached != null && (cached.hash === callHash || legacyHashMatches || legacyNoHarnessHashMatches);
+    const legacyNoHarnessHashMatches =
+      cached !== undefined && cached.hash === legacyNoHarnessCallHash && preResolvedRouteMatches;
+    const hashMatches =
+      cached !== undefined &&
+      (cached.hash === callHash || preResolvedModelHashMatches || legacyHashMatches || legacyNoHarnessHashMatches);
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       const cachedModel = cached.model ?? displayModel;
@@ -2163,6 +2184,9 @@ export async function runWorkflow<T = unknown>(
     try {
       const child = await runWorkflow(childScript, {
         ...options,
+        // Parent + child are one logical run: share the parent snapshot rather
+        // than re-reading model-tiers.json between nested workflow calls.
+        modelTierConfig,
         args: childArgs,
         sharedRuntime: shared,
         signal: runSignal,
