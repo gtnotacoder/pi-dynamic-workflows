@@ -81,7 +81,9 @@ GPT-5.6 Luna is a credible medium-tier candidate, not merely a small model:
 
 GLM-5.2 also supports first-party automatic context caching and a 1M context window. The current `oc-glm52` bridge has not reported cache fields in local workflow telemetry, but missing telemetry is not proof that the provider performs no caching.
 
-There is also a harness-specific limitation: Pi's `openai-codex` adapter derives `prompt_cache_key` from the subagent session ID. Every workflow `agent()` starts a fresh session, so cache reuse is strong within a multi-turn agent but separate fan-out agents may use different keys. Luna's cache therefore does not automatically make every fan-out cheaper.
+There is also a harness-specific limitation: Pi's `openai-codex` adapter derives `prompt_cache_key` from the subagent session ID. Every workflow `agent()` starts a fresh session, so cache reuse is strong within a multi-turn agent but separate fan-out agents may use different keys. Luna's cache therefore does not automatically make every fan-out cheaper. This SDK gap is tracked in [earendil-works/pi#6468](https://github.com/earendil-works/pi/issues/6468).
+
+A bounded route canary on 2026-07-09 sent two sequential calls per model with identical ~20k-token prefixes. Luna completed in 5.4s/4.2s and GLM in 5.0s/4.0s—effectively tied at this sample size—and both routes reported zero cache reads/writes. The result does **not** prove that neither route cached: Pi currently hardcodes GPT-5.6 `cacheWrite` to zero ([earendil-works/pi#6469](https://github.com/earendil-works/pi/issues/6469)), and the unique Luna session keys explain the cross-agent read miss. Cache support alone is therefore not evidence to replace GLM today.
 
 The production choice remains GLM until Luna passes representative local evaluations for:
 
