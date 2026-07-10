@@ -1,10 +1,12 @@
 # Discontinued exploration-tool integration removal
 
 ## Why
+
 Microsoft discontinued the exploration tool this project previously used.
 This project must stop referencing it.
 
 ## Replacement posture
+
 No new tool is added. The Scout phase now uses the existing exploration stack:
 `codegraph_*` tools (codegraph_explore, codegraph_context, codegraph_search,
 codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
@@ -13,6 +15,7 @@ codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
 ## Changes
 
 ### Source
+
 - `src/issue-delivery.ts`
   - Removed the three discontinued tool entries from the read-only tool
     allowlist (`PROTOTYPE_READ_ONLY_TOOLS`). The codegraph/ff/ctx/lsp entries
@@ -22,28 +25,32 @@ codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
     instead of the discontinued tool. The Scout firewall concept is preserved.
 
 ### Agent definitions (user-level, outside repo)
+
 - Added `~/.pi/agents/code-scout.md` (read-only localization scout using the
   codegraph exploration stack).
 - Removed the discontinued scout agent definition.
 
 ### Tests
+
 - `tests/builtin-workflows.test.ts`: scout agentType assertion updated to
   `/code-scout/`.
 - `tests/conductor-finalization.test.ts`: the retired-path finalization test
   no longer references the discontinued tool's transient path; it checks
-  `.fugu/` only (the discontinued tool's path is no longer a recognized
-  retired path and was removed from `.gitignore` and Biome excludes).
+  `.fugu/` only (the discontinued path is no longer recognized by finalization;
+  `.fastcontext/` remains ignored as defensive third-party-output hygiene).
 - `tests/harness-config.test.ts`, `tests/harness-selector.test.ts`: fixture
   description strings updated from the discontinued-tool wording to
   "Codegraph-backed".
 
 ### Config / hygiene
-- `.gitignore`: removed the discontinued tool's path line.
+
+- `.gitignore`: retains `.fastcontext/` as defensive hygiene for third-party output.
 - `biome.json`: removed the discontinued tool's path from `files.includes`.
 - `.codex/agents/pr-reviewer.toml`: dropped the discontinued path from the
   finalization-ignore guidance.
 
 ### Docs
+
 - `README.md`: Scout description uses the codegraph-based stack; `code-scout`
   replaces the discontinued scout.
 - `docs/workflows/catalog.md`: migration guardrail note rewritten — the
@@ -56,6 +63,7 @@ codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
   instead of the discontinued scout.
 
 ### Lock
+
 - `docs/workflows/workflow-lock.json`: regenerated. The lock is maintained
   manually (no generator script; `npm run check:workflow-lock` validates).
   Updated `src/issue-delivery.ts` sha256 to
@@ -64,6 +72,7 @@ codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
   0 errors.
 
 ## Verification
+
 - `grep -rin <discontinued-tool-name>` across the repo returns ZERO hits
   outside `CHANGELOG.md`.
 - `npm run build` — clean.
@@ -73,5 +82,6 @@ codegraph_files), `ffgrep`/`fffind`, targeted `ctx_read`/`read_symbol`, and
 - `npm test` — 1385 pass / 0 fail, identical to baseline (1385/0).
 
 ## Note
+
 `CHANGELOG.md` retains historical mentions of the discontinued tool and is
 intentionally excluded from the grep-zero criterion.

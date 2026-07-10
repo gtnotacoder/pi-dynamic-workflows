@@ -51,10 +51,11 @@ const THINKER_SCHEMA = {
 
 const VERIFIER_SCHEMA = {
   type: 'object',
-  required: ['passed', 'feedback'],
+  required: ['passed', 'feedback', 'tautologicalTestDetected'],
   properties: {
     passed: { type: 'boolean', description: 'True if the modification met all criteria and is bug-free.' },
-    feedback: { type: 'string', description: 'Explicit semantic bug details to feed back to the Worker if failed. Do not paste raw chronological logs.' }
+    feedback: { type: 'string', description: 'Explicit semantic bug details to feed back to the Worker if failed. Do not paste raw chronological logs.' },
+    tautologicalTestDetected: { type: 'boolean', description: 'True when any test recomputes its expected value using the implementation logic. This is always blocking.' }
   }
 }
 
@@ -276,6 +277,7 @@ const plan = await agent(
   '2. Steps touching DIFFERENT files with no logical dependencies should have EMPTY dependencies so they execute in parallel.\\n' +
     '3. Keep each Worker step narrow enough for one focused edit pass.\\n' +
   '4. Optionally set step.harness_type/step.harness_config to route a Worker to a specific harness (e.g. a step touching components/ui/** should use harness_type "pi" and harness_config "frontend-react-shadcn"; a backend step may omit both to inherit the run-level selection). Only set them when the step clearly maps to a known harness_config; otherwise omit.\\n\\n' +
+  '5. Planning exception — Expand-contract: for wide mechanical refactors (renames, signature changes, layout moves), EXPAND the new API/form beside the old, MIGRATE callers in independently green bounded batches, then CONTRACT/delete the old form. Ordinary feature/bug work stays thin vertical steps; dependency ordering must keep CI green.\\n\\n' +
   'Structured output only. Do not perform any file edits yourself. Please think step-by-step.',
   {
     label: 'issue-thinker',
@@ -509,7 +511,9 @@ while (Object.keys(completed).length < selectedSteps.length) {
           'Expected Output: ' + step.expectedOutput + '\\n\\n' +
           'Host-side LocalChecks summary (mechanical checks already passed):\\n' +
           JSON.stringify({ summary: localChecks.summary, checks: localChecks.checks.map(c => ({ name: c.name, ok: c.ok, exitCode: c.exitCode, durationMs: c.durationMs })) }) + '\\n\\n' +
-          'Inspect the file and perform a strict semantic evaluation. Is the code robust, correct, and matching the plan? Return passed=true or passed=false with concise, forward-looking feedback. Do not paste raw chronological logs.',
+          'Inspect the file and perform a strict semantic evaluation. Is the code robust, correct, and matching the plan?\\n\\n' +
+          'Tautological-test detection: if a test uses the same logic as the code under test (e.g. expect(add(a,b)).toBe(a+b)), set tautologicalTestDetected=true and MUST return passed=false — the expected value needs an independent literal, worked example, or task/spec oracle, not recomputation by implementation logic. Set tautologicalTestDetected=false whenever no tautological oracle is detected.\\n' +
+          'Return passed=true or passed=false with concise, forward-looking feedback. Do not paste raw chronological logs.',
           {
             label: 'issue-verifier:' + step.id,
             tier: VERIFIER_TIER,
@@ -520,7 +524,7 @@ while (Object.keys(completed).length < selectedSteps.length) {
           }
         )
 
-        if (verification && verification.passed) {
+        if (verification && verification.passed && verification.tautologicalTestDetected === false) {
           log('[IssueDelivery:Verifier] Step ' + step.id + ' PASSED verification!')
           return { ok: true }
         }

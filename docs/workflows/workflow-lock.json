@@ -1,6 +1,6 @@
 {
   "schema": "pi-dynamic-workflows.workflow-lock.v1",
-  "generatedAt": "2026-07-05",
+  "generatedAt": "2026-07-10",
   "mode": "warning",
   "collisionPolicy": {
     "registrationOrder": ["builtin-command", "saved-workflow"],
@@ -13,11 +13,11 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "a5fbc8383f3453cbe33bcea86321c3055bb1606c5fece26c00cc1d9627fd9099",
+      "sha256": "bea5167455aff4e7559505d1a16aab34e3c10dc6ce46bea8d9bec2f947ba824f",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",
-      "version": "0.1.7",
+      "version": "0.2.2",
       "supportsPrototypeLane": true,
       "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },

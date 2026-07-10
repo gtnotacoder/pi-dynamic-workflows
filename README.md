@@ -309,25 +309,6 @@ with an actionable `nextAction` instead of silently claiming success.
 
 ---
 
-## Initial derivation patches (historical)
-
-The first seven edits made on top of upstream v2.7.0, kept for provenance — the project has since diverged far beyond this list (harness-agnostic broker, issue-delivery workflows, run-level worktree isolation, catalog/lock-gated commands). The **[CHANGELOG](./CHANGELOG.md)** is the authoritative feature history; see **[PROVENANCE.md](./PROVENANCE.md)** for the upstream relationship.
-
-| Patch | Summary |
-|-------|---------|
-| EDIT 1 | 4096-item fan-out cap |
-| EDIT 2 | 512 KB script-size cap + 30 s `runInContext` timeout |
-| EDIT 3 | `<task-notification>` / `<usage>` / `<recovery>` XML result delivery |
-| EDIT 4 | Built-in `code-review` workflow (multi-angle: scope → find → verify → sweep → synthesize) |
-| EDIT 5 | Per-subagent transcript logging (`ManagedRun.transcriptDir`) |
-| EDIT 6 | Live progress panel polish + concurrency floor |
-| EDIT 7 | Per-subagent **context modes** — main-agent rules don't leak into subagents (default `focused`) + `/modes` command. See [Context modes](#context-modes) / [docs](./docs/context-modes.md) |
-| + | Error-surfacing in the task panel + 5 bug fixes (code-point-safe truncation, first-line extraction, whitespace-only errors, shared `agentErrorText()` helper) |
-| + | `code-review` agents pinned to `tier: "big"`; model-tier routing config |
-| + | Chat notification enrichment: `file://` log links on failure + real `tool_uses` from agent history |
-
----
-
 ## Status & acknowledgements
 
 **Status:** the full `npm test` gate (biome + build + unit tests) is green on `main`. Issues are tracked on [GitHub](https://github.com/gtnotacoder/pi-dynamic-workflows/issues); command naming is governed by the [workflow catalog](./docs/workflows/catalog.md).

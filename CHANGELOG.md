@@ -9,22 +9,36 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [0.2.2] — 2026-07-09
 
-Model-tier routing hardening, machine-readable operator policy, and GPT-5.6 route qualification.
+Model-tier routing hardening plus bounded workflow-authoring and Issue Delivery quick wins.
 
 ### Added
 
 - Add optional machine-local `routingNotes` to `model-tiers.json`; the workflow tool injects them alongside the concrete tier mapping so model-authored workflows can apply operator-specific specialization.
 - Add non-blocking tier diagnostics for missing or duplicate `small`/`medium`/`big` mappings. `/workflows-models` surfaces duplicate mappings that would make an escalation retry the same model.
+- Add four prompt-guidance principles: separate facts from decisions, make human checkpoints AFK-safe, reserve expand-contract for wide mechanical refactors, and avoid tautological test oracles.
+- Document `checkpoint(promptText, options?)` as a workflow global and require an explicit conservative default (`default: false` or `headless: 'abort'`) for consequential background decisions.
+
+### Changed
+
+- Issue Delivery plans wide mechanical migrations as expand → independently green caller batches → contract.
+- A detected tautological test oracle is a blocking Issue Delivery verifier result, even if the model also returns `passed=true`.
 
 ### Fixed
 
 - Preserve pre-0.2.2 tier/default-medium resume entries only when their recorded concrete model still matches; normalize blank tier values to the real session-model fallback; share the parent's tier snapshot with nested workflows; and preserve `routingNotes` when `/workflows-models` resets tiers.
 - Distinguish GPT-5.6 public-API context (`1.05M`) from the ChatGPT Codex route (`372k`). Near-boundary probes with compaction disabled confirmed exact retrieval around 370k and `context_length_exceeded` around 375k for Sol, Terra, and Luna; Codex registry entries remain at 372k so compaction and occupancy telemetry do not overrun the provider.
 - Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
+- Correct retired-path guidance: `.fugu/` debris is visible to git and blocks finalization, while `.fastcontext/` remains ignored only as defensive third-party-output hygiene.
 
 ### Documentation
 
 - Replace the stale GPT-5.5-era routing research note with current local-first guidance for GPT-5.6 Sol/Terra/Luna, GLM-5.2, Claude Fable 5/Opus 4.8, Gemini 3.5 Flash, and local Qwen. GPT-5.5 is retained only as a temporary benchmark/control route.
+- Add concrete anti-patterns and corrected examples for the four workflow-authoring principles.
+- Remove the stale README table of initial derivation patches; the changelog and provenance document remain authoritative.
+
+### Acknowledgements
+
+- Matt Pocock's skills repo v1.1.0 as inspiration; concepts were adapted, not vendored.
 
 ## [0.2.1] — 2026-07-05
 

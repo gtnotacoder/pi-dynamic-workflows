@@ -130,7 +130,8 @@ test("generateIssueDeliveryWorkflow does not truncate normal delivery plans over
       async run(_prompt: string, options: { label?: string }): Promise<unknown> {
         labels.push(options.label ?? "");
         if (options.label === "issue-thinker") return { summary: "large normal plan", steps };
-        if (options.label?.startsWith("issue-verifier:")) return { passed: true, feedback: "ok" };
+        if (options.label?.startsWith("issue-verifier:"))
+          return { passed: true, feedback: "ok", tautologicalTestDetected: false };
         if (options.label === "issue-pr-delivery") return "https://github.com/example/repo/pull/1";
         return "ok";
       },
@@ -307,6 +308,66 @@ test("generateIssueDeliveryWorkflow rejects broad git staging and enforces scope
     /You are the Fugu Finalization Agent/,
     "body must not contain Fugu Finalization Agent text",
   );
+});
+
+// ─── Issue Delivery Thinker & Verifier semantic checks ────────────────────────
+
+test("generateIssueDeliveryWorkflow: Thinker prompt includes expand-contract planning exception", () => {
+  const { meta, body } = parseWorkflowScript(generateIssueDeliveryWorkflow());
+  assert.equal(meta.name, "issue_delivery");
+  assert.match(body, /Planning exception — Expand-contract/i);
+  assert.match(body, /EXPAND the new API\/form beside the old/);
+  assert.match(body, /MIGRATE callers in independently green bounded batches/);
+  assert.match(body, /CONTRACT\/delete the old form/);
+  assert.match(body, /Ordinary feature\/bug work stays thin vertical steps/i);
+  assert.match(body, /dependency ordering must keep CI green/i);
+});
+
+test("generateIssueDeliveryWorkflow: Verifier prompt includes tautological-test detection", () => {
+  const { body } = parseWorkflowScript(generateIssueDeliveryWorkflow());
+  assert.match(body, /Tautological-test detection/i);
+  assert.match(body, /independent literal.*worked example.*task\/spec oracle/i);
+  assert.match(body, /not recomputation by implementation logic/i);
+  assert.match(body, /expect\(add\(a,b\)\)\.toBe\(a\+b\)/);
+});
+
+test("generateIssueDeliveryWorkflow: tautological-test verdict is fail-closed", () => {
+  const { body } = parseWorkflowScript(generateIssueDeliveryWorkflow());
+  assert.match(body, /tautologicalTestDetected=true and MUST return passed=false/);
+  assert.match(body, /tautologicalTestDetected=false whenever no tautological oracle is detected/);
+  assert.doesNotMatch(body, /false only when no such oracle exists/);
+  assert.match(body, /verification\.passed && verification\.tautologicalTestDetected === false/);
+});
+
+test("generateIssueDeliveryWorkflow: a detected tautological oracle cannot enter the success path", async () => {
+  const labels: string[] = [];
+  await assert.rejects(
+    runWorkflow(generateIssueDeliveryWorkflow(), {
+      cwd: "/tmp/tautological-verifier",
+      args: { task: "add with a regression test" },
+      persistLogs: false,
+      agent: {
+        async run(_prompt: string, options: { label?: string }): Promise<unknown> {
+          labels.push(options.label ?? "");
+          if (options.label === "issue-thinker") {
+            return {
+              summary: "one step",
+              steps: [{ id: "step-1", file: "src/add.ts", instructions: "add behavior", expectedOutput: "tested add" }],
+            };
+          }
+          if (options.label?.startsWith("issue-verifier:")) {
+            return { passed: true, feedback: "expected repeats implementation", tautologicalTestDetected: true };
+          }
+          return "ok";
+        },
+      },
+      stageCheck: async () => ({ ok: true, checks: [], summary: "Stage checks passed (test)." }),
+    }),
+    /handoff\.md/,
+  );
+
+  assert.equal(labels.filter((label) => label.startsWith("issue-verifier:")).length, 3);
+  assert.equal(labels.includes("issue-pr-delivery"), false);
 });
 
 // ─── Deep Research ──────────────────────────────────────────────────────────────
