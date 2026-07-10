@@ -6,7 +6,7 @@
  * tools plus the web_search/web_fetch tools — no agent receives the `write`
  * tool. Each agent returns a compact, schema-bounded structured result; the
  * workflow's final return carries only the bounded supported claims and a
- * bounded summary string (the validated question stays with the host). The
+ * bounded candidate summary (the validated question stays with the host). The
  * full cited Markdown report is rendered by the host from the bounded
  * supported claims into a fresh private tmpdir directory (never a workspace
  * path, never a model-controlled path).
@@ -83,7 +83,7 @@ export const MAX_RESEARCH_CLAIM_CHARS = 140;
 /** Maximum number of supported claims the Verify phase may return / carry to Report. */
 export const MAX_SUPPORTED_CLAIMS = 3;
 
-/** Maximum length (chars) of the one-line summary (Report + host delivery). */
+/** Maximum length (chars) of the candidate and host-derived acknowledgement summaries. */
 export const MAX_RESEARCH_SUMMARY_CHARS = 120;
 
 /**
@@ -98,7 +98,7 @@ export interface DeepResearchResult {
   ok: boolean;
   /** Bounded supported claims, at most MAX_SUPPORTED_CLAIMS (host re-clamps defensively). */
   supported: SupportedClaim[];
-  /** One-line answer, ≤MAX_RESEARCH_SUMMARY_CHARS chars (host re-clamps defensively). */
+  /** Bounded candidate answer; host delivery derives its acknowledgement from retained claims. */
   summary: string;
 }
 
@@ -298,13 +298,14 @@ return {
  */
 export function renderResearchReport(question: string, supported: readonly SupportedClaim[]): string {
   const lines: string[] = ["# Deep Research Report", ""];
-  lines.push(`**Question:** ${question}`, "");
+  const safeQuestion = escapeMarkdownInline(normalizeSingleLine(question, MAX_RESEARCH_QUESTION_CHARS));
+  lines.push(`**Question:** ${safeQuestion}`, "");
   lines.push("## Supported claims");
   for (const entry of supported) {
-    const claim = typeof entry?.claim === "string" ? entry.claim.trim() : "";
+    const claim = normalizeSingleLine(entry?.claim, MAX_RESEARCH_CLAIM_CHARS);
     const sources = Array.isArray(entry?.sources) ? entry.sources.filter((s) => typeof s === "string" && s.trim()) : [];
     if (!claim || sources.length === 0) continue; // reject missing/uncited content
-    lines.push(`- ${claim}`);
+    lines.push(`- ${escapeMarkdownInline(claim)}`);
     for (const url of sources) lines.push(`  - ${url.trim()}`);
   }
   lines.push("");
@@ -338,8 +339,8 @@ export function defaultResearchReportWriter(report: string): string {
 
 /**
  * Pure, host-side delivery for /deep-research. Renders cited Markdown from
- * the bounded supported claims via the injectable writer, clamps the summary
- * to MAX_RESEARCH_SUMMARY_CHARS, re-clamps the supported array to at most
+ * the bounded supported claims via the injectable writer, derives a bounded
+ * acknowledgement from retained cited evidence, and re-clamps the array to at most
  * MAX_SUPPORTED_CLAIMS claims (each claim/url re-sliced to its byte budget),
  * and returns the compact result (path + claim/source counts + short summary)
  * without ever putting the report body in any result channel.
@@ -350,7 +351,7 @@ export function defaultResearchReportWriter(report: string): string {
  * workflow result, so a model cannot influence the report heading.
  *
  * Extracted from the handler so the safety contract (no false success,
- * uncited rejection, writer failure, summary clamping) is unit-testable
+ * uncited rejection, writer failure, cited-summary derivation) is unit-testable
  * without running the engine.
  *
  * @param question the already-validated handler question (titles the report)
@@ -377,7 +378,8 @@ export function deliverDeepResearchResult(
   for (const entry of supportedRaw.slice(0, MAX_SUPPORTED_CLAIMS)) {
     if (entry === null || typeof entry !== "object") continue;
     const raw = entry as Partial<SupportedClaim>;
-    if (typeof raw.claim !== "string" || !raw.claim.trim()) continue;
+    const claim = normalizeSingleLine(raw.claim, MAX_RESEARCH_CLAIM_CHARS);
+    if (!claim) continue;
     const sources = Array.isArray(raw.sources)
       ? raw.sources
           .flatMap((source) => {
@@ -387,7 +389,7 @@ export function deliverDeepResearchResult(
           .slice(0, 2)
       : [];
     if (sources.length === 0) continue;
-    supported.push({ claim: raw.claim.trim().slice(0, MAX_RESEARCH_CLAIM_CHARS), sources });
+    supported.push({ claim, sources });
   }
   if (supported.length === 0) {
     return {
@@ -413,14 +415,37 @@ export function deliverDeepResearchResult(
       warning: "deep-research report writer returned no path — not delivering a report.",
     };
   }
-  const summary = clampSummary(res.summary);
+  // Derive the acknowledgement only from retained cited evidence. A model
+  // summary may mention claims whose citations were filtered out, so it is
+  // intentionally not delivered to chat.
+  const summary = clampSummary(supported[0]?.claim);
   const count = supported.length;
   const citedUrls = supported.flatMap((entry) => (entry.sources || []).map((s) => s.trim()).filter(Boolean));
   const sources = new Set(citedUrls).size;
   const message = `Deep research report: ${path}. ${count} cited claims across ${sources} sources.${
-    summary ? ` Summary: ${summary}` : ""
+    summary ? ` Summary: ${escapeMarkdownInline(summary)}` : ""
   }`;
   return { ok: true, path, count, sources, summary, message };
+}
+
+/** Flatten controls/newlines so one claim always renders as exactly one bullet. */
+function normalizeSingleLine(value: unknown, maxChars: number): string {
+  if (typeof value !== "string") return "";
+  return Array.from(value, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    const isControl = codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+    return isControl || codePoint === 0x2028 || codePoint === 0x2029 ? " " : character;
+  })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxChars);
+}
+
+/** Escape inline Markdown metacharacters without adding new report lines. */
+function escapeMarkdownInline(value: string): string {
+  const specials = new Set(["\\", "`", "*", "_", "[", "]", "{", "}", "<", ">", "#", "+", "-", "!", "|"]);
+  return Array.from(value, (character) => (specials.has(character) ? `\\${character}` : character)).join("");
 }
 
 /** Accept only bounded HTTP(S) citation URLs; other schemes/text are not evidence links. */

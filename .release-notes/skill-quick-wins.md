@@ -30,9 +30,9 @@ Bounded quick wins for Issue Delivery: prompt-guidance hardening and
 
 - **src/builtin-commands.ts**: `/deep-research` uses read-only coding tools plus
   `web_search`/`web_fetch`. The host drops empty claims and citations that are
-  not valid HTTP(S) URLs, clamps the summary, renders cited Markdown, and writes
-  `report.md` inside a fresh private OS temporary directory. It does not
-  semantically fact-check model claims.
+  not valid HTTP(S) URLs, flattens/escapes retained claims, derives the chat
+  summary from retained cited evidence, and writes `report.md` inside a fresh
+  private OS temporary directory. It does not semantically fact-check claims.
 
 ### Tests
 

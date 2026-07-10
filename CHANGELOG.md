@@ -22,7 +22,7 @@ Prompt-authoring hardening, artifact-first `/deep-research`, foundation-ui-compl
 ### Changed
 
 - Issue Delivery plans wide mechanical migrations as expand → independently green caller batches → contract. A detected tautological test oracle is a blocking verifier result, even if the model also returns `passed=true`.
-- `/deep-research` rejects overlong questions, bounds aggregate evidence before verification, and returns only bounded cited claims plus a short summary. The host drops empty or uncited claims, clamps the summary, renders Markdown via an injectable writer, and reports the temporary artifact path; it does not semantically fact-check model claims.
+- `/deep-research` rejects overlong questions, bounds aggregate evidence before verification, and returns only bounded cited claims plus a short summary. The host drops empty or invalidly cited claims, flattens and Markdown-escapes retained claims, derives the chat summary from retained cited evidence, renders Markdown via an injectable writer, and reports the temporary artifact path; it does not semantically fact-check model claims.
 - `foundation_ui_compliance` no longer claims unenforceable capabilities — the runtime has no trace API; edit scope is prompt guidance only and re-gating validates resulting UI compliance but does not enforce or attest which paths were edited.
 
 ### Fixed

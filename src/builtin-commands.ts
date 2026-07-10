@@ -263,9 +263,9 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
 
           // Host delivery (see deliverDeepResearchResult): the host renders the
           // cited Markdown report from the bounded supported claims via the
-          // injectable writer, reapplies the configured UTF-8-safe summary,
-          // claim, and citation limits, rejects invalid/uncited claims, surfaces
-          // writer failure, and delivers path + claim/source
+          // injectable writer, reapplies the configured UTF-8-safe claim and
+          // citation limits, derives the acknowledgement summary from retained
+          // cited evidence, surfaces writer failure, and delivers path + claim/source
           // counts + short summary only. The validated question is threaded in
           // from the handler (the workflow result no longer carries it), so the
           // model cannot influence the report heading. No full report body in

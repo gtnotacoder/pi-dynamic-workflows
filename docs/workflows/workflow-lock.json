@@ -26,10 +26,10 @@
       "command": "/deep-research",
       "kind": "builtin-command",
       "source": "src/deep-research.ts",
-      "sha256": "7f25bb2a5d88fd313a48f0cd71e347b14fc996c35e0674a62740b6465be3a689",
+      "sha256": "b7acd4d397bb4c5056310baaa9f0e90f9d88ba0745c151246fa8252379a40a66",
       "aliases": [],
       "channel": "active",
-      "notes": "Research a question across the web with cross-checked sources. Read-only + web-only: every agent runs against read-only repo tools plus web_search/web_fetch and no agent receives write. Verify returns bounded supported claims (max 3 claims, each claim max 140 chars, max 2 source URLs each max 200 chars) through its structured result; worst-case four-byte Unicode payloads remain below 10KB. Report returns one summary string (maxLength 120). The host deterministically renders cited Markdown from the bounded supported claims into a fresh private tmpdir directory via an injectable writer and returns the absolute path; no cwd/.pi/.research writes and no model-controlled path. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
+      "notes": "Research a question across the web with cross-checked sources. Read-only + web-only: every agent runs against read-only repo tools plus web_search/web_fetch and no agent receives write. Verify returns bounded supported claims (max 3 claims, each claim max 140 chars, max 2 source URLs each max 200 chars) through its structured result; worst-case four-byte Unicode payloads remain below 10KB. Report returns one bounded candidate summary, but the host acknowledgement derives its summary from retained cited evidence. The host flattens/escapes claims, deterministically renders cited Markdown into a fresh private tmpdir directory via an injectable writer, and returns the absolute path; no cwd/.pi/.research writes and no model-controlled path. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
     },
     {
       "canonicalName": "adversarial-review",

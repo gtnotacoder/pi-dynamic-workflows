@@ -499,7 +499,7 @@ test("deliverDeepResearchResult: valid supported claims → ack with path + coun
   assert.equal(outcome.count, 2);
   // Two distinct cited source URLs across the claims.
   assert.equal(outcome.sources, 2);
-  assert.equal(outcome.summary, "X is fast and supports Y.");
+  assert.equal(outcome.summary, "X is fast per primary docs.");
   assert.match(outcome.message, /2 cited claims across 2 sources/);
   assert.match(outcome.message, /\/tmp\/pi-deep-research-test\/report\.md/);
   // The rendered report is cited Markdown with the question and the claims.
@@ -599,8 +599,11 @@ test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URL
       runId: "r",
       result: {
         ok: true,
-        supported: [{ claim: "valid claim", sources: ["not a URL", "https://docs.example/path", "file:///tmp/x"] }],
-        summary: "s",
+        supported: [
+          { claim: "valid claim", sources: ["not a URL", "https://docs.example/path", "file:///tmp/x"] },
+          { claim: "dropped uncited claim", sources: ["not a URL"] },
+        ],
+        summary: "dropped uncited claim",
       },
     },
     rec.writer,
@@ -610,7 +613,9 @@ test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URL
   assert.equal(outcome.count, 1);
   assert.equal(outcome.sources, 1);
   assert.match(rec.report, /https:\/\/docs\.example\/path/);
-  assert.doesNotMatch(rec.report, /not a URL|file:\/\//);
+  assert.doesNotMatch(rec.report, /not a URL|file:\/\/|dropped uncited claim/);
+  assert.equal(outcome.summary, "valid claim", "summary must derive from retained cited evidence");
+  assert.doesNotMatch(outcome.message, /dropped uncited claim/);
 });
 
 test("deliverDeepResearchResult: all claims uncited → rejected, no success", () => {
@@ -673,17 +678,16 @@ test("deliverDeepResearchResult: writer returns empty path → rejected, no succ
   assert.match(outcome.warning, /returned no path/);
 });
 
-test("deliverDeepResearchResult: overlong summary is clamped to the UTF-8-safe limit", () => {
+test("deliverDeepResearchResult: acknowledgement summary derives from retained cited evidence", () => {
   const rec = recordingWriter();
-  const overlong = "x".repeat(250);
   const outcome = deliverDeepResearchResult(
     "q",
     {
       runId: "r",
       result: {
         ok: true,
-        supported: [{ claim: "c1", sources: ["https://a.example"] }],
-        summary: overlong,
+        supported: [{ claim: "x".repeat(250), sources: ["https://a.example"] }],
+        summary: "model summary that is not independently citation-bound",
       },
     },
     rec.writer,
@@ -692,7 +696,7 @@ test("deliverDeepResearchResult: overlong summary is clamped to the UTF-8-safe l
   if (!outcome.ok) return;
   assert.equal(outcome.summary.length, MAX_RESEARCH_SUMMARY_CHARS);
   assert.equal(outcome.summary, "x".repeat(MAX_RESEARCH_SUMMARY_CHARS));
-  assert.ok(outcome.message.endsWith(`Summary: ${"x".repeat(MAX_RESEARCH_SUMMARY_CHARS)}`));
+  assert.doesNotMatch(outcome.message, /model summary/);
 });
 
 test("deliverDeepResearchResult: supported array is re-clamped to the UTF-8-safe limit", () => {
@@ -726,4 +730,19 @@ test("renderResearchReport: cited Markdown is deterministic and rejects uncited 
   assert.match(md, / {2}- https:\/\/b\.example/);
   assert.doesNotMatch(md, /uncited/, "uncited claims must be rejected");
   assert.doesNotMatch(md, /https:\/\/c\.example/, "claims missing content must be rejected");
+});
+
+test("renderResearchReport: multiline Markdown cannot create uncited bullets", () => {
+  const md = renderResearchReport("Question\n# injected heading", [
+    {
+      claim: "Supported fact\n- Unsupported extra\n  - https://uncited.example/*bold*",
+      sources: ["https://cited.example"],
+    },
+  ]);
+
+  assert.equal(md.split("\n").filter((line) => line.startsWith("- ")).length, 1, "one claim renders one bullet");
+  assert.doesNotMatch(md, /\n- Unsupported extra|\n {2}- https:\/\/uncited\.example/);
+  assert.match(md, /Supported fact \\- Unsupported extra/);
+  assert.match(md, /https:\/\/cited\.example/);
+  assert.doesNotMatch(md, /\n# injected heading/);
 });
