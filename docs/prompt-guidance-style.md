@@ -46,8 +46,67 @@ State only what a tool result or read file supports; mark inference as inference
 
 **Say this, not that:**
 
-- ❌ "Done — the bug is gone." → ✅ "Re-ran the repro 5×: 0 failures (was 3/5). Fixed."
+- ❌ "Done — the bug is gone." → ✅ "Re-ran the repro: 0 failures (was N). Fixed."
 - ❌ "Nothing else calls this." → ✅ "`grep` finds no other callers in `src/` (didn't check generated code)."
+
+## Separate Facts from Decisions
+
+Facts include tool/file results and time-scoped observations such as current CI status — always cite the command or source and observation context. Decisions are human choices: preferences, approvals, policy/routing tradeoffs. Never classify CI pass/fail as a decision. Cross-reference 'Ground Claims in Evidence' for the proof requirement.
+
+**Anti-patterns:**
+
+- "Tier routing is set correctly." (No `modelTierConfig` was read — assumption.)
+- "CI is green, so the build passes." (The CI result was not checked — guess.)
+
+**Say this, not that:**
+
+- ❌ "The model tier mapping is correct." → ✅ "Read `modelTierConfig`: tier assignments verified against the saved config."
+- ❌ "CI passed." → ✅ "`npm test` returned 0 failures (verified)."
+
+## Human-in-the-Loop is AFK-Safe
+
+Gate a consequential human decision on `checkpoint()`, but never let it silently approve: a background/detached run has no human present, so `checkpoint()` replays its journaled default. Therefore every consequential checkpoint MUST pass an explicit conservative default (normally `default: false` for any ship/merge/delete/proceed gate) or `headless: 'abort'` — do NOT rely on the implicit `default ?? true`, which proceeds as approved. Gather all facts autonomously BEFORE the decision gate. Recorded human choices are immutable constraints, not inferred facts — never re-derive or override them later in the run. Do NOT block on undefined human input or spin-poll.
+
+**Anti-patterns:**
+
+- "Please confirm this PR is ready." (Sent to a background run with no UI — it will never get a response and the run hangs or times out.)
+- `checkpoint('Ship?')` with no default in a background run — replays the implicit `true` and ships without a human. (Silent approval.)
+- Polling a checkpoint in a loop without a default. (Run spins on undefined input until timeout.)
+- Re-deriving a recorded human choice later in the run and overriding it.
+
+**Say this, not that:**
+
+- ❌ `checkpoint('Ship the PR?')` in a background run → ✅ `checkpoint('Ship the PR?', { default: false })` so an AFK run declines instead of shipping.
+- ❌ `checkpoint('Proceed?', {})` relying on `default ?? true` → ✅ `checkpoint('Proceed?', { default: false })` or `checkpoint('Proceed?', { headless: 'abort' })`.
+- ❌ Blocking an agent on human input in a detached workflow → ✅ Return explicit decision points or `needs-human` instead of inventing preferences.
+
+## Expand-Contract Only for Wide Mechanical Refactors
+
+EXPAND the new API/form beside the old, MIGRATE callers in independently green bounded batches, then CONTRACT/delete the old form. It never means propose candidates, grill one, arbitrary 10+ file thresholds, or compaction policy. Use it only as a planning exception for wide mechanical refactors; ordinary feature/bug work stays thin vertical steps. Dependency ordering must keep CI green.
+
+**Anti-patterns:**
+
+- Expand-contract for a single-file edit. (Overhead with no benefit — the file fits in context.)
+- Using expand-contract for feature work or bug fixes. (It's a planning exception, not a default strategy.)
+
+**Say this, not that:**
+
+- ❌ Expand-contract because a change touches several files → ✅ Use it only when old and new forms must coexist while independently green caller batches migrate.
+- ❌ No dependency ordering on the contract phase → ✅ Sequence contract steps to keep CI green across batches.
+
+## Avoid Tautological Tests
+
+The expected value must come from an independent source of truth (a spec, a known constant, a hand-computed oracle); never recompute the same way as the code under test. This is **guidance** for when tests are written, not a requirement to write tests first.
+
+**Anti-patterns:**
+
+- `expect(add(a, b)).toBe(a + b)` (The oracle is computed the same way — a tautology that passes regardless of correctness.)
+- Testing `formatDate(new Date())` with `expect(result).toMatch(/\d{4}-\d{2}-\d{2}/)` when the same logic is used to build the expected value.
+
+**Say this, not that:**
+
+- ❌ `expect(add(a, b)).toBe(a + b)` (reuses the code under test as the oracle — proves nothing) → ✅ `expect(add(2, 3)).toBe(5)` (independent hand-checked literal).
+- ❌ "This test is tautological" → ✅ "The oracle `a+b` uses the same `add` logic; replace with a hand-checked constant like `expect(add(2,3)).toBe(5)`."
 
 ## Verdicts, not payloads (the agent-result channel)
 

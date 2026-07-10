@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
+import {
+  deliverDeepResearchResult,
+  MAX_RESEARCH_QUESTION_CHARS,
+  MAX_RESEARCH_SUMMARY_CHARS,
+  MAX_SUPPORTED_CLAIMS,
+  renderResearchReport,
+} from "../src/deep-research.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
 function toolNames(tools: unknown): string[] {
@@ -51,6 +61,27 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
   assert.equal(notified.length, 1, "should notify with warning");
   assert.equal(notified[0].type, "warning", "should be a warning");
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+});
+
+test("/deep-research rejects an overlong question before the workflow runs", async () => {
+  const { pi, commands } = makeCommandRegistryPi();
+  registerBuiltinWorkflows(pi, { cwd: "/tmp" });
+  const deepResearchHandler = commands.find((c) => c.name === "deep-research")?.handler;
+  assert.ok(deepResearchHandler, "deep-research handler should exist");
+
+  // A question one char over the limit must be rejected before any workflow
+  // is launched. The mock ctx has no modelRegistry/runWorkflow injection, so
+  // reaching the workflow would throw and surface an error notification; we
+  // assert the only notification is the length warning, with no error.
+  const overlong = "x".repeat(MAX_RESEARCH_QUESTION_CHARS + 1);
+  assert.ok(overlong.length > MAX_RESEARCH_QUESTION_CHARS, "question must exceed the limit");
+  const { ctx, notified } = makeNotifyCtx();
+  await deepResearchHandler(overlong, ctx);
+  assert.equal(notified.length, 1, "should notify exactly once with the length warning");
+  assert.equal(notified[0].type, "warning", "should be a warning, not an error");
+  assert.match(notified[0].message, /too long/i, "should explain the question is too long");
+  assert.match(notified[0].message, new RegExp(String(MAX_RESEARCH_QUESTION_CHARS)), "should state the limit");
+  assert.doesNotMatch(notified[0].message, /failed/i, "must not reach the workflow run path");
 });
 
 test("registerBuiltinWorkflows adversarial-review handler validates empty args (returns early)", async () => {
@@ -362,4 +393,337 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   assert.ok(fuguCmd, "fugu alias should be registered");
   assert.ok(fuguCmd.description?.includes("Deprecated alias"), "should describe fugu as a deprecated alias");
   assert.equal(typeof fuguCmd.handler, "function");
+});
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const commandsSource = readFileSync(join(__dirname, "../src/builtin-commands.ts"), "utf8");
+
+/** Extract just the `/deep-research` handler body from the source. */
+function deepResearchHandlerBody(): string {
+  const start = commandsSource.indexOf('pi.registerCommand("deep-research"');
+  assert.ok(start > -1, "deep-research command must be registered");
+  // Stop at the next command registration after deep-research.
+  const next = commandsSource.indexOf("if (!alreadyRegistered(pi,", start + 1);
+  assert.ok(next > start, "a following command registration must exist");
+  return commandsSource.slice(start, next);
+}
+
+// ── /deep-research read-only + web handler tools ────────────────────────────
+// The handler must build the run-level tool pool from createReadOnlyTools(cwd)
+// + createWebTools() only — no createCodingTools, no host-defined path-fenced
+// write. The security boundary is the tool pool, not the prompt text: no
+// research agent can write, run shell, or edit tracked files.
+
+test("deep-research handler uses createReadOnlyTools(cwd) + createWebTools() and no write/coding tools", () => {
+  const handler = deepResearchHandlerBody();
+  // No createCodingTools(cwd) in the deep-research handler body (issue-delivery
+  // legitimately uses it elsewhere — scope the assertion to this handler).
+  assert.doesNotMatch(
+    handler,
+    /createCodingTools\(cwd\)/,
+    "deep-research handler must not use createCodingTools (no unrestricted write)",
+  );
+  // No host-defined path-fenced write tool.
+  assert.doesNotMatch(
+    handler,
+    /createFencedWriteTool/,
+    "deep-research handler must not build a path-fenced write tool",
+  );
+  // No stamp/artifact-path helpers.
+  assert.doesNotMatch(
+    handler,
+    /sanitizeResearchStamp|evidenceArtifactPath|reportArtifactPath|RESEARCH_ARTIFACT_DIR/,
+    "deep-research handler must not thread model-controlled artifact paths",
+  );
+  // The run-level tool pool is read-only repo tools + web tools only.
+  assert.match(
+    handler,
+    /createReadOnlyTools\(cwd\), \.\.\.createWebTools\(\)/,
+    "deep-research run-level tools must be createReadOnlyTools(cwd) + createWebTools()",
+  );
+  assert.ok(
+    handler.includes("createWebTools()"),
+    "deep-research run-level tools should include createWebTools() for Gather",
+  );
+  // Delivery uses the host renderer + injectable writer, threading the
+  // already-validated handler question in (the workflow result no longer
+  // carries it).
+  assert.match(
+    handler,
+    /deliverDeepResearchResult\(question, result, defaultResearchReportWriter\)/,
+    "delivery must call deliverDeepResearchResult with the validated question and the default writer",
+  );
+  // The handler must reject overlong questions before the workflow runs.
+  assert.match(
+    handler,
+    /MAX_RESEARCH_QUESTION_CHARS/,
+    "handler must gate the question against MAX_RESEARCH_QUESTION_CHARS",
+  );
+});
+
+// ── /deep-research delivery (host-rendered report from bounded claims) ──────
+// These exercise the safety contract without running the engine: the host
+// renders cited Markdown from the bounded supported claims via an injectable
+// writer, clamps an overlong summary to the UTF-8-safe limit, rejects invalid/uncited/missing
+// claims, surfaces writer failure, and never reports success when there are
+// no cited claims or the writer fails. No model-controlled path.
+
+/** An injectable writer that records the report it received and returns a path. */
+function recordingWriter(): { writer: (report: string) => string; report: string } {
+  let report = "";
+  return {
+    writer: (r: string) => {
+      report = r;
+      return "/tmp/pi-deep-research-test/report.md";
+    },
+    get report() {
+      return report;
+    },
+  };
+}
+
+test("deliverDeepResearchResult: valid supported claims → ack with path + counts + clamped summary, no report body in message", () => {
+  const rec = recordingWriter();
+  const result = {
+    ok: true,
+    question: "Is X fast?",
+    supported: [
+      { claim: "X is fast per primary docs.", sources: ["https://a.example", "https://b.example"] },
+      { claim: "X supports Y.", sources: ["https://a.example"] },
+    ],
+    summary: "X is fast and supports Y.",
+  };
+  const outcome = deliverDeepResearchResult("Is X fast?", { runId: "r", result }, rec.writer);
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.count, 2);
+  // Two distinct cited source URLs across the claims.
+  assert.equal(outcome.sources, 2);
+  assert.equal(outcome.summary, "X is fast and supports Y.");
+  assert.match(outcome.message, /2 cited claims across 2 sources/);
+  assert.match(outcome.message, /\/tmp\/pi-deep-research-test\/report\.md/);
+  // The rendered report is cited Markdown with the question and the claims.
+  assert.match(rec.report, /# Deep Research Report/);
+  assert.match(rec.report, /\*\*Question:\*\* Is X fast\?/);
+  assert.match(rec.report, /## Supported claims/);
+  assert.match(rec.report, /- X is fast per primary docs\./);
+  // No full report body in the delivered message.
+  assert.doesNotMatch(
+    outcome.message,
+    /# Deep Research Report/,
+    "the full report must not be in the delivered message",
+  );
+});
+
+test("deliverDeepResearchResult: ok=false / missing supported → rejected, no success", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    { runId: "r", result: { ok: false, supported: [], summary: "" } },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /did not return a valid result/);
+});
+
+test("deliverDeepResearchResult: no cited claims → rejected, no success", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    { runId: "r", result: { ok: true, supported: [], summary: "s" } },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /no cited claims/);
+});
+
+test("deliverDeepResearchResult: uncited/missing claims are rejected by the host renderer", () => {
+  // A claim with no sources is uncited and must be dropped; if ALL claims are
+  // uncited/missing, delivery must not report success.
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [
+          { claim: "uncited claim", sources: [] },
+          { claim: "", sources: ["https://a.example"] },
+          { claim: "ok", sources: ["https://b.example"] },
+        ],
+        summary: "s",
+      },
+    },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  // Only the one valid cited claim survives.
+  assert.equal(outcome.count, 1);
+  assert.equal(outcome.sources, 1);
+  // The uncited and empty claims are NOT in the rendered report.
+  assert.doesNotMatch(rec.report, /uncited claim/);
+  assert.match(rec.report, /- ok/);
+});
+
+test("deliverDeepResearchResult: invalid citation schemes/text cannot produce success", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [
+          { claim: "not actually cited", sources: ["not a URL", "file:///etc/passwd", "javascript:alert(1)"] },
+        ],
+        summary: "s",
+      },
+    },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /no cited claims/);
+  assert.equal(rec.report, "", "invalid citations must not reach the writer");
+});
+
+test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URLs", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [{ claim: "valid claim", sources: ["not a URL", "https://docs.example/path", "file:///tmp/x"] }],
+        summary: "s",
+      },
+    },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.count, 1);
+  assert.equal(outcome.sources, 1);
+  assert.match(rec.report, /https:\/\/docs\.example\/path/);
+  assert.doesNotMatch(rec.report, /not a URL|file:\/\//);
+});
+
+test("deliverDeepResearchResult: all claims uncited → rejected, no success", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [{ claim: "uncited", sources: [] }],
+        summary: "s",
+      },
+    },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /no cited claims/);
+});
+
+test("deliverDeepResearchResult: writer failure → rejected, no success", () => {
+  const failingWriter = () => {
+    throw new Error("disk full");
+  };
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [{ claim: "c1", sources: ["https://a.example"] }],
+        summary: "s",
+      },
+    },
+    failingWriter,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /report writer failed/);
+  assert.match(outcome.warning, /disk full/);
+});
+
+test("deliverDeepResearchResult: writer returns empty path → rejected, no success", () => {
+  const emptyWriter = () => "";
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [{ claim: "c1", sources: ["https://a.example"] }],
+        summary: "s",
+      },
+    },
+    emptyWriter,
+  );
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) return;
+  assert.match(outcome.warning, /returned no path/);
+});
+
+test("deliverDeepResearchResult: overlong summary is clamped to the UTF-8-safe limit", () => {
+  const rec = recordingWriter();
+  const overlong = "x".repeat(250);
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [{ claim: "c1", sources: ["https://a.example"] }],
+        summary: overlong,
+      },
+    },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.summary.length, MAX_RESEARCH_SUMMARY_CHARS);
+  assert.equal(outcome.summary, "x".repeat(MAX_RESEARCH_SUMMARY_CHARS));
+  assert.ok(outcome.message.endsWith(`Summary: ${"x".repeat(MAX_RESEARCH_SUMMARY_CHARS)}`));
+});
+
+test("deliverDeepResearchResult: supported array is re-clamped to the UTF-8-safe limit", () => {
+  const rec = recordingWriter();
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    claim: `claim ${i}`,
+    sources: ["https://a.example"],
+  }));
+  const outcome = deliverDeepResearchResult(
+    "q",
+    { runId: "r", result: { ok: true, supported: many, summary: "s" } },
+    rec.writer,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.count, MAX_SUPPORTED_CLAIMS);
+});
+
+test("renderResearchReport: cited Markdown is deterministic and rejects uncited content", () => {
+  const md = renderResearchReport("q", [
+    { claim: "c1", sources: ["https://a.example", "https://b.example"] },
+    { claim: "", sources: ["https://c.example"] },
+    { claim: "uncited", sources: [] },
+  ]);
+  assert.match(md, /# Deep Research Report/);
+  assert.match(md, /\*\*Question:\*\* q/);
+  assert.match(md, /## Supported claims/);
+  // Only c1 (with both URLs) survives.
+  assert.match(md, /- c1/);
+  assert.match(md, / {2}- https:\/\/a\.example/);
+  assert.match(md, / {2}- https:\/\/b\.example/);
+  assert.doesNotMatch(md, /uncited/, "uncited claims must be rejected");
+  assert.doesNotMatch(md, /https:\/\/c\.example/, "claims missing content must be rejected");
 });

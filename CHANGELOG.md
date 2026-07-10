@@ -9,22 +9,32 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [0.2.2] — 2026-07-09
 
-Model-tier routing hardening, machine-readable operator policy, and GPT-5.6 route qualification.
+Prompt-authoring hardening, artifact-first `/deep-research`, foundation-ui-compliance honesty fixes, model-tier routing, and concrete drift corrections.
 
 ### Added
 
-- Add optional machine-local `routingNotes` to `model-tiers.json`; the workflow tool injects them alongside the concrete tier mapping so model-authored workflows can apply operator-specific specialization.
-- Add non-blocking tier diagnostics for missing or duplicate `small`/`medium`/`big` mappings. `/workflows-models` surfaces duplicate mappings that would make an escalation retry the same model.
+- 4 new prompt-guidance principles in `docs/prompt-guidance-style.md`: **Separate Facts from Decisions**, **Human-in-the-Loop is AFK-Safe**, **Expand-Contract Only for Wide Mechanical Refactors**, **Avoid Tautological Tests**. Four corresponding model-facing guidelines injected via `buildPromptGuidelines()` in `src/workflow-tool.ts` (`checkpoint()` and signature listed in available globals).
+- `checkpoint()` guidance requires explicit conservative defaults (`default: false` or `headless: 'abort'`) — forbids silent headless approval.
+- Artifact-first `/deep-research`: primary-source-first policy; bounded question, angles, `minSupport`, fan-in, recursively strict schemas, at most 3 supported claims, and a 120-character summary keep every prompt/result below 10KB. Agents use read-only repo tools plus `web_search`/`web_fetch`; none receives `write`. The host accepts only HTTP(S) citations, renders a cited report into a fresh private OS temporary directory, and delivers a compact acknowledgement.
+- `foundation_ui_compliance` template: replaced the unenforceable Trace-assert with structured gate/visual verdicts and a Receipt phase. Failed, null, malformed, or contradictory verdicts block delivery; the receipt records actual rounds, gate/visual state, delivery eligibility/result, and tier routes.
+- New tests: `tests/foundation-ui-compliance.test.ts` (parse/static + execution), `tests/checkpoint.test.ts` (AFK safety contract).
+
+### Changed
+
+- Issue Delivery plans wide mechanical migrations as expand → independently green caller batches → contract. A detected tautological test oracle is a blocking verifier result, even if the model also returns `passed=true`.
+- `/deep-research` rejects overlong questions, bounds aggregate evidence before verification, and returns only bounded cited claims plus a short summary. The host drops empty or uncited claims, clamps the summary, renders Markdown via an injectable writer, and reports the temporary artifact path; it does not semantically fact-check model claims.
+- `foundation_ui_compliance` no longer claims unenforceable capabilities — the runtime has no trace API; edit scope is prompt guidance only and re-gating validates resulting UI compliance but does not enforce or attest which paths were edited.
 
 ### Fixed
 
-- Preserve pre-0.2.2 tier/default-medium resume entries only when their recorded concrete model still matches; normalize blank tier values to the real session-model fallback; share the parent's tier snapshot with nested workflows; and preserve `routingNotes` when `/workflows-models` resets tiers.
-- Distinguish GPT-5.6 public-API context (`1.05M`) from the ChatGPT Codex route (`372k`). Near-boundary probes with compaction disabled confirmed exact retrieval around 370k and `context_length_exceeded` around 375k for Sol, Terra, and Luna; Codex registry entries remain at 372k so compaction and occupancy telemetry do not overrun the provider.
-- Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
+- AGENTS.md: `.fugu/` is fully retired — leftover debris blocks finalization.
+- `.codex/agents/pr-reviewer.toml`: finalization-ignore mentions only `.issue-delivery/`.
+- `.release-notes/fastcontext.md`: `.fastcontext/` retained in `.gitignore` as defensive hygiene.
+- `docs/prompt-guidance-style.md`: duplicate principle copies removed; tautological-test oracle example corrected.
 
-### Documentation
+### Acknowledgements
 
-- Replace the stale GPT-5.5-era routing research note with current local-first guidance for GPT-5.6 Sol/Terra/Luna, GLM-5.2, Claude Fable 5/Opus 4.8, Gemini 3.5 Flash, and local Qwen. GPT-5.5 is retained only as a temporary benchmark/control route.
+- Matt Pocock's skills repo v1.1.0 as inspiration; concepts were adapted, not vendored.
 
 ## [0.2.1] — 2026-07-05
 

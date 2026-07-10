@@ -1,7 +1,20 @@
 /**
  * Deep research workflow.
  * Built-in workflow for comprehensive research across multiple sources.
+ *
+ * Read-only + web-only design: every agent runs against the repo read-only
+ * tools plus the web_search/web_fetch tools — no agent receives the `write`
+ * tool. Each agent returns a compact, schema-bounded structured result; the
+ * workflow's final return carries only the bounded supported claims and a
+ * bounded summary string (the validated question stays with the host). The
+ * full cited Markdown report is rendered by the host from the bounded
+ * supported claims into a fresh private tmpdir directory (never a workspace
+ * path, never a model-controlled path).
  */
+
+import { closeSync, constants as fsConstants, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface DeepResearchConfig {
   /** Number of distinct search angles/queries to explore. */
@@ -11,11 +24,97 @@ export interface DeepResearchConfig {
 }
 
 /**
- * Generate a deep-research workflow that uses the real web_search/web_fetch tools.
+ * A single supported claim returned by the Verify agent. Both fields are
+ * schema-bounded so the worst-case serialized payload stays well under 10KB.
+ */
+export interface SupportedClaim {
+  /** The factual claim, ≤140 chars (MAX_RESEARCH_CLAIM_CHARS). */
+  claim: string;
+  /** Cited source URLs for this claim, at most 2, each ≤200 chars (MAX_RESEARCH_URL_CHARS). */
+  sources: string[];
+}
+
+// ─── Conservative UTF-8 byte bounds ───────────────────────────────────────────
+//
+// Every limit below is chosen so that the worst-case UTF-8 byte size of every
+// raw structured result, the aggregate Verify prompt, the Report prompt, and
+// the final workflow result stays strictly under 10,000 bytes EVEN IF every
+// bounded character is a four-byte Unicode code point (e.g. U+1F600 😀). The
+// host delivery API (deliverDeepResearchResult) re-clamps with the same
+// constants, so a model-controlled string can never exceed the byte budget
+// through the result channel either.
+//
+// Worst-case measured UTF-8 byte sizes (all-bounded-chars-are-4-byte emoji):
+//   raw Queries result ............ 1945 bytes
+//   raw Gather result ............. 3909 bytes
+//   aggregate Verify prompt ....... 8475 bytes
+//   raw Verify result ............. 6588 bytes
+//   Report prompt ................. 7996 bytes
+//   final workflow result ......... 7091 bytes
+
+/**
+ * Maximum number of characters a research question may be. The slash handler
+ * rejects questions longer than this before invoking the workflow; the workflow
+ * script re-clamps defensively in case it is launched directly. 300 keeps the
+ * worst-case Queries/Report prompts well under 10KB even with 4-byte chars.
+ */
+export const MAX_RESEARCH_QUESTION_CHARS = 300;
+
+/** Clamp angles to the deterministic cap of 4 (host + workflow both enforce). */
+export const MAX_RESEARCH_ANGLES = 4;
+
+/**
+ * At most this many distinct source URLs feed Verify (aggregate Gather bound).
+ * 4 angles × 2 sources each = 8 candidates; this cap keeps only 4 before Verify.
+ */
+export const MAX_GATHER_SOURCES = 4;
+/** At most this many claims per source feed Verify (aggregate Gather bound). */
+export const MAX_CLAIMS_PER_SOURCE = 2;
+
+/** Maximum length (chars) of a single search query produced by the Queries phase. */
+export const MAX_RESEARCH_QUERY_CHARS = 120;
+
+/** Maximum length (chars) of a cited source URL everywhere it is bounded. */
+export const MAX_RESEARCH_URL_CHARS = 200;
+
+/** Maximum length (chars) of a single factual claim everywhere it is bounded. */
+export const MAX_RESEARCH_CLAIM_CHARS = 140;
+
+/** Maximum number of supported claims the Verify phase may return / carry to Report. */
+export const MAX_SUPPORTED_CLAIMS = 3;
+
+/** Maximum length (chars) of the one-line summary (Report + host delivery). */
+export const MAX_RESEARCH_SUMMARY_CHARS = 120;
+
+/**
+ * Compact, schema-bounded final result returned by the workflow. The host
+ * renders the cited Markdown report from `supported`; the workflow never
+ * returns a model-written report body. The validated question is NOT carried
+ * here — the host already has it (the slash handler validated it before
+ * launching the workflow), so it is threaded into delivery separately to keep
+ * model-controlled strings out of the result channel.
+ */
+export interface DeepResearchResult {
+  ok: boolean;
+  /** Bounded supported claims, at most MAX_SUPPORTED_CLAIMS (host re-clamps defensively). */
+  supported: SupportedClaim[];
+  /** One-line answer, ≤MAX_RESEARCH_SUMMARY_CHARS chars (host re-clamps defensively). */
+  summary: string;
+}
+
+/**
+ * Generate a deep-research workflow that uses read-only repo tools plus the
+ * web_search/web_fetch tools.
  *
- * The script is static and reads its inputs from `args` (question/angles/minSupport),
- * so the question is never string-interpolated into source — no escaping hazards.
- * Inject the web tools at run time via the agent's `tools` option.
+ * The script is static and reads its inputs from `args`
+ * (question/angles/minSupport), so the question is never string-interpolated
+ * into source — no escaping hazards. The host injects the tool pool at run
+ * time via the run-level `tools` option (read-only repo tools + web tools —
+ * no `write`); each agent narrows that pool with a per-call `tools` allowlist:
+ *   - Queries:  []                         (no tools — pure planning)
+ *   - Gather:   ['web_search','web_fetch'] (search + fetch only)
+ *   - Verify:   []                         (no tools — pure cross-check)
+ *   - Report:   []                         (no tools — pure one-line synthesis)
  */
 export function generateDeepResearchWorkflow(): string {
   return `export const meta = {
@@ -29,47 +128,318 @@ export function generateDeepResearchWorkflow(): string {
   ],
 }
 
-const question = (args && args.question) || ''
-const angles = (args && args.angles) || 4
-const minSupport = (args && args.minSupport) || 2
+// Defensive clamps: the slash handler already validated the question against
+// MAX_RESEARCH_QUESTION_CHARS (300) and angles against 4, but a direct
+// workflow invocation must not trust its inputs blindly. Every bound below is
+// a named conservative UTF-8 byte budget: even if every bounded character is
+// a 4-byte Unicode code point, every prompt and result stays <10,000 bytes.
+const rawQuestion = (args && args.question) || ''
+const question = typeof rawQuestion === 'string' ? rawQuestion.slice(0, ${MAX_RESEARCH_QUESTION_CHARS}) : ''
+const rawAngles = Number((args && args.angles) || ${MAX_RESEARCH_ANGLES})
+const angles = Math.max(1, Math.min(Number.isFinite(rawAngles) ? Math.floor(rawAngles) : ${MAX_RESEARCH_ANGLES}, ${MAX_RESEARCH_ANGLES}))
+const rawMinSupport = Number((args && args.minSupport) || 2)
+const minSupport = Math.max(1, Math.min(Number.isFinite(rawMinSupport) ? Math.floor(rawMinSupport) : 2, ${MAX_GATHER_SOURCES}))
 
 phase('Queries')
 const plan = await agent(
   'You are planning web research for this question:\\n' + question +
   '\\n\\nProduce ' + angles + ' diverse, specific search queries that together cover the question from different angles.',
-  { label: 'plan queries', schema: { type: 'object', properties: { queries: { type: 'array', items: { type: 'string' } } }, required: ['queries'] } }
+  {
+    label: 'plan queries',
+    tools: [],
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { queries: { type: 'array', maxItems: ${MAX_RESEARCH_ANGLES}, items: { type: 'string', maxLength: ${MAX_RESEARCH_QUERY_CHARS} } } },
+      required: ['queries'],
+    },
+  }
 )
 const queries = (plan.queries || []).slice(0, angles)
 
 phase('Gather')
 const gathered = await parallel(queries.map((q, i) => () =>
   agent(
-    'Research this query using the web_search and web_fetch tools.\\nQuery: ' + q +
-    '\\n\\nSteps: (1) call web_search with the query; (2) web_fetch the 2 most relevant result URLs; ' +
-    '(3) extract concrete, verifiable factual claims, each tagged with the exact source URL it came from. ' +
-    'Do NOT invent sources or claims — report only what the fetched pages actually say.',
-    { label: 'research ' + (i + 1), schema: { type: 'object', properties: { sources: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, claims: { type: 'array', items: { type: 'string' } } }, required: ['url', 'claims'] } } }, required: ['sources'] } }
+    'Research this query using ONLY the web_search and web_fetch tools.\\nQuery: ' + q +
+    '\\n\\nSteps: (1) call web_search with the query; (2) web_fetch at most the 2 most relevant result URLs ' +
+    '(do NOT fetch more than 2 URLs); (3) extract concrete, verifiable factual claims, each tagged with the ' +
+    'exact source URL it came from. Prefer primary sources (official docs, source code, specs, first-party APIs) ' +
+    'over secondary write-ups; when a primary source exists, discard a claim supported only by a secondary ' +
+    'blog/forum post; every surviving claim must trace to an owning primary source URL. ' +
+    'Do NOT invent sources or claims — report only what the fetched pages actually say. ' +
+    'Return at most 2 sources, each with at most 2 claims.',
+    {
+      label: 'research ' + (i + 1),
+      tools: ['web_search', 'web_fetch'],
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sources: {
+            type: 'array',
+            maxItems: 2,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                url: { type: 'string', maxLength: ${MAX_RESEARCH_URL_CHARS} },
+                claims: { type: 'array', maxItems: ${MAX_CLAIMS_PER_SOURCE}, items: { type: 'string', maxLength: ${MAX_RESEARCH_CLAIM_CHARS} } },
+              },
+              required: ['url', 'claims'],
+            },
+          },
+        },
+        required: ['sources'],
+      },
+    }
   )
 ))
-const allSources = gathered.filter(Boolean).flatMap((g) => (g && g.sources) || [])
+// Aggregate Gather evidence before Verify is bounded to at most ${MAX_GATHER_SOURCES} sources
+// and at most ${MAX_CLAIMS_PER_SOURCE} claims per source (URL/claim string bounds preserved),
+// so the entire Verify prompt stays under 10KB including instructions even when every bounded
+// character is a 4-byte Unicode code point. First source wins on URL collisions (dedupe by URL);
+// extra sources/claims are discarded and never reach Verify.
+const seenSourceUrls = new Set()
+const allSources = []
+for (const g of gathered) {
+  if (!g || !Array.isArray(g.sources)) continue
+  for (const src of g.sources) {
+    if (!src || typeof src.url !== 'string' || !src.url) continue
+    if (seenSourceUrls.has(src.url)) continue
+    if (allSources.length >= ${MAX_GATHER_SOURCES}) break
+    seenSourceUrls.add(src.url)
+    const claims = Array.isArray(src.claims) ? src.claims.filter((c) => typeof c === 'string').map((c) => c.slice(0, ${MAX_RESEARCH_CLAIM_CHARS})).slice(0, ${MAX_CLAIMS_PER_SOURCE}) : []
+    allSources.push({ url: src.url.slice(0, ${MAX_RESEARCH_URL_CHARS}), claims })
+  }
+  if (allSources.length >= ${MAX_GATHER_SOURCES}) break
+}
 
 phase('Verify')
 const verdict = await agent(
   'Cross-check these research sources. Group claims that assert the same fact across different source URLs. ' +
-  'Keep a claim only if it is supported by at least ' + minSupport + ' distinct source URLs OR by one clearly authoritative source. ' +
-  'Discard claims found in a single weak source or that conflict with others.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
-  { label: 'cross-check', schema: { type: 'object', properties: { supported: { type: 'array', items: { type: 'object', properties: { claim: { type: 'string' }, sources: { type: 'array', items: { type: 'string' } } }, required: ['claim', 'sources'] } }, discarded: { type: 'array', items: { type: 'string' } } }, required: ['supported'] } }
+  'Keep a claim only if it is supported by at least ' + minSupport + ' distinct source URLs OR by one clearly authoritative primary source. ' +
+  'Discard claims found in a single weak source or that conflict with others. Prefer primary sources (official docs, source code, ' +
+  'specs, first-party APIs) over secondary write-ups; when a primary source exists, discard a claim supported only by a secondary ' +
+  'blog or forum post; every surviving claim must trace to an owning primary source URL. ' +
+  'Return the supported claims with their cited source URLs; omit any discarded strings from the result.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
+  {
+    label: 'cross-check',
+    tools: [],
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        supported: {
+          type: 'array',
+          maxItems: ${MAX_SUPPORTED_CLAIMS},
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              claim: { type: 'string', maxLength: ${MAX_RESEARCH_CLAIM_CHARS} },
+              sources: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: ${MAX_RESEARCH_URL_CHARS} } },
+            },
+            required: ['claim', 'sources'],
+          },
+        },
+      },
+      required: ['supported'],
+    },
+  }
 )
+// Defensive normalization: the Verify schema already bounds supported, but a
+// direct/lax runtime must not let an oversized array/claim/url reach Report or
+// the final return. Re-slice every bounded field with the same UTF-8 byte budget.
+const supported = (Array.isArray(verdict && verdict.supported) ? verdict.supported : [])
+  .slice(0, ${MAX_SUPPORTED_CLAIMS})
+  .map((entry) => {
+    if (!entry || typeof entry !== 'object') return null
+    const claim = typeof entry.claim === 'string' ? entry.claim.slice(0, ${MAX_RESEARCH_CLAIM_CHARS}) : ''
+    const sources = Array.isArray(entry.sources)
+      ? entry.sources.filter((s) => typeof s === 'string').map((s) => s.slice(0, ${MAX_RESEARCH_URL_CHARS})).slice(0, 2)
+      : []
+    if (!claim || !sources.length) return null
+    return { claim, sources }
+  })
+  .filter(Boolean)
+if (!supported.length) {
+  return { ok: false, supported: [], summary: 'Verification produced no supported evidence.' }
+}
 
 phase('Report')
 const report = await agent(
-  'Write a concise, well-structured research report that answers the question using ONLY the supported claims below. ' +
-  'Cite source URLs inline next to each claim. If the evidence is thin, say so explicitly.\\n\\n' +
-  'QUESTION: ' + question + '\\n\\nSUPPORTED CLAIMS JSON:\\n' + JSON.stringify((verdict && verdict.supported) || []),
-  { label: 'write report' }
+  'Write a ONE-LINE plain-text answer (at most ${MAX_RESEARCH_SUMMARY_CHARS} characters) to this question using ONLY the supported claims below. ' +
+  'Do NOT write a full report body — return only the one-line summary.\\n\\n' +
+  'QUESTION: ' + question + '\\n\\nSUPPORTED CLAIMS JSON:\\n' + JSON.stringify(supported),
+  {
+    label: 'write report',
+    tools: [],
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { summary: { type: 'string', maxLength: ${MAX_RESEARCH_SUMMARY_CHARS} } },
+      required: ['summary'],
+    },
+  }
 )
 
-return { question, queries, supported: (verdict && verdict.supported) || [], report }`;
+return {
+  ok: true,
+  supported,
+  summary: (report && typeof report.summary === 'string' ? report.summary : '').slice(0, ${MAX_RESEARCH_SUMMARY_CHARS}),
+}`;
+}
+
+/**
+ * Render cited Markdown from the bounded supported claims. Rejects any claim
+ * that is missing content or has no cited source URL. Deterministic: the host
+ * — not a model — owns the report body, so there is no path for the model to
+ * smuggle uncited content into the report file.
+ */
+export function renderResearchReport(question: string, supported: readonly SupportedClaim[]): string {
+  const lines: string[] = ["# Deep Research Report", ""];
+  lines.push(`**Question:** ${question}`, "");
+  lines.push("## Supported claims");
+  for (const entry of supported) {
+    const claim = typeof entry?.claim === "string" ? entry.claim.trim() : "";
+    const sources = Array.isArray(entry?.sources) ? entry.sources.filter((s) => typeof s === "string" && s.trim()) : [];
+    if (!claim || sources.length === 0) continue; // reject missing/uncited content
+    lines.push(`- ${claim}`);
+    for (const url of sources) lines.push(`  - ${url.trim()}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Write the cited Markdown report to a fresh private directory under the OS
+ * tmpdir and return the absolute path. The directory is created with
+ * mkdtempSync("pi-deep-research-") and the report file is opened with
+ * exclusive creation (O_WRONLY|O_CREAT|O_EXCL) so it cannot land on an
+ * existing entry. No cwd/.pi/.research writes and no model-controlled path.
+ *
+ * The writer is injectable so unit tests can substitute a failing writer
+ * without touching the real filesystem.
+ */
+export type ResearchReportWriter = (report: string) => string;
+
+/** Default writer used by the live handler. */
+export function defaultResearchReportWriter(report: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-deep-research-"));
+  const reportPath = join(dir, "report.md");
+  const fd = openSync(reportPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+  try {
+    writeFileSync(fd, report, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  return reportPath;
+}
+
+/**
+ * Pure, host-side delivery for /deep-research. Renders cited Markdown from
+ * the bounded supported claims via the injectable writer, clamps the summary
+ * to MAX_RESEARCH_SUMMARY_CHARS, re-clamps the supported array to at most
+ * MAX_SUPPORTED_CLAIMS claims (each claim/url re-sliced to its byte budget),
+ * and returns the compact result (path + claim/source counts + short summary)
+ * without ever putting the report body in any result channel.
+ *
+ * The validated question is passed in by the slash handler (which already
+ * rejected overlong questions before launching the workflow) and is used only
+ * to title the rendered report — it is never read back from the model-controlled
+ * workflow result, so a model cannot influence the report heading.
+ *
+ * Extracted from the handler so the safety contract (no false success,
+ * uncited rejection, writer failure, summary clamping) is unit-testable
+ * without running the engine.
+ *
+ * @param question the already-validated handler question (titles the report)
+ * @param result the workflow run result (its `result` is the bounded
+ *   DeepResearchResult carrying supported + summary; no question)
+ * @param writer injectable writer that returns the absolute report path
+ */
+export function deliverDeepResearchResult(
+  question: string,
+  result: { runId?: string; result?: unknown },
+  writer: ResearchReportWriter = defaultResearchReportWriter,
+):
+  | { ok: true; path: string; count: number; sources: number; summary: string; message: string }
+  | { ok: false; warning: string } {
+  const res = (result?.result ?? {}) as Partial<DeepResearchResult> & { supported?: unknown; question?: unknown };
+  if (res?.ok !== true) {
+    return {
+      ok: false,
+      warning: "deep-research did not return a valid result — not delivering a report.",
+    };
+  }
+  const supportedRaw = Array.isArray(res.supported) ? res.supported : [];
+  const supported: SupportedClaim[] = [];
+  for (const entry of supportedRaw.slice(0, MAX_SUPPORTED_CLAIMS)) {
+    if (entry === null || typeof entry !== "object") continue;
+    const raw = entry as Partial<SupportedClaim>;
+    if (typeof raw.claim !== "string" || !raw.claim.trim()) continue;
+    const sources = Array.isArray(raw.sources)
+      ? raw.sources
+          .flatMap((source) => {
+            const normalized = normalizeHttpSource(source);
+            return normalized ? [normalized] : [];
+          })
+          .slice(0, 2)
+      : [];
+    if (sources.length === 0) continue;
+    supported.push({ claim: raw.claim.trim().slice(0, MAX_RESEARCH_CLAIM_CHARS), sources });
+  }
+  if (supported.length === 0) {
+    return {
+      ok: false,
+      warning: "deep-research produced no cited claims — not delivering a report.",
+    };
+  }
+  // The host owns the question (validated before the workflow ran); ignore any
+  // stray question the model might return in the result channel.
+  const report = renderResearchReport(typeof question === "string" ? question : "", supported);
+  let path: string;
+  try {
+    path = writer(report);
+  } catch (error) {
+    return {
+      ok: false,
+      warning: `deep-research report writer failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!path?.trim()) {
+    return {
+      ok: false,
+      warning: "deep-research report writer returned no path — not delivering a report.",
+    };
+  }
+  const summary = clampSummary(res.summary);
+  const count = supported.length;
+  const citedUrls = supported.flatMap((entry) => (entry.sources || []).map((s) => s.trim()).filter(Boolean));
+  const sources = new Set(citedUrls).size;
+  const message = `Deep research report: ${path}. ${count} cited claims across ${sources} sources.${
+    summary ? ` Summary: ${summary}` : ""
+  }`;
+  return { ok: true, path, count, sources, summary, message };
+}
+
+/** Accept only bounded HTTP(S) citation URLs; other schemes/text are not evidence links. */
+function normalizeHttpSource(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString().slice(0, MAX_RESEARCH_URL_CHARS);
+  } catch {
+    return null;
+  }
+}
+
+/** Clamp a summary string to at most MAX_RESEARCH_SUMMARY_CHARS chars (defensive host-side bound). */
+function clampSummary(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed.length > MAX_RESEARCH_SUMMARY_CHARS ? trimmed.slice(0, MAX_RESEARCH_SUMMARY_CHARS) : trimmed;
 }
 
 /**

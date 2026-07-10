@@ -1,6 +1,6 @@
 {
   "schema": "pi-dynamic-workflows.workflow-lock.v1",
-  "generatedAt": "2026-07-05",
+  "generatedAt": "2026-07-09",
   "mode": "warning",
   "collisionPolicy": {
     "registrationOrder": ["builtin-command", "saved-workflow"],
@@ -13,11 +13,11 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "a5fbc8383f3453cbe33bcea86321c3055bb1606c5fece26c00cc1d9627fd9099",
+      "sha256": "4bd279a9c84ad3ddaf71dbdcfef4c49523de958ed6892dc42f3bfb0b4e3785ea",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",
-      "version": "0.1.7",
+      "version": "0.2.2",
       "supportsPrototypeLane": true,
       "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },
@@ -26,10 +26,10 @@
       "command": "/deep-research",
       "kind": "builtin-command",
       "source": "src/deep-research.ts",
-      "sha256": "9e20ea0cbe2b28ca1c273a8cd33742f082dfe1eb5af53fe7dc0f3a8a4f2e2fa4",
+      "sha256": "7f25bb2a5d88fd313a48f0cd71e347b14fc996c35e0674a62740b6465be3a689",
       "aliases": [],
       "channel": "active",
-      "notes": "Research a question across the web with cross-checked sources. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
+      "notes": "Research a question across the web with cross-checked sources. Read-only + web-only: every agent runs against read-only repo tools plus web_search/web_fetch and no agent receives write. Verify returns bounded supported claims (max 3 claims, each claim max 140 chars, max 2 source URLs each max 200 chars) through its structured result; worst-case four-byte Unicode payloads remain below 10KB. Report returns one summary string (maxLength 120). The host deterministically renders cited Markdown from the bounded supported claims into a fresh private tmpdir directory via an injectable writer and returns the absolute path; no cwd/.pi/.research writes and no model-controlled path. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
     },
     {
       "canonicalName": "adversarial-review",
@@ -146,7 +146,7 @@
       "sha256": null,
       "aliases": [],
       "channel": "active",
-      "notes": "Universal design-system compliance delivery engine. Generic template ships in docs/workflows/templates/foundation_ui_compliance.workflow.mjs; setup + Foundation Gate Contract in docs/workflows/foundation-ui-compliance.md. All gates run through the single entrypoint in the app's vendored foundation (<foundation>/scripts/run-foundation-gates.mjs — the foundation owns the gate list, so foundation changes propagate with zero workflow edits). App/org specifics arrive via args/per-repo harness JSON, never in the engine; orgs keep a pinned, CI-gated template of record in their own foundation repo and reinstall after updates. Hard rules: frontier judge, editScope-confined fixers (third_party/** always deny), gates every round, trace-assert."
+      "notes": "Universal design-system compliance delivery engine. Generic template ships in docs/workflows/templates/foundation_ui_compliance.workflow.mjs; setup + Foundation Gate Contract in docs/workflows/foundation-ui-compliance.md. All gates run through the single entrypoint in the app's vendored foundation (<foundation>/scripts/run-foundation-gates.mjs — the foundation owns the gate list, so foundation changes propagate with zero workflow edits). App/org specifics arrive via args/per-repo harness JSON, never in the engine; orgs keep a pinned, CI-gated template of record in their own foundation repo and reinstall after updates. Hard rules: frontier judge, editScope-confined fixers (third_party/** always deny; editScope is prompt guidance only — the runtime has no path-glob tool policy, and the re-gate validates resulting UI compliance but does not enforce or attest which paths were edited), gates every round, run receipt (no transcript-backed trace-assert — the runtime exposes no trace API)."
     }
   ]
 }

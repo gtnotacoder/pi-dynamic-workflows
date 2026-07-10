@@ -65,12 +65,51 @@ test("createWorkflowTool has promptGuidelines array", () => {
   assert.ok(tool.promptGuidelines.length > 5, "should have several guidelines");
 });
 
-test("createWorkflowTool promptGuidelines mention model routing", () => {
+test("createWorkflowTool promptGuidelines contain new human-boundary guidelines", () => {
   const tool = createWorkflowTool();
   const all = tool.promptGuidelines.join(" ");
-  assert.ok(all.includes("opts.tier"), "should mention opts.tier");
-  assert.ok(all.includes("opts.model"), "should mention opts.model");
-  assert.ok(all.includes("small") || all.includes("medium") || all.includes("big"), "should mention tier names");
+  // facts-vs-decisions
+  assert.ok(all.includes("facts") && all.includes("decisions"), "should mention facts and decisions");
+  // HITL-AFK checkpoint
+  assert.match(all, /checkpoint/);
+  // expand-contract for wide refactors (corrected terminology)
+  assert.match(all, /EXPAND.*new.*API/i, "should define EXPAND phase");
+  assert.match(all, /MIGRATE.*callers/i, "should define MIGRATE phase");
+  assert.match(all, /CONTRACT.*old.*form/i, "should define CONTRACT phase");
+  assert.match(all, /planning exception/i, "should mention planning exception");
+  // tautological-test guidance
+  assert.match(all, /tautological/);
+  assert.match(all, /independent source of truth/);
+});
+
+test("createWorkflowTool promptGuidelines list checkpoint() as an available global", () => {
+  const tool = createWorkflowTool();
+  const globalsLine = tool.promptGuidelines.find((g) => g.includes("available globals are"));
+  assert.ok(globalsLine, "the available-globals guideline should exist");
+  assert.match(
+    globalsLine ?? "",
+    /checkpoint\(promptText, options\?\)/,
+    "globals list must include checkpoint() signature",
+  );
+});
+
+test("createWorkflowTool AFK guidance forbids silent approval and requires an explicit safe default", () => {
+  const tool = createWorkflowTool();
+  const afk = tool.promptGuidelines.find((g) => g.includes("human-in-the-loop is AFK-safe"));
+  assert.ok(afk, "the AFK-safe guideline should exist");
+  const text = afk ?? "";
+  // Must not advertise the implicit true default as safe.
+  assert.match(text, /never silently approves/);
+  // Must require an explicit conservative default or headless abort.
+  assert.match(text, /default: false/);
+  assert.match(text, /headless: 'abort'/);
+  // Must warn against relying on the implicit `default ?? true`.
+  assert.match(text, /default \?\? true/);
+  // Must state recorded human choices are immutable constraints, not facts.
+  assert.match(text, /immutable constraints/);
+  assert.match(text, /not inferred facts/);
+  // Must require gathering facts before the gate.
+  assert.match(text, /BEFORE the decision gate/);
 });
 
 test("createWorkflowTool promptGuidelines keep budget and timeout unbounded by default", () => {

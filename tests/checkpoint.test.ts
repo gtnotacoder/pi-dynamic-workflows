@@ -83,3 +83,11 @@ await checkpoint('c', { default: 1 })
 return 1`;
   await assert.rejects(() => runWorkflow(script, { agent: noopAgent, persistLogs: false, maxAgents: 2 }), /limit/i);
 });
+
+test("checkpoint(): an explicit conservative default declines headlessly (safe AFK behavior)", async () => {
+  const script = `export const meta = { name: 'c', description: 'checkpoint' }
+const approved = await checkpoint('Ship the PR?', { default: false })
+return { approved }`;
+  const res = await runWorkflow<{ approved: boolean }>(script, { agent: noopAgent, persistLogs: false });
+  assert.equal(res.result.approved, false, "explicit default:false replays as declined in a headless run");
+});

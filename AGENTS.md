@@ -33,7 +33,7 @@ Legacy Fugu names are compatibility aliases only:
 
 - `/fugu` remains a deprecated alias for `/issue-delivery`.
 - `/fugu_closed_loop` and `/fugu_repair` may appear as saved-workflow aliases/replacements.
-- `.fugu/` remains a legacy transient path ignored by finalization while old worktrees age out.
+- `.fugu/` is fully retired — leftover `.fugu/` debris is visible to git and blocks finalization with an actionable path list.
 - `src/fugu.ts` can remain as a compatibility export.
 
 Do not introduce new Fugu/Trinity vocabulary in user-facing text, command names, logs, or docs unless the change is explicitly preserving deprecated compatibility. If docs or lockfiles claim a command is shipped, verify there is actual source/registration/saved-workflow support.

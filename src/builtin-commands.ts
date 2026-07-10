@@ -11,7 +11,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow, parseAdversarialReviewArgs } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, prepareCodeReviewArgs } from "./code-review.js";
-import { generateDeepResearchWorkflow } from "./deep-research.js";
+import {
+  defaultResearchReportWriter,
+  deliverDeepResearchResult,
+  generateDeepResearchWorkflow,
+  MAX_RESEARCH_QUESTION_CHARS,
+} from "./deep-research.js";
 import { extractHarnessConfigFlag, extractHarnessTypeFlag } from "./harness-config.js";
 import { generateIssueDeliveryWorkflow } from "./issue-delivery.js";
 import { buildRegistryForCwd, extractModeFlag } from "./modes-command.js";
@@ -217,15 +222,37 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             "Usage: /deep-research [--mode <name>] [--harness-type <id>] [--harness-config <id>] <question>",
             "warning",
           );
+        // Deterministic bound: reject an overlong question before the workflow
+        // ever runs. The workflow re-clamps defensively for direct invocation, but
+        // the slash handler is the authoritative gate so a huge question can never
+        // reach a model prompt.
+        if (question.length > MAX_RESEARCH_QUESTION_CHARS) {
+          return ctx.ui.notify(
+            `deep-research question is too long: ${question.length} chars (limit ${MAX_RESEARCH_QUESTION_CHARS}). Please shorten it.`,
+            "warning",
+          );
+        }
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
+        // Read-only + web-only: every research agent runs against the repo
+        // read-only tools plus the web_search/web_fetch tools — no agent
+        // receives the `write` tool. The host renders the cited Markdown
+        // report from the bounded supported claims into a fresh private
+        // tmpdir directory (no cwd/.pi/.research writes, no model-controlled
+        // path). No path-fenced write, no stamp, no artifact dir.
+        const runTools = [...createReadOnlyTools(cwd), ...createWebTools()];
         try {
           const result = await runWorkflow(generateDeepResearchWorkflow(), {
             // Route tier/phase models against the host session registry (upstream #49 port).
             modelRegistry: ctx.modelRegistry,
             cwd,
             args: { question },
-            // Research agents need real web access on top of the coding tools.
-            tools: [...createCodingTools(cwd), ...createWebTools()],
+            // The run-level tool pool is read-only repo tools + web tools only.
+            // Each agent narrows it with a per-call `tools` allowlist: Queries
+            // is fenced ([]), Gather gets web_search + web_fetch, Verify and
+            // Report are fenced ([]). No research agent can write, run shell,
+            // or edit tracked files — the security boundary is the tool pool,
+            // not the prompt text.
+            tools: runTools,
             contextMode: mode,
             harness_type: harnessType,
             harness_config: harnessConfig,
@@ -233,7 +260,23 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
           });
           ctx.ui.setStatus("deep-research", undefined);
-          await pi.sendMessage({ customType: "deep-research", content: reportText(result), display: true });
+
+          // Host delivery (see deliverDeepResearchResult): the host renders the
+          // cited Markdown report from the bounded supported claims via the
+          // injectable writer, reapplies the configured UTF-8-safe summary,
+          // claim, and citation limits, rejects invalid/uncited claims, surfaces
+          // writer failure, and delivers path + claim/source
+          // counts + short summary only. The validated question is threaded in
+          // from the handler (the workflow result no longer carries it), so the
+          // model cannot influence the report heading. No full report body in
+          // any result channel; write failure or no cited claims must not report
+          // success.
+          const outcome = deliverDeepResearchResult(question, result, defaultResearchReportWriter);
+          if (!outcome.ok) {
+            ctx.ui.notify(outcome.warning, "warning");
+            return;
+          }
+          await pi.sendMessage({ customType: "deep-research", content: outcome.message, display: true });
         } catch (error) {
           ctx.ui.setStatus("deep-research", undefined);
           ctx.ui.notify(`deep-research failed: ${error instanceof Error ? error.message : error}`, "error");

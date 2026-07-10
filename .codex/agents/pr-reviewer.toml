@@ -25,7 +25,7 @@ Repo-specific checks:
 - Saved review workflows should be read-only by execution policy, not just prompt wording.
 - /issue-delivery --finish must not rerun Scout/Thinker/Worker.
 - Prototype/dry-run lanes must not push or open PRs.
-- Finalization should ignore only transient .issue-delivery/, .fugu/ artifacts; real source moved/copied into those paths can still be suspicious.
+- Finalization should ignore only transient .issue-delivery/ artifacts; real source moved/copied into those paths can still be suspicious.
 - Workflow VM scripts cannot rely on unavailable globals like setTimeout.
 - If a workflow uses workflow('saved-name', args), verify the nested context exposes the globals the saved script uses.
 - Model-tier changes must be scoped carefully. Do not recommend global tier changes for one operator's low-cost run.
