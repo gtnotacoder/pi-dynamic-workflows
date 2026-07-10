@@ -65,6 +65,7 @@ launch diagnostics.
 | `/code-review` | `[high\|xhigh\|max] [--mode <name>] [--harness-type <id>] [--harness-config <id>] [target]` | Multi-angle code review: scope → find (N angles) → verify → sweep → synthesize. All agents tagged `tier: "big"`. Used as an **in-session sanity checkpoint**, not a PR/merge gate. The first token is the effort level (`high` default; `xhigh`/`max` add a sweep phase) and is consumed before the target — so a target literally named `max` must be disambiguated. |
 | `/deep-research` | `[--mode <name>] <question>` | Research a question across the web with cross-checked sources. |
 | `/adversarial-review` | `[--mode <name>] [--evidence[=web_fetch,github\|web_search]] [--no-evidence] [--reviewers N] [--threshold N] <task>` | Investigate a task, then cross-check each finding with skeptical reviewers. Evidence mode adds a source-ledger phase using no-key `web_fetch`/GitHub evidence by default. Runs through the shared workflow manager in the background so `/workflows`, the task panel, and result delivery stay live. |
+| `/foundation_ui_compliance` | `<JSON args object>` | Run the packaged Foundation gate → scoped fix/re-gate → optional visual verification/delivery loop. Requires a vendored design-system foundation implementing the documented gate contract; delivery defaults to false and is blocked while gates remain red. See the [setup and usage guide](./docs/workflows/foundation-ui-compliance.md). |
 | `/issue-delivery` | `[--mode <name>] [--prototype] [--finish] <task or issue>` | Autonomous Scout → Thinker → Worker → LocalChecks → Verifier workflow with DAG scheduling and draft-PR delivery. Intended for scoped issue-to-PR tasks; it plans, edits, verifies, commits, pushes, and opens a draft PR. `--finish` is a delivery path for an already-repaired failed run: it runs LocalChecks, then a Worker delivery agent that commits/pushes/opens the draft PR, then the finalization gate (it does not re-run Scout/Thinker/Verifier). |
 | `/fugu` | `[--mode <name>] [--prototype] <task or issue>` | Deprecated compatibility alias for `/issue-delivery`. |
 | `/modes` | — | List context-inheritance modes (built-in + project-defined) and what each expands to — see [Context modes](#context-modes). |
@@ -85,7 +86,7 @@ launch diagnostics.
 flowchart TD
   U["User types a slash command"] --> CMD{"Command source"}
   CMD -->|"builtin"| BC["pi.registerCommand<br/>src/builtin-commands.ts<br/>src/issue-delivery.ts<br/>src/workflow-telemetry-command.ts"]
-  CMD -->|"saved workflow"| SW["Saved-workflow command<br/>src/saved-commands.ts<br/>~/.pi/workflows/saved/*.json"]
+  CMD -->|"saved workflow"| SW["Saved-workflow command<br/>src/saved-commands.ts<br/>package defaults + project/user overrides"]
   BC --> WM
   SW --> WM
   WM["WorkflowManager.startInBackground<br/>src/workflow-manager.ts"] --> WT{"worktreeRequired /<br/>isolation.worktree?"}
@@ -110,6 +111,10 @@ Slash commands split by command: `/deep-research` and `/code-review` run **foreg
 ---
 
 ## Guides
+
+### Foundation UI compliance
+
+Version 0.2.3+ bundles `/foundation_ui_compliance`; no manual saved-workflow install is required. The target app must vendor a design-system foundation that provides `scripts/run-foundation-gates.mjs` and its rule docs. Invoke the command with one JSON object describing the app source, foundation path, URLs, and allowed edit globs. See the [Foundation UI setup, gate contract, argument schema, and complete example](./docs/workflows/foundation-ui-compliance.md).
 
 ### Workflow tool
 

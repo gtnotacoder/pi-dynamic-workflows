@@ -17,7 +17,7 @@
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "supportsPrototypeLane": true,
       "notes": "Legacy /fugu is registered as a deprecated alias. Prototype lane defaults to dry-run safety/plan/check/report with read-only pre-report agents and stops before Worker edits or PR delivery."
     },
@@ -141,12 +141,12 @@
     {
       "canonicalName": "foundation_ui_compliance",
       "command": "/foundation_ui_compliance",
-      "kind": "saved-workflow",
-      "source": "~/.pi/workflows/saved/foundation_ui_compliance.json",
-      "sha256": null,
+      "kind": "bundled-template",
+      "source": "docs/workflows/templates/foundation_ui_compliance.workflow.mjs",
+      "sha256": "793515c926a39ba9d8df4251f6a2b83868627720c5f7bdc3d8c4b91335189300",
       "aliases": [],
       "channel": "active",
-      "notes": "Universal design-system compliance delivery engine. Generic template ships in docs/workflows/templates/foundation_ui_compliance.workflow.mjs; setup + Foundation Gate Contract in docs/workflows/foundation-ui-compliance.md. All gates run through the single entrypoint in the app's vendored foundation (<foundation>/scripts/run-foundation-gates.mjs — the foundation owns the gate list, so foundation changes propagate with zero workflow edits). App/org specifics arrive via args/per-repo harness JSON, never in the engine; orgs keep a pinned, CI-gated template of record in their own foundation repo and reinstall after updates. Hard rules: frontier judge, editScope-confined fixers (third_party/** always deny), gates every round, trace-assert."
+      "notes": "Package-provided in 0.2.3+ and automatically registered through the saved-workflow loader. Project/user definitions may override it. Universal design-system compliance engine using one entrypoint in the app's vendored foundation; JSON args carry app specifics, and red gates block visual verification and delivery. Setup and Gate Contract: docs/workflows/foundation-ui-compliance.md."
     }
   ]
 }

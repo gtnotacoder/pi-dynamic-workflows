@@ -66,6 +66,22 @@ describe("parseCommandArgs", () => {
     assert.equal(result._, "hello world");
   });
 
+  it("preserves typed values from a complete JSON object", async () => {
+    const { parseCommandArgs } = await load();
+    const raw = '{"appSrc":"web/src","editAllow":["web/src/**"],"maxRounds":2,"deliver":false}';
+    const result = parseCommandArgs(raw);
+    assert.equal(result.appSrc, "web/src");
+    assert.deepEqual(result.editAllow, ["web/src/**"]);
+    assert.equal(result.maxRounds, 2);
+    assert.equal(result.deliver, false);
+    assert.equal(result._raw, raw);
+  });
+
+  it("rejects malformed JSON object arguments instead of tokenizing them", async () => {
+    const { parseCommandArgs } = await load();
+    assert.throws(() => parseCommandArgs('{"appSrc":'), /Invalid JSON workflow arguments/);
+  });
+
   it("sets _raw to the trimmed input", async () => {
     const { parseCommandArgs } = await load();
     const result = parseCommandArgs("  foo=bar  ");

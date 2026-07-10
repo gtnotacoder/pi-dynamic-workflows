@@ -92,19 +92,36 @@ function savedWorkflowExecutionPolicy(
 
 /**
  * Parse a command argument string into an `args` object for the script.
- * Supports `key=value` tokens; everything else collects into `_` (and `_raw`).
- * Declared parameter defaults fill in missing keys.
+ * Accepts a complete JSON object, or `key=value` tokens with other text
+ * collected into `_` (and `_raw`). Declared defaults fill in missing keys.
  */
 export function parseCommandArgs(raw: string, parameters?: SavedWorkflow["parameters"]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const positional: string[] = [];
-  for (const tok of raw.trim().split(/\s+/).filter(Boolean)) {
-    const eq = tok.indexOf("=");
-    if (eq > 0) out[tok.slice(0, eq)] = tok.slice(eq + 1);
-    else positional.push(tok);
+  const trimmed = raw.trim();
+  let out: Record<string, unknown>;
+
+  if (trimmed.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      throw new Error(`Invalid JSON workflow arguments: ${error instanceof Error ? error.message : error}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("JSON workflow arguments must be an object");
+    }
+    out = { ...(parsed as Record<string, unknown>), _raw: trimmed };
+  } else {
+    out = {};
+    const positional: string[] = [];
+    for (const tok of trimmed.split(/\s+/).filter(Boolean)) {
+      const eq = tok.indexOf("=");
+      if (eq > 0) out[tok.slice(0, eq)] = tok.slice(eq + 1);
+      else positional.push(tok);
+    }
+    out._ = positional.join(" ");
+    out._raw = trimmed;
   }
-  out._ = positional.join(" ");
-  out._raw = raw.trim();
+
   for (const [key, spec] of Object.entries(parameters ?? {})) {
     if (out[key] === undefined && spec.default !== undefined) out[key] = spec.default;
   }

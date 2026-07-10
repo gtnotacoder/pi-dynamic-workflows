@@ -5,11 +5,10 @@
 // Fix ↔ Re-gate → frontier visual verify → Deliver (opt-in) → Trace-assert.
 // See docs/agent-workflows.md for the ownership model and hard rules.
 //
-// This file is a TEMPLATE maintained in the foundation so the loop shape and
-// the gate contract stay next to the rules they enforce. Install it as a
-// saved workflow (pi-dynamic-workflows catalog) or copy into an app's
-// .pi/workflows/. App specifics arrive as ARGS — this file contains NO
-// app-specific values.
+// This canonical template ships with pi-dynamic-workflows and is registered as
+// the bundled /foundation_ui_compliance saved workflow. A project or user saved
+// workflow with the same name may override it. App specifics arrive as ARGS —
+// this file contains NO app-specific values.
 //
 // GATE CONTRACT (Rule 2, docs/agent-workflows.md): all gates run through the
 // single entrypoint run-foundation-gates.mjs in the app's VENDORED foundation
@@ -23,6 +22,7 @@
 //   buildCmd    app build/typecheck gate (e.g. "pnpm --dir web-next build")
 //   urls        array of served-app URLs for the rendered gate + screenshots
 //   loginUrl    optional auth pre-step URL (PROPORTIONS_LOGIN_URL)
+//   baseline    optional committed baseline-ledger path for legacy ratcheting
 //   editAllow   fix-agent allow globs (e.g. ["web-next/src/**"])              REQUIRED
 //   editDeny    fix-agent deny globs (always includes third_party/** below)
 //   maxRounds   Fix ↔ Re-gate cap (default 2)
@@ -46,7 +46,7 @@ let A = {};
 try {
   A = typeof args === "string" ? JSON.parse(args || "{}") : args || {};
 } catch (err) {
-  throw new Error(`args must be valid JSON: ${err && err.message ? err.message : err}`);
+  throw new Error(`args must be valid JSON: ${err?.message ? err.message : err}`);
 }
 const appSrc = String(A.appSrc || "");
 if (!appSrc) throw new Error("args.appSrc is required (e.g. web-next/src)");
@@ -54,6 +54,7 @@ const foundation = String(A.foundation || "third_party/frontend-foundation");
 const buildCmd = A.buildCmd ? String(A.buildCmd) : null;
 const urls = Array.isArray(A.urls) ? A.urls.map(String) : [];
 const loginUrl = A.loginUrl ? String(A.loginUrl) : null;
+const baseline = A.baseline ? String(A.baseline) : null;
 const editAllow = Array.isArray(A.editAllow) ? A.editAllow.map(String) : [];
 if (editAllow.length === 0) throw new Error("args.editAllow is required");
 const editDeny = [
@@ -71,6 +72,7 @@ const deliver = A.deliver === true || String(A.deliver) === "true";
 const GATE = [
   `node ${foundation}/scripts/run-foundation-gates.mjs --app-src ${appSrc}`,
   buildCmd ? ` --build-cmd "${buildCmd}"` : "",
+  baseline ? ` --baseline "${baseline}"` : "",
   urls.map((u) => ` --url ${u}`).join(""),
 ].join("");
 const GATE_ENV = loginUrl ? `PROPORTIONS_LOGIN_URL=${loginUrl} ` : "";
@@ -93,15 +95,17 @@ const diagnose = await agent(
   { label: "gate-diagnose", contextMode: "focused", readOnly: true, inheritMainRules: false, tier: "big" },
 );
 
-if (/\bCLEAN\b/.test(diagnose) && !/must-fix/i.test(diagnose)) {
+let gatesCleared = /\bCLEAN\b/.test(diagnose) && !/must-fix/i.test(diagnose);
+let fixesAttempted = false;
+
+// =====================================================================
+phase("Fix <-> Re-gate loop");
+if (gatesCleared) {
   log("Gates are green — nothing to fix.");
 } else {
-  // ===================================================================
-  phase("Fix <-> Re-gate loop");
   let outstanding = diagnose;
-  let cleared = false;
-
   for (let round = 1; round <= maxRounds; round++) {
+    fixesAttempted = true;
     log(`--- round ${round}/${maxRounds} ---`);
 
     const fix = await agent(
@@ -137,47 +141,53 @@ if (/\bCLEAN\b/.test(diagnose) && !/must-fix/i.test(diagnose)) {
       },
     );
     if (/\bALL-CLEAR\b/.test(regate)) {
-      cleared = true;
+      gatesCleared = true;
       break;
     }
     outstanding = regate;
   }
-  if (!cleared) log(`maxRounds (${maxRounds}) reached with gates still red — surfacing for human review.`);
+  if (!gatesCleared) log(`maxRounds (${maxRounds}) reached with gates still red — surfacing for human review.`);
+}
 
-  // ===================================================================
-  phase("Visual verify");
-  if (urls.length > 0) {
-    const verify = await agent(
-      [
-        "You are the VISUAL VERIFY judge (frontier tier — never a cheap model).",
-        `Re-run the rendered gate with screenshots: ${GATE_ENV}${GATE} --shot-dir /tmp/foundation-ui-verify --json`,
-        "READ the PNGs it saves. Judge with your eyes, not the numbers alone:",
-        "proportion (text fits its boxes), hierarchy, spacing rhythm, token fidelity, no visual regressions vs the app's canon.",
-        "Report PASS or a list of visual defects with pixel evidence.",
-      ].join("\n"),
-      { label: "visual-verify", contextMode: "focused", readOnly: true, inheritMainRules: false, tier: "big" },
-    );
-    log(`visual verify: ${String(verify).slice(0, 400)}`);
-  } else {
-    log("No urls provided — skipping visual verify (static + build gates only).");
-  }
+// =====================================================================
+phase("Visual verify");
+if (!gatesCleared) {
+  log("Gates are still red — skipping visual verification and delivery.");
+} else if (urls.length > 0) {
+  const verify = await agent(
+    [
+      "You are the VISUAL VERIFY judge (frontier tier — never a cheap model).",
+      `Re-run the rendered gate with screenshots: ${GATE_ENV}${GATE} --shot-dir /tmp/foundation-ui-verify --json`,
+      "READ the PNGs it saves. Judge with your eyes, not the numbers alone:",
+      "proportion (text fits its boxes), hierarchy, spacing rhythm, token fidelity, no visual regressions vs the app's canon.",
+      "Report PASS or a list of visual defects with pixel evidence.",
+    ].join("\n"),
+    { label: "visual-verify", contextMode: "focused", readOnly: true, inheritMainRules: false, tier: "big" },
+  );
+  log(`visual verify: ${String(verify).slice(0, 400)}`);
+} else {
+  log("No urls provided — skipping visual verify (static + build gates only).");
+}
 
-  // ===================================================================
-  phase("Deliver");
-  if (deliver) {
-    const delivered = await agent(
-      [
-        "You are the DELIVER agent.",
-        `1. Final gate run must pass: ${GATE_ENV}${GATE}`,
-        "2. Commit ONLY files inside the allow globs on the CURRENT branch; push; open/update a PR with the repo's canonical PR template.",
-        "Report branch, sha, PR url.",
-      ].join("\n"),
-      { label: "deliver", contextMode: "focused", inheritMainRules: false, tier: "medium" },
-    );
-    log(`deliver: ${String(delivered).slice(0, 300)}`);
-  } else {
-    log("deliver=false — leaving changes for human review.");
-  }
+// =====================================================================
+phase("Deliver");
+if (!gatesCleared) {
+  log("Delivery blocked because the final re-gate did not clear all failures.");
+} else if (deliver && fixesAttempted) {
+  const delivered = await agent(
+    [
+      "You are the DELIVER agent.",
+      `1. Final gate run must pass: ${GATE_ENV}${GATE}`,
+      "2. Commit ONLY files inside the allow globs on the CURRENT branch; push; open/update a PR with the repo's canonical PR template.",
+      "Report branch, sha, PR url.",
+    ].join("\n"),
+    { label: "deliver", contextMode: "focused", inheritMainRules: false, tier: "medium" },
+  );
+  log(`deliver: ${String(delivered).slice(0, 300)}`);
+} else if (deliver) {
+  log("Gates were already green — no fixes to deliver.");
+} else {
+  log("deliver=false — leaving changes for human review.");
 }
 
 // =====================================================================
@@ -185,7 +195,7 @@ phase("Trace-assert");
 const trace = await agent(
   [
     "You are the TRACE-ASSERT auditor. Read this run's subagent transcripts and ASSERT:",
-    "  A. gate-diagnose and visual-verify ran on frontier-tier models.",
+    "  A. gate-diagnose and, when not skipped, visual-verify ran on frontier-tier models.",
     `  B. Fix agents modified ONLY paths matching: ${editAllow.join(", ")} and touched none of: ${editDeny.join(", ")}.`,
     "  C. Every fix round was followed by a re-gate through run-foundation-gates.mjs (the single entrypoint).",
     "Report PASS/FAIL per assertion with evidence.",

@@ -7,6 +7,21 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-07-09
+
+Foundation UI compliance packaging and activation patch.
+
+### Added
+
+- Ship the canonical `foundation_ui_compliance.workflow.mjs` template in the npm package and register `/foundation_ui_compliance` automatically as an overridable bundled saved workflow. Project and user saved definitions retain precedence over the package default.
+- Add a complete quick-start guide covering the vendored-foundation prerequisites, gate contract, JSON slash-command invocation, baseline ledger, URL/serve requirements, edit scope, and opt-in delivery behavior.
+
+### Fixed
+
+- Accept a complete JSON object for saved-workflow slash-command arguments, preserving arrays, booleans, and numbers required by the Foundation workflow.
+- Block visual verification and PR delivery when Foundation gates remain red after the final fix/re-gate round; `deliver: true` can proceed only after `ALL-CLEAR` and an attempted fix.
+- Include `docs/**/*.mjs` in the npm package allowlist so the documented executable template is present in fresh installs.
+
 ## [0.2.2] — 2026-07-09
 
 Model-tier routing hardening plus bounded workflow-authoring and Issue Delivery quick wins.

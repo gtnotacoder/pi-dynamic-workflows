@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { join } from "node:path";
 import { workflowProjectPaths, workflowUserSavedDir } from "./workflow-paths.js";
 
-export interface SavedWorkflow {
+export interface SavedWorkflowDefinition {
   /** Command name (filename without extension). */
   name: string;
   /** Human-readable description. */
@@ -15,17 +15,20 @@ export interface SavedWorkflow {
   script: string;
   /** Optional parameter schema for parameterized workflows. */
   parameters?: Record<string, { type: string; description?: string; required?: boolean; default?: unknown }>;
-  /** Where this workflow is saved. */
-  location: "project" | "user";
-  /** Full file path. */
+}
+
+export interface SavedWorkflow extends SavedWorkflowDefinition {
+  /** Where this workflow comes from. */
+  location: "project" | "user" | "bundled";
+  /** Full file path, or a bundled: URI for package defaults. */
   path: string;
-  /** When it was saved. */
+  /** When it was saved, or "bundled" for package defaults. */
   savedAt: string;
 }
 
 export interface WorkflowStorage {
-  /** Save a workflow. */
-  save(workflow: Omit<SavedWorkflow, "path" | "savedAt">, location?: "project" | "user"): SavedWorkflow;
+  /** Save a project or user override. */
+  save(workflow: SavedWorkflowDefinition, location?: "project" | "user"): SavedWorkflow;
   /** Load a workflow by name. */
   load(name: string): SavedWorkflow | null;
   /** List all saved workflows. */
@@ -51,11 +54,25 @@ export function assertSafeSavedWorkflowName(name: string): void {
   }
 }
 
-export function createWorkflowStorage(cwd: string): WorkflowStorage {
+export function createWorkflowStorage(
+  cwd: string,
+  bundledWorkflows: readonly SavedWorkflowDefinition[] = [],
+): WorkflowStorage {
   const paths = workflowProjectPaths(cwd);
   const projectDir = paths.savedDir;
   const legacyProjectDir = paths.legacySavedDir;
   const userDir = workflowUserSavedDir();
+  const bundledByName = new Map<string, SavedWorkflowDefinition>();
+  for (const workflow of bundledWorkflows) {
+    assertSafeSavedWorkflowName(workflow.name);
+    if (bundledByName.has(workflow.name)) throw new Error(`Duplicate bundled workflow: ${workflow.name}`);
+    bundledByName.set(workflow.name, workflow);
+  }
+
+  const bundledWorkflow = (name: string): SavedWorkflow | null => {
+    const workflow = bundledByName.get(name);
+    return workflow ? { ...workflow, location: "bundled", path: `bundled:${workflow.name}`, savedAt: "bundled" } : null;
+  };
 
   const ensureDir = (dir: string) => {
     if (!existsSync(dir)) {
@@ -119,7 +136,7 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
       if (legacyProject) return legacyProject;
 
       const userPath = workflowPath(name, "user");
-      return loadFromFile(userPath, "user");
+      return loadFromFile(userPath, "user") ?? bundledWorkflow(name);
     },
 
     list(): SavedWorkflow[] {
@@ -141,6 +158,11 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
       addDir(projectDir, "project");
       addDir(legacyProjectDir, "project");
       addDir(userDir, "user");
+      for (const name of bundledByName.keys()) {
+        if (seen.has(name)) continue;
+        const workflow = bundledWorkflow(name);
+        if (workflow) workflows.push(workflow);
+      }
 
       return workflows.sort((a, b) => a.name.localeCompare(b.name));
     },
