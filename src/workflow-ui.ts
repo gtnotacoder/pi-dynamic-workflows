@@ -333,6 +333,18 @@ function fmtTokens(t: number): string {
   return t > 0 ? `${pad(t)} tok` : "";
 }
 
+function savedLocationShort(location: SavedWorkflow["location"]): string {
+  if (location === "user") return "~";
+  if (location === "bundled") return "pkg";
+  return ".";
+}
+
+function savedLocationLong(location: SavedWorkflow["location"]): string {
+  if (location === "user") return "user (~/.pi)";
+  if (location === "bundled") return "bundled package default";
+  return "project (.pi)";
+}
+
 /** Build the lines for the current view. Pure: depends only on state + model + theme. */
 export function renderNavigator(
   state: NavigatorState,
@@ -382,7 +394,7 @@ export function renderNavigator(
       const sepOffset = runs.length;
       if (runs.length > 0) lines.push(dim("  ── saved ──"));
       saved.forEach((w, i) => {
-        const loc = w.location === "user" ? "~" : ".";
+        const loc = savedLocationShort(w.location);
         const desc = w.description ? dim(`  ${w.description}`) : "";
         lines.push(sel(sepOffset + i, `${w.name}${desc}  ${dim(loc)}`));
       });
@@ -434,7 +446,7 @@ export function renderNavigator(
     if (w) {
       const body: string[] = [];
       if (w.description) body.push(dim("Description: ") + w.description);
-      body.push(dim("Location: ") + (w.location === "user" ? "user (~/.pi)" : "project (.pi)"));
+      body.push(dim("Location: ") + savedLocationLong(w.location));
       body.push(dim("Saved at: ") + w.savedAt);
       if (w.parameters) body.push(dim("Parameters: ") + JSON.stringify(w.parameters));
       body.push("", dim("Script:"));
@@ -635,7 +647,6 @@ export function openWorkflowNavigator(
               name,
               description: run.workflowName,
               script: run.script,
-              location: "project",
             });
           } catch (error) {
             ui.notify(error instanceof Error ? error.message : String(error), "error");

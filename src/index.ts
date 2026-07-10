@@ -151,6 +151,10 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
+export {
+  createBundledFoundationUiComplianceWorkflow,
+  FOUNDATION_UI_COMPLIANCE_NAME,
+} from "./foundation-ui-compliance.js";
 export { generateFuguWorkflow } from "./fugu.js";
 export {
   DEFAULT_DEPRECATED_SCHEMA_VERSIONS,
@@ -302,7 +306,7 @@ export {
   workflowProjectPaths,
   workflowUserSavedDir,
 } from "./workflow-paths.js";
-export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+export type { SavedWorkflow, SavedWorkflowDefinition, WorkflowStorage } from "./workflow-saved.js";
 export { assertSafeSavedWorkflowName, createWorkflowStorage, isSafeSavedWorkflowName } from "./workflow-saved.js";
 export type { WorkflowSettings, WorkflowSettingsOptions, WorkflowSettingsStore } from "./workflow-settings.js";
 export {

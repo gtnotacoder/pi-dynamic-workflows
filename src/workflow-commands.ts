@@ -228,7 +228,6 @@ export function registerWorkflowCommands(
               name,
               description: run.workflowName,
               script: run.script,
-              location: "project",
             });
           } catch (error) {
             ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

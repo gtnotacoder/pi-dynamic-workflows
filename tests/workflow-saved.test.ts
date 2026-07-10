@@ -114,6 +114,34 @@ test(
 );
 
 test(
+  "createWorkflowStorage exposes bundled defaults behind project and user overrides",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd, [
+      { name: "bundled-wf", description: "Package default", script: "bundled script" },
+    ]);
+
+    assert.deepEqual(
+      storage.list().map((workflow) => [workflow.name, workflow.location]),
+      [["bundled-wf", "bundled"]],
+    );
+    assert.equal(storage.load("bundled-wf")?.script, "bundled script");
+    assert.equal(storage.load("bundled-wf")?.path, "bundled:bundled-wf");
+
+    storage.save({ name: "bundled-wf", description: "User override", script: "user script" }, "user");
+    assert.equal(storage.load("bundled-wf")?.script, "user script");
+    assert.equal(storage.list().find((workflow) => workflow.name === "bundled-wf")?.location, "user");
+
+    storage.save({ name: "bundled-wf", description: "Project override", script: "project script" });
+    assert.equal(storage.load("bundled-wf")?.script, "project script");
+    assert.equal(storage.list().find((workflow) => workflow.name === "bundled-wf")?.location, "project");
+
+    assert.equal(storage.delete("bundled-wf"), true);
+    assert.equal(storage.load("bundled-wf")?.script, "bundled script");
+    assert.equal(storage.delete("bundled-wf"), false, "package defaults are read-only");
+  }),
+);
+
+test(
   "createWorkflowStorage load reads legacy project workflows before user workflows",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);

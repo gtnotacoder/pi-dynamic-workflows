@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   buildContextModeRegistry,
+  createBundledFoundationUiComplianceWorkflow,
   createEffortState,
   createWorkflowStorage,
   createWorkflowTool,
@@ -34,7 +35,7 @@ export default function extension(pi: ExtensionAPI) {
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
-  const storage = createWorkflowStorage(cwd);
+  const storage = createWorkflowStorage(cwd, [createBundledFoundationUiComplianceWorkflow()]);
   const settings = loadWorkflowSettings({ cwd });
   // Built-ins + any project-defined `contextModes`, threaded into the manager so
   // tool-driven runs resolve project modes (slash commands build their own per call).

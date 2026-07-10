@@ -55,7 +55,7 @@ over the prototype default when a saved workflow exposes them.
 | `/workflow_trace_analyzer` | `/workflow_trace_analyser` | saved workflow | `~/.pi/workflows/saved/workflow_trace_analyzer.json` | active | American-spelled canonical trace analyzer; legacy `/workflow_trace_analyser` remains installed. |
 | `/evidence_adversarial_review` | — | saved workflow | `~/.pi/workflows/saved/evidence_adversarial_review.json` | active | Source-backed adversarial validation. |
 | `/frontend_radix_shadcn_review` | — | saved workflow | `~/.pi/workflows/saved/frontend_radix_shadcn_review.json` | active | Frontend-specific review harness. |
-| `/foundation_ui_compliance` | — | saved workflow | `~/.pi/workflows/saved/foundation_ui_compliance.json` | active | Universal design-system compliance delivery engine: Gate-Diagnose → scoped Fix ↔ Re-gate → frontier visual verify → Deliver (opt-in) → Trace-assert. **Generic template: [`templates/foundation_ui_compliance.workflow.mjs`](templates/foundation_ui_compliance.workflow.mjs)**; setup guide + the Foundation Gate Contract any design-system repo can implement: [`foundation-ui-compliance.md`](foundation-ui-compliance.md). Gates run only through the single entrypoint in the app's **vendored** foundation (`<foundation>/scripts/run-foundation-gates.mjs`) — the foundation owns the gate list, so foundation changes propagate with zero workflow edits. All app/org specifics arrive via `args`/per-repo harness JSON, never in the engine; orgs keep a pinned, CI-gated template of record in their own foundation repo and reinstall after updates. |
+| `/foundation_ui_compliance` | — | bundled saved workflow | `docs/workflows/templates/foundation_ui_compliance.workflow.mjs` | active | Package-provided in 0.2.3+ and automatically registered on fresh installs; project/user saved definitions may override it. Universal design-system compliance engine: Gate-Diagnose → scoped Fix ↔ Re-gate → frontier visual verify → Deliver (opt-in) → Trace-assert. See the [setup, invocation, and Foundation Gate Contract](foundation-ui-compliance.md). Gates run only through `<foundation>/scripts/run-foundation-gates.mjs` in the app's vendored foundation; app/org specifics arrive through the JSON `args` object. Red gates block delivery. |
 
 ## Drift check
 
@@ -104,12 +104,13 @@ installs:
   (`collisionPolicy.aliasCollisionSeverity = "warning"`).
 - **`version`** is only expected for `builtin-command` (package-shipped) entries.
   A `version` on a non-`builtin-command` entry is flagged as a warning by the
-  lock checker.
+  lock checker. `bundled-template` entries are package-shipped source defaults
+  whose concrete command is registered through the saved-workflow loader.
 - **Reserved `kind` values:** `builtin-command`, `bundled-template`,
   `saved-workflow`, `harness-metadata`, and `deprecated-alias`. The lock
   checker rejects entries whose `kind` is outside this set.
-  `bundled-template`, `harness-metadata`, and `deprecated-alias` are reserved
-  for future use and not necessarily populated today.
+  `harness-metadata` and `deprecated-alias` are reserved for future use and not
+  necessarily populated today.
 - **External saved workflows** under `~/.pi/workflows/saved/*.json` are
   declarative/operator-visibility only, not package-shipped APIs. Their sources
   are recorded in the lock with `sha256: null` and are warning-only in the drift

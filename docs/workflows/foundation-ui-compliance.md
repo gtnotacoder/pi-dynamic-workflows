@@ -6,10 +6,41 @@ visual verify → Deliver (opt-in) → Trace-assert.
 
 The engine contains **no repository names, URLs, or organization-specific
 values**. Everything specific to your app or your design-system repo arrives
-as `args` (or a per-repo harness JSON that supplies them). You can point it at
-any foundation repo that implements the gate contract below.
+as `args` (typed directly in the command JSON or supplied as defaults by a
+project/user saved-workflow override). You can point it at any foundation repo
+that implements the gate contract below.
 
 Template: [`templates/foundation_ui_compliance.workflow.mjs`](templates/foundation_ui_compliance.workflow.mjs)
+
+## Availability and quick start
+
+Starting in `pi-dynamic-workflows-oc-style` **0.2.3**, the template ships in
+npm and is registered automatically as the bundled saved-workflow command
+`/foundation_ui_compliance`. No separate copy/install step is required; reload
+Pi after upgrading the package. A project-scoped or user saved-workflow
+definition with the same name intentionally overrides the package default.
+
+Before running it, the app repo must contain a vendored foundation directory
+with:
+
+- `scripts/run-foundation-gates.mjs`, implementing the contract below;
+- `docs/compliance-validator.md` and `docs/proportion-contract.md`, which the
+  diagnose/fix agents consult;
+- any additional canon documents referenced by those files; and
+- app build/serve instructions that an agent can follow when `urls` are used.
+
+Pass one JSON object directly after the slash command (do not wrap it in shell
+quotes inside Pi):
+
+```text
+/foundation_ui_compliance {"appSrc":"web/src","foundation":"third_party/frontend-foundation","buildCmd":"pnpm --dir web build","urls":["http://localhost:4173/dashboard"],"editAllow":["web/src/**"],"maxRounds":2,"deliver":false}
+```
+
+Use `urls: []` when only static/build gates are available. With URLs, make the
+app reachable at those addresses or provide accurate build/serve instructions
+in the app README. Start with `deliver: false`; `deliver: true` authorizes the
+workflow to commit, push, and open/update a PR only after a successful re-gate.
+If the final re-gate remains red, delivery is blocked.
 
 ---
 
@@ -19,7 +50,7 @@ Template: [`templates/foundation_ui_compliance.workflow.mjs`](templates/foundati
 |---|---|---|
 | **Rules** | What correct UI means: tokens, type ramp, density canon, component canon, proportion numbers | Your design-system ("foundation") repo, **vendored into each app** (e.g. `third_party/<foundation>/`), updated only via visible resync PRs |
 | **Logic** | The loop shape: diagnose → scoped fix → gate every round → frontier judge → trace-assert | This engine (one template; orgs keep a pinned copy in their foundation repo as template of record) |
-| **Params** | This app's source dir, build command, served URLs, edit scope, baseline ledger | Per-repo harness JSON / `args` — config only, never logic |
+| **Params** | This app's source dir, build command, served URLs, edit scope, baseline ledger | Slash-command `args` or a project/user saved-workflow override — config only, never logic |
 
 Why this split works: workflows never re-encode design rules, so when the
 foundation changes (a new theme, new canon, a brand-new gate), every consumer
@@ -59,6 +90,7 @@ JSON shape.
   "buildCmd": "pnpm --dir web build",          // optional build/typecheck gate
   "urls": ["http://localhost:4173/dashboard"], // optional; enables rendered gate + visual verify
   "loginUrl": "http://localhost:4173/login",   // optional auth pre-step for gated apps
+  "baseline": "foundation-baseline.json",       // optional committed legacy-violation ledger
   "editAllow": ["web/src/**"],                 // REQUIRED — fix-agent allow globs
   "editDeny": [],                              // extra deny globs; third_party/**, .github/**, vendor/** are ALWAYS denied
   "maxRounds": 2,                              // Fix ↔ Re-gate cap
@@ -71,28 +103,37 @@ JSON shape.
 1. **Vendor your foundation** into the app (e.g. `third_party/<foundation>/`),
    including its `scripts/run-foundation-gates.mjs` and rule docs. Treat the
    vendored copy as read-only inside the app; update it only via resync PRs.
-2. **Install the engine** as a saved workflow from
-   `templates/foundation_ui_compliance.workflow.mjs` (or copy it into the
-   app's `.pi/workflows/`). Keep a pinned copy in your foundation repo —
-   ideally syntax-gated by that repo's CI — as your template of record.
-3. **(Optional) Write a per-repo harness JSON** carrying the default `args`
-   for that app, so runs are one command with no retyping. Keep private
-   values (internal URLs, repo names, credentials indirection) there — in
-   your private repo — never in the engine.
-4. **Legacy trees:** generate a ledger once with `--write-baseline`, commit
-   it, and pass `--baseline` so the gate ratchets instead of blocking.
+2. **Install/upgrade `pi-dynamic-workflows-oc-style` to 0.2.3 or newer** and
+   reload Pi. The package provides `/foundation_ui_compliance`; no saved JSON
+   is required. If an older local copy exists, remove or update that override
+   to use the current package template.
+3. **Keep app-specific run settings in the app repo.** The simplest invocation
+   is the JSON slash-command argument shown above. Teams that want reusable
+   defaults may keep a project-scoped saved-workflow override for the app;
+   never put credentials in the workflow or command args.
+4. **Legacy trees:** run the foundation entrypoint directly once with
+   `--write-baseline`, commit the generated ledger, then pass its path as the
+   workflow's `baseline` argument so the gate ratchets instead of blocking.
 
-## Hard rules the engine enforces (and trace-asserts)
+## Operational rules and audit boundaries
 
-- **Frontier judge** — gate-diagnose and visual verification run on big/frontier-tier models, never cheap ones.
-- **Scoped fixers** — fix agents edit only `editAllow` paths; the vendored foundation (`third_party/**`) is always deny.
-- **Gates every round** — every fix round is followed by a re-gate through the single entrypoint; no self-certification.
-- **Trace-assert** — a final auditor reads the run's subagent transcripts and asserts all of the above with evidence.
+- **Frontier judge** — gate-diagnose and visual verification explicitly request
+  the `big` tier; the machine-local tier mapping chooses the concrete model.
+- **Scoped fixers** — fix prompts and the final trace audit require changes to
+  stay inside `editAllow`; the vendored foundation (`third_party/**`) is always
+  denied. This is not a host filesystem sandbox, so inspect the resulting diff
+  before accepting it.
+- **Gates every round** — workflow control follows every fix round with a
+  re-gate through the single entrypoint. Red gates block visual verification and
+  delivery.
+- **Trace-assert** — a final model auditor reviews the run transcripts and
+  reports evidence. It is a best-effort audit, not cryptographic proof or a
+  replacement for host-side branch protection and CI.
 
 ## Privacy / universality note
 
 The engine and this doc are intentionally free of organization-specific
 references. Your foundation repo's name, your app's internal URLs, and your
-harness defaults belong in **your app repo's** harness JSON (which can be
-private). Nothing about using this engine requires disclosing what it points
-at.
+invocation defaults belong in a **project-scoped saved-workflow override** (or
+other private app configuration). Nothing about using this engine requires
+disclosing what it points at.
