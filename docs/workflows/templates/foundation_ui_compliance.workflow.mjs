@@ -208,11 +208,11 @@ if (gatesCleared) {
       gatesCleared = true;
       break;
     }
-    // A null/malformed re-gate verdict is a FAILURE: do NOT clear gates, surface the
-    // raw result so the human can see the malformed verdict, and keep looping.
+    // A null/malformed re-gate has no structured findings and therefore cannot
+    // authorize another mutating fixer pass. Stop for human review.
     if (regateVerdict === null) {
-      log(`re-gate round ${round}: verdict null/malformed — treating as failure.`);
-      outstanding = String(regate);
+      log(`re-gate round ${round}: verdict null/malformed — stopping fixer loop.`);
+      break;
     } else if (regateVerdict.findings.length === 0) {
       log(`re-gate round ${round}: failed without actionable findings — stopping fixer loop.`);
       break;

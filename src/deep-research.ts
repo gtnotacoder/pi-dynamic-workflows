@@ -7,14 +7,15 @@
  * tool. Each agent returns a compact, schema-bounded structured result; the
  * workflow's final return carries only the bounded supported claims and a
  * bounded candidate summary (the validated question stays with the host). The
- * full cited Markdown report is rendered by the host from the bounded
- * supported claims into a fresh private tmpdir directory (never a workspace
+ * host re-fetches each retained citation, then renders the full cited Markdown
+ * report from verified bounded claims into a fresh private tmpdir directory (never a workspace
  * path, never a model-controlled path).
  */
 
 import { closeSync, constants as fsConstants, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { verifyWebCitation } from "./web-tools.js";
 
 export interface DeepResearchConfig {
   /** Number of distinct search angles/queries to explore. */
@@ -204,8 +205,8 @@ const allSources = []
 for (const g of gathered) {
   if (!g || !Array.isArray(g.sources)) continue
   for (const src of g.sources) {
-    if (!src || typeof src.url !== 'string' || !src.url) continue
-    const url = src.url.slice(0, ${MAX_RESEARCH_URL_CHARS})
+    if (!src || typeof src.url !== 'string' || !src.url || src.url.length > ${MAX_RESEARCH_URL_CHARS}) continue
+    const url = src.url
     const claims = Array.isArray(src.claims) ? src.claims.filter((c) => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim().slice(0, ${MAX_RESEARCH_CLAIM_CHARS})).slice(0, ${MAX_CLAIMS_PER_SOURCE}) : []
     // Empty pages are not evidence and must not consume a bounded source slot.
     if (!claims.length || seenSourceUrls.has(url)) continue
@@ -249,8 +250,7 @@ const verdict = await agent(
     },
   }
 )
-// Defensive normalization: only URLs actually gathered/fetched may survive as
-// citations. Filter invalid entries and provenance first, then apply the claim
+// Defensive normalization: verifier URLs must exactly match Gather evidence. Filter invalid entries and provenance first, then apply the claim
 // cap so early bad entries cannot starve later valid evidence in a lax runtime.
 const gatheredSourceUrls = new Set(allSources.map((source) => source.url))
 const supported = []
@@ -259,7 +259,7 @@ for (const entry of Array.isArray(verdict && verdict.supported) ? verdict.suppor
   if (!entry || typeof entry !== 'object') continue
   const claim = typeof entry.claim === 'string' ? entry.claim.slice(0, ${MAX_RESEARCH_CLAIM_CHARS}) : ''
   const sources = Array.isArray(entry.sources)
-    ? [...new Set(entry.sources.filter((source) => typeof source === 'string').map((source) => source.slice(0, ${MAX_RESEARCH_URL_CHARS})).filter((source) => gatheredSourceUrls.has(source)))].slice(0, 2)
+    ? [...new Set(entry.sources.filter((source) => typeof source === 'string' && source.length <= ${MAX_RESEARCH_URL_CHARS} && gatheredSourceUrls.has(source)))].slice(0, 2)
     : []
   if (!claim || !sources.length) continue
   supported.push({ claim, sources })
@@ -325,6 +325,7 @@ export function renderResearchReport(question: string, supported: readonly Suppo
  * without touching the real filesystem.
  */
 export type ResearchReportWriter = (report: string) => string;
+export type ResearchCitationVerifier = (url: string) => Promise<boolean>;
 
 /** Default writer used by the live handler. */
 export function defaultResearchReportWriter(report: string): string {
@@ -340,9 +341,9 @@ export function defaultResearchReportWriter(report: string): string {
 }
 
 /**
- * Pure, host-side delivery for /deep-research. Renders cited Markdown from
- * the bounded supported claims via the injectable writer, derives a bounded
- * acknowledgement from retained cited evidence, and re-clamps the array to at most
+ * Pure, host-side delivery for /deep-research. Re-fetches retained citations,
+ * drops failed/empty responses, renders cited Markdown via the injectable writer,
+ * derives an acknowledgement from verified evidence, and re-clamps to at most
  * MAX_SUPPORTED_CLAIMS claims (each claim/url re-sliced to its byte budget),
  * and returns the compact result (path + claim/source counts + short summary)
  * without ever putting the report body in any result channel.
@@ -361,13 +362,15 @@ export function defaultResearchReportWriter(report: string): string {
  *   DeepResearchResult carrying supported + summary; no question)
  * @param writer injectable writer that returns the absolute report path
  */
-export function deliverDeepResearchResult(
+export async function deliverDeepResearchResult(
   question: string,
   result: { runId?: string; result?: unknown },
   writer: ResearchReportWriter = defaultResearchReportWriter,
-):
+  verifyCitation: ResearchCitationVerifier = verifyWebCitation,
+): Promise<
   | { ok: true; path: string; count: number; sources: number; summary: string; message: string }
-  | { ok: false; warning: string } {
+  | { ok: false; warning: string }
+> {
   const res = (result?.result ?? {}) as Partial<DeepResearchResult> & { supported?: unknown; question?: unknown };
   if (res?.ok !== true) {
     return {
@@ -377,20 +380,35 @@ export function deliverDeepResearchResult(
   }
   const supportedRaw = Array.isArray(res.supported) ? res.supported : [];
   const supported: SupportedClaim[] = [];
+  const verificationCache = new Map<string, Promise<boolean>>();
   for (const entry of supportedRaw) {
     if (supported.length >= MAX_SUPPORTED_CLAIMS) break;
     if (entry === null || typeof entry !== "object") continue;
     const raw = entry as Partial<SupportedClaim>;
     const claim = normalizeSingleLine(raw.claim, MAX_RESEARCH_CLAIM_CHARS);
     if (!claim) continue;
-    const sources = Array.isArray(raw.sources)
-      ? raw.sources
-          .flatMap((source) => {
-            const normalized = normalizeHttpSource(source);
-            return normalized ? [normalized] : [];
-          })
-          .slice(0, 2)
+    const normalizedSources = Array.isArray(raw.sources)
+      ? [
+          ...new Set(
+            raw.sources.flatMap((source) => {
+              const normalized = normalizeHttpSource(source);
+              return normalized ? [normalized] : [];
+            }),
+          ),
+        ]
       : [];
+    const sources: string[] = [];
+    for (const source of normalizedSources) {
+      if (sources.length >= 2) break;
+      let verification = verificationCache.get(source);
+      if (!verification) {
+        verification = Promise.resolve()
+          .then(() => verifyCitation(source))
+          .catch(() => false);
+        verificationCache.set(source, verification);
+      }
+      if (await verification) sources.push(source);
+    }
     if (sources.length === 0) continue;
     supported.push({ claim, sources });
   }
@@ -451,13 +469,16 @@ function escapeMarkdownInline(value: string): string {
   return Array.from(value, (character) => (specials.has(character) ? `\\${character}` : character)).join("");
 }
 
-/** Accept only bounded HTTP(S) citation URLs; other schemes/text are not evidence links. */
+/** Accept only bounded HTTP(S) citations; reject overlong URLs instead of truncating them. */
 function normalizeHttpSource(value: unknown): string | null {
   if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_RESEARCH_URL_CHARS) return null;
   try {
-    const parsed = new URL(value.trim());
+    const parsed = new URL(trimmed);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    return parsed.toString().slice(0, MAX_RESEARCH_URL_CHARS);
+    const canonical = parsed.toString();
+    return canonical.length <= MAX_RESEARCH_URL_CHARS ? canonical : null;
   } catch {
     return null;
   }

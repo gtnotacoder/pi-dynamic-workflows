@@ -6,6 +6,7 @@ import {
   createWebTools,
   htmlToText,
   parseBingResults,
+  verifyWebCitation,
 } from "../src/web-tools.js";
 
 // ─── createWebSearchTool ─────────────────────────────────────────────────────
@@ -62,6 +63,27 @@ test("createWebFetchTool has parameters with url field", () => {
   const tool = createWebFetchTool();
   const params = tool.parameters;
   assert.ok(params, "should have parameters");
+});
+
+test("verifyWebCitation accepts only successful non-empty host fetches", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response("source body", { status: 200 });
+    assert.equal(await verifyWebCitation("https://example.com/source"), true);
+
+    globalThis.fetch = async () => new Response("", { status: 200 });
+    assert.equal(await verifyWebCitation("https://example.com/empty"), false);
+
+    globalThis.fetch = async () => new Response("missing", { status: 404 });
+    assert.equal(await verifyWebCitation("https://example.com/missing"), false);
+
+    globalThis.fetch = async () => {
+      throw new Error("offline");
+    };
+    assert.equal(await verifyWebCitation("https://example.com/error"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ─── createWebTools ────────────────────────────────────────────────────────────

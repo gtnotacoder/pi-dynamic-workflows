@@ -485,24 +485,26 @@ test("execution: malformed diagnose verdict (wrong shape) is a failure", async (
   assert.equal(receipt.delivered, null, "delivery skipped after malformed diagnose");
 });
 
-test("execution: null re-gate verdict is a failure — does not clear gates", async () => {
+test("execution: null re-gate verdict stops before another fixer round", async () => {
+  let fixCalls = 0;
   const stubAgent = async (prompt: string) => {
     if (/GATE-DIAGNOSE/.test(prompt)) return RED_VERDICT;
-    if (/FIX agent/.test(prompt)) return "fixed";
+    if (/FIX agent/.test(prompt)) {
+      fixCalls++;
+      return "fixed";
+    }
     if (/RE-GATE runner/.test(prompt)) return null;
     return "ok";
   };
-  const { receipt, logs } = await runWith(stubAgent, baseArgs({ maxRounds: 1, deliver: true }));
+  const { receipt, logs } = await runWith(stubAgent, baseArgs({ maxRounds: 2, deliver: true }));
 
+  assert.equal(fixCalls, 1, "malformed re-gate cannot authorize another mutating pass");
   assert.equal(receipt.gatesCleared, false, "null re-gate => not cleared");
-  assert.equal(receipt.roundsRun, 1, "fix round ran before the null re-gate");
+  assert.equal(receipt.roundsRun, 1, "fix loop stops after the null re-gate");
   assert.equal(receipt.visualVerifyRan, false, "gates red => visual skipped");
   assert.equal(receipt.deliveryEligible, false);
   assert.equal(receipt.delivered, null, "delivery skipped after null re-gate");
-  assert.ok(
-    logs.some((l) => l.includes("verdict null/malformed — treating as failure")),
-    "null re-gate logged as failure",
-  );
+  assert.ok(logs.some((line) => line.includes("verdict null/malformed — stopping fixer loop")));
 });
 
 test("execution: null visual verdict blocks delivery even when gates cleared", async () => {

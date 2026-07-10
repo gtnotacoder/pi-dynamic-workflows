@@ -118,6 +118,16 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
   }) as unknown as ToolDefinition;
 }
 
+/** Re-fetch a citation host-side before it is accepted into a research artifact. */
+export async function verifyWebCitation(url: string): Promise<boolean> {
+  try {
+    const { status, body } = await fetchText(url);
+    return status >= 200 && status < 400 && body.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Both web tools, for injecting into a research workflow's agents. */
 export function createWebTools(): ToolDefinition[] {
   return [createWebSearchTool(), createWebFetchTool()];

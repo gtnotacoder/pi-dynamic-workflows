@@ -8,6 +8,7 @@ import {
   deliverDeepResearchResult,
   MAX_RESEARCH_QUESTION_CHARS,
   MAX_RESEARCH_SUMMARY_CHARS,
+  MAX_RESEARCH_URL_CHARS,
   MAX_SUPPORTED_CLAIMS,
   renderResearchReport,
 } from "../src/deep-research.js";
@@ -482,7 +483,9 @@ function recordingWriter(): { writer: (report: string) => string; report: string
   };
 }
 
-test("deliverDeepResearchResult: valid supported claims → ack with path + counts + clamped summary, no report body in message", () => {
+const acceptCitation = async (_url: string): Promise<boolean> => true;
+
+test("deliverDeepResearchResult: valid supported claims → ack with path + counts + clamped summary, no report body in message", async () => {
   const rec = recordingWriter();
   const result = {
     ok: true,
@@ -493,7 +496,7 @@ test("deliverDeepResearchResult: valid supported claims → ack with path + coun
     ],
     summary: "X is fast and supports Y.",
   };
-  const outcome = deliverDeepResearchResult("Is X fast?", { runId: "r", result }, rec.writer);
+  const outcome = await deliverDeepResearchResult("Is X fast?", { runId: "r", result }, rec.writer, acceptCitation);
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   assert.equal(outcome.count, 2);
@@ -515,35 +518,37 @@ test("deliverDeepResearchResult: valid supported claims → ack with path + coun
   );
 });
 
-test("deliverDeepResearchResult: ok=false / missing supported → rejected, no success", () => {
+test("deliverDeepResearchResult: ok=false / missing supported → rejected, no success", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     { runId: "r", result: { ok: false, supported: [], summary: "" } },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.warning, /did not return a valid result/);
 });
 
-test("deliverDeepResearchResult: no cited claims → rejected, no success", () => {
+test("deliverDeepResearchResult: no cited claims → rejected, no success", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     { runId: "r", result: { ok: true, supported: [], summary: "s" } },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.warning, /no cited claims/);
 });
 
-test("deliverDeepResearchResult: uncited/missing claims are rejected by the host renderer", () => {
+test("deliverDeepResearchResult: uncited/missing claims are rejected by the host renderer", async () => {
   // A claim with no sources is uncited and must be dropped; if ALL claims are
   // uncited/missing, delivery must not report success.
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -558,6 +563,7 @@ test("deliverDeepResearchResult: uncited/missing claims are rejected by the host
       },
     },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
@@ -569,9 +575,9 @@ test("deliverDeepResearchResult: uncited/missing claims are rejected by the host
   assert.match(rec.report, /- ok/);
 });
 
-test("deliverDeepResearchResult: invalid citation schemes/text cannot produce success", () => {
+test("deliverDeepResearchResult: invalid citation schemes/text cannot produce success", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -584,6 +590,7 @@ test("deliverDeepResearchResult: invalid citation schemes/text cannot produce su
       },
     },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
@@ -591,9 +598,9 @@ test("deliverDeepResearchResult: invalid citation schemes/text cannot produce su
   assert.equal(rec.report, "", "invalid citations must not reach the writer");
 });
 
-test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URLs", () => {
+test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URLs", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -607,6 +614,7 @@ test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URL
       },
     },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
@@ -618,9 +626,9 @@ test("deliverDeepResearchResult: mixed citations retain only bounded HTTP(S) URL
   assert.doesNotMatch(outcome.message, /dropped uncited claim/);
 });
 
-test("deliverDeepResearchResult: all claims uncited → rejected, no success", () => {
+test("deliverDeepResearchResult: all claims uncited → rejected, no success", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -631,17 +639,18 @@ test("deliverDeepResearchResult: all claims uncited → rejected, no success", (
       },
     },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.warning, /no cited claims/);
 });
 
-test("deliverDeepResearchResult: writer failure → rejected, no success", () => {
+test("deliverDeepResearchResult: writer failure → rejected, no success", async () => {
   const failingWriter = () => {
     throw new Error("disk full");
   };
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -652,6 +661,7 @@ test("deliverDeepResearchResult: writer failure → rejected, no success", () =>
       },
     },
     failingWriter,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
@@ -659,9 +669,9 @@ test("deliverDeepResearchResult: writer failure → rejected, no success", () =>
   assert.match(outcome.warning, /disk full/);
 });
 
-test("deliverDeepResearchResult: writer returns empty path → rejected, no success", () => {
+test("deliverDeepResearchResult: writer returns empty path → rejected, no success", async () => {
   const emptyWriter = () => "";
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -672,15 +682,16 @@ test("deliverDeepResearchResult: writer returns empty path → rejected, no succ
       },
     },
     emptyWriter,
+    acceptCitation,
   );
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
   assert.match(outcome.warning, /returned no path/);
 });
 
-test("deliverDeepResearchResult: acknowledgement summary derives from retained cited evidence", () => {
+test("deliverDeepResearchResult: acknowledgement summary derives from retained cited evidence", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -691,6 +702,7 @@ test("deliverDeepResearchResult: acknowledgement summary derives from retained c
       },
     },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
@@ -699,9 +711,71 @@ test("deliverDeepResearchResult: acknowledgement summary derives from retained c
   assert.doesNotMatch(outcome.message, /model summary/);
 });
 
-test("deliverDeepResearchResult: invalid early entries cannot starve later cited evidence", () => {
+test("deliverDeepResearchResult: host re-fetch drops unavailable citations", async () => {
   const rec = recordingWriter();
-  const outcome = deliverDeepResearchResult(
+  const checked: string[] = [];
+  const outcome = await deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [
+          { claim: "unverified", sources: ["https://unavailable.example/source"] },
+          { claim: "verified", sources: ["https://verified.example/source"] },
+        ],
+        summary: "unverified",
+      },
+    },
+    rec.writer,
+    async (url) => {
+      checked.push(url);
+      return url.includes("verified.example");
+    },
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(checked, ["https://unavailable.example/source", "https://verified.example/source"]);
+  assert.equal(outcome.count, 1);
+  assert.equal(outcome.summary, "verified");
+  assert.doesNotMatch(rec.report, /unverified/);
+});
+
+test("deliverDeepResearchResult: overlong URLs are rejected, never truncated", async () => {
+  const rec = recordingWriter();
+  const longUrl = `https://example.com/${"x".repeat(MAX_RESEARCH_URL_CHARS)}`;
+  const checked: string[] = [];
+  const outcome = await deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [
+          { claim: "broken if truncated", sources: [longUrl] },
+          { claim: "valid", sources: ["https://valid.example/source"] },
+        ],
+        summary: "valid",
+      },
+    },
+    rec.writer,
+    async (url) => {
+      checked.push(url);
+      return true;
+    },
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.deepEqual(checked, ["https://valid.example/source"]);
+  assert.doesNotMatch(rec.report, /broken if truncated/);
+  assert.match(rec.report, /https:\/\/valid\.example\/source/);
+});
+
+test("deliverDeepResearchResult: invalid early entries cannot starve later cited evidence", async () => {
+  const rec = recordingWriter();
+  const outcome = await deliverDeepResearchResult(
     "q",
     {
       runId: "r",
@@ -717,6 +791,7 @@ test("deliverDeepResearchResult: invalid early entries cannot starve later cited
       },
     },
     rec.writer,
+    acceptCitation,
   );
 
   assert.equal(outcome.ok, true);
@@ -726,16 +801,17 @@ test("deliverDeepResearchResult: invalid early entries cannot starve later cited
   assert.match(rec.report, /later valid/);
 });
 
-test("deliverDeepResearchResult: supported array is re-clamped to the UTF-8-safe limit", () => {
+test("deliverDeepResearchResult: supported array is re-clamped to the UTF-8-safe limit", async () => {
   const rec = recordingWriter();
   const many = Array.from({ length: 12 }, (_, i) => ({
     claim: `claim ${i}`,
     sources: ["https://a.example"],
   }));
-  const outcome = deliverDeepResearchResult(
+  const outcome = await deliverDeepResearchResult(
     "q",
     { runId: "r", result: { ok: true, supported: many, summary: "s" } },
     rec.writer,
+    acceptCitation,
   );
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;

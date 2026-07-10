@@ -817,6 +817,39 @@ test("generateDeepResearchWorkflow: empty gathered pages do not consume evidence
   assert.equal((result.result as { ok?: boolean }).ok, true);
 });
 
+test("generateDeepResearchWorkflow: overlong gathered URLs are rejected instead of truncated", async () => {
+  const longUrl = `https://example.com/${"x".repeat(MAX_RESEARCH_URL_CHARS)}`;
+  const validUrl = "https://valid.example/source";
+  let verifySources: Array<{ url: string; claims: string[] }> = [];
+  const result = await runWorkflow(generateDeepResearchWorkflow(), {
+    cwd: "/tmp/deep-research-long-url",
+    args: { question: "exact URLs", angles: 1 },
+    persistLogs: false,
+    agent: {
+      async run(prompt: string, options: { label?: string }): Promise<unknown> {
+        if (options.label === "plan queries") return { queries: ["q1"] };
+        if (options.label?.startsWith("research ")) {
+          return {
+            sources: [
+              { url: longUrl, claims: ["would break if truncated"] },
+              { url: validUrl, claims: ["valid claim"] },
+            ],
+          };
+        }
+        if (options.label === "cross-check") {
+          verifySources = JSON.parse(prompt.slice(prompt.indexOf("SOURCES JSON:") + "SOURCES JSON:".length).trim());
+          return { supported: [{ claim: "valid", sources: [validUrl] }] };
+        }
+        if (options.label === "write report") return { summary: "valid" };
+        return {};
+      },
+    },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(verifySources)), [{ url: validUrl, claims: ["valid claim"] }]);
+  assert.equal((result.result as { ok?: boolean }).ok, true);
+});
+
 test("generateDeepResearchWorkflow: verifier citations must match gathered URLs", async () => {
   const fetchedUrl = "https://fetched.example/source";
   const result = await runWorkflow(generateDeepResearchWorkflow(), {
