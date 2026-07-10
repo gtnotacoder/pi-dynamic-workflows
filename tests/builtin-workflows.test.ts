@@ -436,6 +436,9 @@ test("generateDeepResearchWorkflow: every agent is read-only+web only — no wri
   assert.match(body, /label: 'cross-check',[\s\S]*?tools: \[\]/, "Verify agent must be fenced with tools: []");
   // Report: fenced ([]), never write.
   assert.match(body, /label: 'write report',[\s\S]*?tools: \[\]/, "Report agent must be fenced with tools: []");
+  // Explicit phase fences must not inherit descriptor-required tools that the
+  // allowlists intentionally exclude.
+  assert.equal(body.match(/harness_config: 'none'/g)?.length, 4, "every phase must clear inherited harness tools");
   // No agent gets write, bash, or edit.
   assert.doesNotMatch(body, /tools: \[[^\]]*'write'/, "no agent may select write");
   assert.doesNotMatch(body, /tools: \[[^\]]*'bash'/, "no agent may select bash");

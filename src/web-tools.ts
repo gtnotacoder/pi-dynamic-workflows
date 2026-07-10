@@ -6,10 +6,13 @@
  * - web_search: best-effort Bing HTML scrape -> result {url, title}
  * - web_fetch:  fetch a public URL and return readable text (HTML stripped, truncated)
  *
- * Every request and redirect rejects local/private/non-public targets before fetch.
+ * Every request and redirect rejects local/private/non-public targets, then
+ * connects to an already-validated address so DNS cannot rebind the request.
  */
 
 import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -19,6 +22,25 @@ const UA =
 
 export type WebHostResolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
+export interface PinnedWebResponse {
+  status: number;
+  body: string;
+  location?: string;
+}
+
+export type PinnedWebRequester = (
+  url: URL,
+  address: string,
+  family: number,
+  signal: AbortSignal,
+) => Promise<PinnedWebResponse>;
+
+interface ResolvedWebTarget {
+  url: URL;
+  addresses: Array<{ address: string; family: number }>;
+}
+
+const MAX_RESPONSE_BYTES = 1_000_000;
 const defaultResolver: WebHostResolver = (hostname) => lookup(hostname, { all: true, verbatim: true });
 
 function isPublicIpAddress(address: string): boolean {
@@ -47,7 +69,7 @@ function isPublicIpAddress(address: string): boolean {
   return false;
 }
 
-async function assertPublicHttpUrl(rawUrl: string, resolver: WebHostResolver): Promise<URL> {
+async function resolvePublicHttpUrl(rawUrl: string, resolver: WebHostResolver): Promise<ResolvedWebTarget> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -71,41 +93,99 @@ async function assertPublicHttpUrl(rawUrl: string, resolver: WebHostResolver): P
   ) {
     throw new Error("Private or local web targets are not allowed");
   }
-  if (isIP(hostname)) {
+  const literalFamily = isIP(hostname);
+  if (literalFamily) {
     if (!isPublicIpAddress(hostname)) throw new Error("Private or non-public IP targets are not allowed");
-    return parsed;
+    return { url: parsed, addresses: [{ address: hostname, family: literalFamily }] };
   }
   if (!hostname.includes(".")) throw new Error("Single-label web targets are not allowed");
-  const addresses = await resolver(hostname);
-  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
+  const resolved = await resolver(hostname);
+  if (resolved.length === 0 || resolved.some(({ address }) => !isPublicIpAddress(address))) {
     throw new Error("Web target resolves to a private or non-public address");
   }
-  return parsed;
+  const addresses = [...new Map(resolved.map(({ address }) => [address, { address, family: isIP(address) }])).values()];
+  return { url: parsed, addresses };
+}
+
+const defaultPinnedRequester: PinnedWebRequester = (url, address, family, signal) =>
+  new Promise((resolve, reject) => {
+    const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const originalHostname = url.hostname.replace(/^\[|\]$/g, "");
+    const req = request(
+      {
+        protocol: url.protocol,
+        hostname: address,
+        family,
+        port: url.port || undefined,
+        method: "GET",
+        path: `${url.pathname}${url.search}`,
+        headers: { host: url.host, "user-agent": UA },
+        signal,
+        ...(url.protocol === "https:" && !isIP(originalHostname) ? { servername: originalHostname } : {}),
+      },
+      (response) => {
+        const status = response.statusCode ?? 0;
+        const rawLocation = response.headers.location;
+        const location = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation;
+        if (status >= 300 && status < 400) {
+          response.resume();
+          resolve({ status, body: "", location });
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        response.on("data", (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buffer.length;
+          if (total > MAX_RESPONSE_BYTES) {
+            req.destroy(new Error(`Web response exceeded ${MAX_RESPONSE_BYTES} bytes`));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.on("end", () => resolve({ status, body: Buffer.concat(chunks).toString("utf8") }));
+        response.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+
+async function requestResolvedTarget(
+  target: ResolvedWebTarget,
+  signal: AbortSignal,
+  requester: PinnedWebRequester,
+): Promise<PinnedWebResponse> {
+  let lastError: unknown;
+  for (const { address, family } of target.addresses) {
+    try {
+      return await requester(target.url, address, family, signal);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("No validated web address was reachable");
 }
 
 async function fetchText(
   url: string,
   timeoutMs = 15000,
   resolver: WebHostResolver = defaultResolver,
+  requester: PinnedWebRequester = defaultPinnedRequester,
 ): Promise<{ status: number; body: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let current = new URL(url);
     for (let redirects = 0; redirects <= 5; redirects++) {
-      current = await assertPublicHttpUrl(current.toString(), resolver);
-      const res = await fetch(current, {
-        headers: { "user-agent": UA },
-        signal: controller.signal,
-        redirect: "manual",
-      });
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (!location) return { status: res.status, body: "" };
-        current = new URL(location, current);
+      const target = await resolvePublicHttpUrl(current.toString(), resolver);
+      const response = await requestResolvedTarget(target, controller.signal, requester);
+      if (response.status >= 300 && response.status < 400) {
+        if (!response.location) return { status: response.status, body: "" };
+        current = new URL(response.location, current);
         continue;
       }
-      return { status: res.status, body: await res.text() };
+      return { status: response.status, body: response.body };
     }
     throw new Error("Too many redirects");
   } finally {
@@ -208,9 +288,13 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
 }
 
 /** Re-fetch a citation host-side before it is accepted into a research artifact. */
-export async function verifyWebCitation(url: string, resolver: WebHostResolver = defaultResolver): Promise<boolean> {
+export async function verifyWebCitation(
+  url: string,
+  resolver: WebHostResolver = defaultResolver,
+  requester: PinnedWebRequester = defaultPinnedRequester,
+): Promise<boolean> {
   try {
-    const { status, body } = await fetchText(url, 15000, resolver);
+    const { status, body } = await fetchText(url, 15000, resolver, requester);
     return status >= 200 && status < 400 && body.trim().length > 0;
   } catch {
     return false;

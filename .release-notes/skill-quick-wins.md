@@ -27,11 +27,12 @@ Bounded quick wins for Issue Delivery: prompt-guidance hardening and
   Unicode. Empty pages do not consume source slots, overlong URLs are rejected
   rather than truncated, and the verifier selects opaque Gather source IDs
   instead of rewriting URLs. At most 3 supported claims reach the final result,
-  whose UTF-8 payload remains below 10KB. No agent receives `write`.
+  whose UTF-8 payload remains below 10KB. Every phase clears inherited harness
+  descriptors before applying its explicit tool fence; no agent receives `write`.
 
 - **src/builtin-commands.ts**: `/deep-research` uses read-only coding tools plus
-  `web_search`/`web_fetch`. The host rejects private/non-public targets,
-  re-fetches retained HTTP(S) citations, drops failed/empty responses,
+  `web_search`/`web_fetch`. The host rejects private/non-public targets, pins
+  validated DNS addresses, re-fetches retained HTTP(S) citations, drops failed/empty responses,
   flattens/escapes retained claims, derives the chat summary from retained cited
   evidence, and writes `report.md` inside a fresh private OS temporary
   directory. It does not semantically fact-check claims.

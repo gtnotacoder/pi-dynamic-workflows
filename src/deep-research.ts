@@ -148,6 +148,7 @@ const plan = await agent(
   {
     label: 'plan queries',
     tools: [],
+    harness_config: 'none',
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -172,6 +173,7 @@ const gathered = await parallel(queries.map((q, i) => () =>
     {
       label: 'research ' + (i + 1),
       tools: ['web_search', 'web_fetch'],
+      harness_config: 'none',
       schema: {
         type: 'object',
         additionalProperties: false,
@@ -228,6 +230,7 @@ const verdict = await agent(
   {
     label: 'cross-check',
     tools: [],
+    harness_config: 'none',
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -278,6 +281,7 @@ const report = await agent(
   {
     label: 'write report',
     tools: [],
+    harness_config: 'none',
     schema: {
       type: 'object',
       additionalProperties: false,
