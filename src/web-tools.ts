@@ -4,21 +4,110 @@
  * genuine HTTP requests via Node's fetch.
  *
  * - web_search: best-effort Bing HTML scrape -> result {url, title}
- * - web_fetch:  fetch a URL and return readable text (HTML stripped, truncated)
+ * - web_fetch:  fetch a public URL and return readable text (HTML stripped, truncated)
+ *
+ * Every request and redirect rejects local/private/non-public targets before fetch.
  */
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
 
-async function fetchText(url: string, timeoutMs = 15000): Promise<{ status: number; body: string }> {
+export type WebHostResolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+
+const defaultResolver: WebHostResolver = (hostname) => lookup(hostname, { all: true, verbatim: true });
+
+function isPublicIpAddress(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [a, b] = address.split(".").map(Number);
+    return !(
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && (b === 0 || b === 88 || b === 168)) ||
+      (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+      (a === 203 && b === 0) ||
+      a >= 224
+    );
+  }
+  if (isIP(address) === 6) {
+    const normalized = address.toLowerCase();
+    if (normalized.startsWith("::ffff:")) return isPublicIpAddress(normalized.slice("::ffff:".length));
+    // Conservatively allow only globally routed unicast space (2000::/3),
+    // excluding the documentation prefix.
+    return /^[23]/.test(normalized) && !normalized.startsWith("2001:db8:");
+  }
+  return false;
+}
+
+async function assertPublicHttpUrl(rawUrl: string, resolver: WebHostResolver): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Invalid web URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error("Only credential-free public HTTP(S) URLs are allowed");
+  }
+  const hostname = parsed.hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "")
+    .toLowerCase();
+  if (
+    !hostname ||
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".home.arpa")
+  ) {
+    throw new Error("Private or local web targets are not allowed");
+  }
+  if (isIP(hostname)) {
+    if (!isPublicIpAddress(hostname)) throw new Error("Private or non-public IP targets are not allowed");
+    return parsed;
+  }
+  if (!hostname.includes(".")) throw new Error("Single-label web targets are not allowed");
+  const addresses = await resolver(hostname);
+  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
+    throw new Error("Web target resolves to a private or non-public address");
+  }
+  return parsed;
+}
+
+async function fetchText(
+  url: string,
+  timeoutMs = 15000,
+  resolver: WebHostResolver = defaultResolver,
+): Promise<{ status: number; body: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { headers: { "user-agent": UA }, signal: controller.signal, redirect: "follow" });
-    return { status: res.status, body: await res.text() };
+    let current = new URL(url);
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      current = await assertPublicHttpUrl(current.toString(), resolver);
+      const res = await fetch(current, {
+        headers: { "user-agent": UA },
+        signal: controller.signal,
+        redirect: "manual",
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (!location) return { status: res.status, body: "" };
+        current = new URL(location, current);
+        continue;
+      }
+      return { status: res.status, body: await res.text() };
+    }
+    throw new Error("Too many redirects");
   } finally {
     clearTimeout(timer);
   }
@@ -119,9 +208,9 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
 }
 
 /** Re-fetch a citation host-side before it is accepted into a research artifact. */
-export async function verifyWebCitation(url: string): Promise<boolean> {
+export async function verifyWebCitation(url: string, resolver: WebHostResolver = defaultResolver): Promise<boolean> {
   try {
-    const { status, body } = await fetchText(url);
+    const { status, body } = await fetchText(url, 15000, resolver);
     return status >= 200 && status < 400 && body.trim().length > 0;
   } catch {
     return false;

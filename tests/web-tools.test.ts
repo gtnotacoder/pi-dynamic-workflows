@@ -65,22 +65,55 @@ test("createWebFetchTool has parameters with url field", () => {
   assert.ok(params, "should have parameters");
 });
 
-test("verifyWebCitation accepts only successful non-empty host fetches", async () => {
+test("verifyWebCitation accepts only successful non-empty public fetches", async () => {
   const originalFetch = globalThis.fetch;
+  const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
   try {
     globalThis.fetch = async () => new Response("source body", { status: 200 });
-    assert.equal(await verifyWebCitation("https://example.com/source"), true);
+    assert.equal(await verifyWebCitation("https://example.com/source", publicResolver), true);
 
     globalThis.fetch = async () => new Response("", { status: 200 });
-    assert.equal(await verifyWebCitation("https://example.com/empty"), false);
+    assert.equal(await verifyWebCitation("https://example.com/empty", publicResolver), false);
 
     globalThis.fetch = async () => new Response("missing", { status: 404 });
-    assert.equal(await verifyWebCitation("https://example.com/missing"), false);
+    assert.equal(await verifyWebCitation("https://example.com/missing", publicResolver), false);
 
     globalThis.fetch = async () => {
       throw new Error("offline");
     };
-    assert.equal(await verifyWebCitation("https://example.com/error"), false);
+    assert.equal(await verifyWebCitation("https://example.com/error", publicResolver), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("verifyWebCitation rejects private addresses, private DNS, and private redirects", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  try {
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response("private", { status: 200 });
+    };
+    const resolverMustNotRun = async () => {
+      throw new Error("literal IP should be rejected before DNS");
+    };
+    assert.equal(await verifyWebCitation("http://127.0.0.1/secret", resolverMustNotRun), false);
+    assert.equal(await verifyWebCitation("http://169.254.169.254/latest/meta-data", resolverMustNotRun), false);
+    assert.equal(await verifyWebCitation("http://[::1]/secret", resolverMustNotRun), false);
+    assert.equal(fetchCalls, 0, "literal private targets must be rejected before fetch");
+
+    const privateResolver = async () => [{ address: "10.0.0.5", family: 4 }];
+    assert.equal(await verifyWebCitation("https://internal.example/secret", privateResolver), false);
+    assert.equal(fetchCalls, 0, "private DNS answers must be rejected before fetch");
+
+    const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/secret" } });
+    };
+    assert.equal(await verifyWebCitation("https://example.com/redirect", publicResolver), false);
+    assert.equal(fetchCalls, 1, "private redirect target must be rejected before a second fetch");
   } finally {
     globalThis.fetch = originalFetch;
   }

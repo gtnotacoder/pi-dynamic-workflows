@@ -212,7 +212,7 @@ for (const g of gathered) {
     if (!claims.length || seenSourceUrls.has(url)) continue
     if (allSources.length >= ${MAX_GATHER_SOURCES}) break
     seenSourceUrls.add(url)
-    allSources.push({ url, claims })
+    allSources.push({ id: 'source-' + (allSources.length + 1), url, claims })
   }
   if (allSources.length >= ${MAX_GATHER_SOURCES}) break
 }
@@ -224,7 +224,7 @@ const verdict = await agent(
   'Discard claims found in a single weak source or that conflict with others. Prefer primary sources (official docs, source code, ' +
   'specs, first-party APIs) over secondary write-ups; when a primary source exists, discard a claim supported only by a secondary ' +
   'blog or forum post; every surviving claim must trace to an owning primary source URL. ' +
-  'Return the supported claims with their cited source URLs; omit any discarded strings from the result.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
+  'Return each supported claim with sourceIds copied from the provided SOURCES JSON; never return or invent citation URLs directly. Omit discarded strings.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
   {
     label: 'cross-check',
     tools: [],
@@ -240,9 +240,9 @@ const verdict = await agent(
             additionalProperties: false,
             properties: {
               claim: { type: 'string', maxLength: ${MAX_RESEARCH_CLAIM_CHARS} },
-              sources: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: ${MAX_RESEARCH_URL_CHARS} } },
+              sourceIds: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: 16 } },
             },
-            required: ['claim', 'sources'],
+            required: ['claim', 'sourceIds'],
           },
         },
       },
@@ -250,17 +250,19 @@ const verdict = await agent(
     },
   }
 )
-// Defensive normalization: verifier URLs must exactly match Gather evidence. Filter invalid entries and provenance first, then apply the claim
-// cap so early bad entries cannot starve later valid evidence in a lax runtime.
-const gatheredSourceUrls = new Set(allSources.map((source) => source.url))
+// Resolve verifier-selected opaque source ids back to the exact Gather URLs.
+// The verifier never controls or rewrites citation URLs, so harmless URL
+// canonicalization differences cannot drop evidence and invented ids fail closed.
+const sourceById = new Map(allSources.map((source) => [source.id, source.url]))
 const supported = []
 for (const entry of Array.isArray(verdict && verdict.supported) ? verdict.supported : []) {
   if (supported.length >= ${MAX_SUPPORTED_CLAIMS}) break
   if (!entry || typeof entry !== 'object') continue
   const claim = typeof entry.claim === 'string' ? entry.claim.slice(0, ${MAX_RESEARCH_CLAIM_CHARS}) : ''
-  const sources = Array.isArray(entry.sources)
-    ? [...new Set(entry.sources.filter((source) => typeof source === 'string' && source.length <= ${MAX_RESEARCH_URL_CHARS} && gatheredSourceUrls.has(source)))].slice(0, 2)
+  const sourceIds = Array.isArray(entry.sourceIds)
+    ? [...new Set(entry.sourceIds.filter((sourceId) => typeof sourceId === 'string' && sourceById.has(sourceId)))].slice(0, 2)
     : []
+  const sources = sourceIds.map((sourceId) => sourceById.get(sourceId)).filter(Boolean)
   if (!claim || !sources.length) continue
   supported.push({ claim, sources })
 }

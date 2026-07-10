@@ -474,13 +474,12 @@ test("generateDeepResearchWorkflow: Verify returns bounded supported claims thro
     "Verify claim must be maxLength 140",
   );
   assert.ok(
-    body.includes(
-      `sources: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: ${MAX_RESEARCH_URL_CHARS} } }`,
-    ),
-    "Verify sources must be maxItems 2 / maxLength 200",
+    body.includes(`sourceIds: { type: 'array', maxItems: 2, items: { type: 'string', maxLength: 16 } }`),
+    "Verify sourceIds must be bounded opaque Gather references",
   );
+  assert.match(body, /sourceIds copied from the provided SOURCES JSON/);
   // Verify must omit discarded strings from the result.
-  assert.match(body, /omit any discarded strings from the result/, "Verify must omit discarded strings");
+  assert.match(body, /omit discarded strings/i, "Verify must omit discarded strings");
   // No evidence-file write in the Verify prompt.
   assert.doesNotMatch(body, /write the full supported-evidence JSON/, "Verify must not write an evidence file");
 });
@@ -599,7 +598,6 @@ function makeCapturingRunner(calls: CapturedCall[]): {
   run: (prompt: string, options: { label?: string; schema?: TSchema }) => Promise<unknown>;
 } {
   let gatherIdx = 0;
-  const gatheredUrls: string[] = [];
   return {
     run: async (prompt: string, options) => {
       const label = options.label ?? "";
@@ -614,14 +612,16 @@ function makeCapturingRunner(calls: CapturedCall[]): {
           url: `https://src${i}-${j}.example/${emojiChars(MAX_RESEARCH_URL_CHARS)}`.slice(0, MAX_RESEARCH_URL_CHARS),
           claims: [emojiChars(MAX_RESEARCH_CLAIM_CHARS), emojiChars(MAX_RESEARCH_CLAIM_CHARS)],
         }));
-        gatheredUrls.push(...sources.map((source) => source.url));
         result = { sources };
       } else if (label === "cross-check") {
         // Maximal Verify payload: MAX_SUPPORTED_CLAIMS claims, each maxLength emoji + 2 urls of maxLength emoji.
         result = {
           supported: Array.from({ length: MAX_SUPPORTED_CLAIMS }, (_unused, k) => ({
             claim: emojiChars(MAX_RESEARCH_CLAIM_CHARS),
-            sources: [gatheredUrls[(k * 2) % MAX_GATHER_SOURCES], gatheredUrls[(k * 2 + 1) % MAX_GATHER_SOURCES]],
+            sourceIds: [
+              `source-${((k * 2) % MAX_GATHER_SOURCES) + 1}`,
+              `source-${((k * 2 + 1) % MAX_GATHER_SOURCES) + 1}`,
+            ],
           })),
         };
       } else if (label === "write report") {
@@ -776,7 +776,7 @@ test("generateDeepResearchWorkflow: aggregate Gather fan-in is capped to MAX_GAT
 
 test("generateDeepResearchWorkflow: empty gathered pages do not consume evidence slots", async () => {
   let gatherIndex = 0;
-  let verifySources: Array<{ url: string; claims: string[] }> = [];
+  let verifySources: Array<{ id: string; url: string; claims: string[] }> = [];
   const result = await runWorkflow(generateDeepResearchWorkflow(), {
     cwd: "/tmp/deep-research-empty-pages",
     args: { question: "evidence", angles: 4 },
@@ -803,7 +803,7 @@ test("generateDeepResearchWorkflow: empty gathered pages do not consume evidence
         }
         if (options.label === "cross-check") {
           verifySources = JSON.parse(prompt.slice(prompt.indexOf("SOURCES JSON:") + "SOURCES JSON:".length).trim());
-          return { supported: [{ claim: "supported", sources: [verifySources[0]?.url] }] };
+          return { supported: [{ claim: "supported", sourceIds: [verifySources[0]?.id] }] };
         }
         if (options.label === "write report") return { summary: "supported" };
         return {};
@@ -820,7 +820,7 @@ test("generateDeepResearchWorkflow: empty gathered pages do not consume evidence
 test("generateDeepResearchWorkflow: overlong gathered URLs are rejected instead of truncated", async () => {
   const longUrl = `https://example.com/${"x".repeat(MAX_RESEARCH_URL_CHARS)}`;
   const validUrl = "https://valid.example/source";
-  let verifySources: Array<{ url: string; claims: string[] }> = [];
+  let verifySources: Array<{ id: string; url: string; claims: string[] }> = [];
   const result = await runWorkflow(generateDeepResearchWorkflow(), {
     cwd: "/tmp/deep-research-long-url",
     args: { question: "exact URLs", angles: 1 },
@@ -838,7 +838,7 @@ test("generateDeepResearchWorkflow: overlong gathered URLs are rejected instead 
         }
         if (options.label === "cross-check") {
           verifySources = JSON.parse(prompt.slice(prompt.indexOf("SOURCES JSON:") + "SOURCES JSON:".length).trim());
-          return { supported: [{ claim: "valid", sources: [validUrl] }] };
+          return { supported: [{ claim: "valid", sourceIds: [verifySources[0]?.id] }] };
         }
         if (options.label === "write report") return { summary: "valid" };
         return {};
@@ -846,12 +846,14 @@ test("generateDeepResearchWorkflow: overlong gathered URLs are rejected instead 
     },
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(verifySources)), [{ url: validUrl, claims: ["valid claim"] }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(verifySources)), [
+    { id: "source-1", url: validUrl, claims: ["valid claim"] },
+  ]);
   assert.equal((result.result as { ok?: boolean }).ok, true);
 });
 
-test("generateDeepResearchWorkflow: verifier citations must match gathered URLs", async () => {
-  const fetchedUrl = "https://fetched.example/source";
+test("generateDeepResearchWorkflow: verifier source IDs map only to gathered URLs", async () => {
+  const fetchedUrl = "https://fetched.example";
   const result = await runWorkflow(generateDeepResearchWorkflow(), {
     cwd: "/tmp/deep-research-provenance",
     args: { question: "provenance", angles: 1 },
@@ -865,8 +867,8 @@ test("generateDeepResearchWorkflow: verifier citations must match gathered URLs"
         if (options.label === "cross-check") {
           return {
             supported: [
-              { claim: "hallucinated", sources: ["https://never-fetched.example/source"] },
-              { claim: "fetched", sources: [fetchedUrl] },
+              { claim: "hallucinated", sourceIds: ["source-999"] },
+              { claim: "fetched", sourceIds: ["source-1"] },
             ],
           };
         }
@@ -939,7 +941,7 @@ test("generateDeepResearchWorkflow: every structured schema has additionalProper
   // returns undefined (no fabrication). This is the runtime's actual behavior —
   // extras are not silently smuggled into a schema-bounded result.
   const verifyExtras = {
-    supported: [{ claim: "c", sources: ["u"], malicious: "should not survive" }],
+    supported: [{ claim: "c", sourceIds: ["source-1"], malicious: "should not survive" }],
     extraTop: "nope",
   };
   assert.equal(Check(verifySchema, verifyExtras), false, "Verify schema must reject extra properties");
@@ -959,7 +961,7 @@ test("generateDeepResearchWorkflow: every structured schema has additionalProper
   assert.equal(Check(gatherSchema, gatherExtras), false, "Gather schema must reject extra properties");
 
   // A clean (extras-free) payload validates fine.
-  const cleanVerify = { supported: [{ claim: "c", sources: ["u"] }] };
+  const cleanVerify = { supported: [{ claim: "c", sourceIds: ["source-1"] }] };
   assert.equal(Check(verifySchema, cleanVerify), true, "clean Verify payload must validate");
 });
 
