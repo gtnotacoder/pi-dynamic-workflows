@@ -1,81 +1,46 @@
-# Skill Quick Wins — Issue Delivery 0.2.2
+# Workflow quick wins — 0.2.2
 
 ## Why
 
-Bounded quick wins for Issue Delivery: prompt-guidance hardening and
-`/deep-research` safety. This release includes behavioral source changes —
-`/deep-research` is now artifact-first (no false success) and the
-`foundation_ui_compliance` template dropped its unenforceable trace-assert.
+Ship a small set of reusable workflow-authoring improvements without expanding
+the release into unrelated workflow redesigns.
 
 ## Changes
 
-### Source
+### Prompt guidance
 
-- **src/workflow-tool.ts**: 4 new prompt-guidance principles injected via
-  `buildPromptGuidelines()` (facts-vs-decisions, HITL-AFK checkpoint,
-  expand-contract for wide refactors, tautological-test guidance).
-  `checkpoint()` listed in available globals.
+- Separate observed facts from human decisions.
+- Make consequential `checkpoint()` calls AFK-safe with an explicit
+  conservative default or `headless: "abort"`.
+- Use expand → migrate → contract only for wide mechanical refactors; ordinary
+  feature and bug work remains thin vertical slices.
+- Require independent test oracles rather than tautological expectations.
+- List `checkpoint(promptText, options?)` among the available workflow globals.
 
-- **src/issue-delivery.ts**: The Thinker recognizes wide mechanical migrations
-  and plans expand → independently green caller batches → contract. The
-  Verifier treats a detected tautological test oracle as blocking even if a
-  model also returns `passed=true`.
+### Issue Delivery
 
-- **src/deep-research.ts**: Primary-source-first Gather/Verify prompts and
-  recursively strict schemas. Questions, angles, `minSupport`, aggregate
-  evidence, claims, URLs, and summaries are bounded for worst-case four-byte
-  Unicode. Empty pages do not consume source slots, overlong URLs are rejected
-  rather than truncated, and the verifier selects opaque Gather source IDs
-  instead of rewriting URLs. At most 3 supported claims reach the final result,
-  whose UTF-8 payload remains below 10KB. Every phase clears inherited harness
-  descriptors before applying its explicit tool fence; no agent receives `write`.
+- Teach the Thinker the bounded expand-contract planning exception.
+- Make tautological tests a blocking Verifier result even when a model also
+  returns `passed: true`.
 
-- **src/builtin-commands.ts**: `/deep-research` uses read-only coding tools plus
-  `web_search`/`web_fetch`. The host rejects private/non-public targets, pins
-  validated DNS addresses, re-fetches retained HTTP(S) citations, drops failed/empty responses,
-  flattens/escapes retained claims, derives the chat summary from retained cited
-  evidence, and writes `report.md` inside a fresh private OS temporary
-  directory. It does not semantically fact-check claims.
+### Documentation and drift cleanup
 
-### Tests
+- Add concrete anti-patterns and corrected examples to
+  `docs/prompt-guidance-style.md`.
+- Remove the stale README table of initial derivation patches; `CHANGELOG.md`
+  and `PROVENANCE.md` remain authoritative.
+- Correct `.fugu/` finalization guidance and retain `.fastcontext/` only as
+  defensive third-party-output hygiene.
 
-- **tests/foundation-ui-compliance.test.ts** (new): parse/static checks plus
-  clean, repaired, red, malformed, null, contradictory, and visual-failure
-  execution paths. Failed or contradictory gate/visual verdicts cannot deliver.
+## Scope
 
-- **tests/workflow-tool.test.ts**: asserts the four new model-facing guidelines.
+The `/deep-research` and `foundation_ui_compliance` redesigns were explicitly
+removed from this release. Their broader concerns are tracked in
+[#122](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/122) and
+[#123](https://github.com/gtnotacoder/pi-dynamic-workflows/issues/123) rather
+than bundled into these quick wins.
 
-- **tests/builtin-workflows.test.ts**: verifies primary-source wording, strict
-  schemas, question/angle/fan-in limits, and sub-10KB prompts/results at maxima.
+## Required gate
 
-- **tests/builtin-commands.test.ts**: verifies read-only tool policy, overlong
-  question rejection, cited artifact delivery, uncited/no-result rejection,
-  writer failure, and summary clamping.
-
-### Docs
-
-- **docs/prompt-guidance-style.md**: 4 new principles added (Principle /
-  Anti-pattern / Say-this-not-that format).
-- **AGENTS.md**: `.fugu/` corrected from "ignored by finalization" to "fully
-  retired — leftover debris blocks finalization".
-- **.codex/agents/pr-reviewer.toml**: finalization-ignore mentions only
-  `.issue-delivery/`.
-- **.release-notes/fastcontext.md**: `.fastcontext/` retained in `.gitignore`.
-
-### Lock
-
-- **docs/workflows/workflow-lock.json**: `generatedAt` → `2026-07-09`,
-  issue-delivery version → `0.2.2`, deep-research `sha256` updated,
-  foundation-ui-compliance note updated (no trace-assert, run receipt).
-
-## Verification
-
-- `npm run check` — 0 errors
-- `npm run build` — clean
-- `npm run check:workflow-lock` — 0 errors
-- `npm test` — all tests pass
-
-## Note
-
-The user-level grilling and writing-great-skills sync is already completed
-(e.g., negation-only rule), not a cross-repo issue.
+- `npm test`
+- `npm run check:workflow-lock`

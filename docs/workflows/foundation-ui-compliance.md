@@ -1,8 +1,8 @@
-# `/foundation_ui_compliance` — foundation gate engine with verifiable run receipt
+# `/foundation_ui_compliance` — universal design-system compliance engine
 
 A generic, reusable delivery loop for any app that builds against a **vendored
 design-system foundation**: Gate-Diagnose → scoped Fix ↔ Re-gate → frontier
-visual verify → Deliver (opt-in) → Receipt.
+visual verify → Deliver (opt-in) → Trace-assert.
 
 The engine contains **no repository names, URLs, or organization-specific
 values**. Everything specific to your app or your design-system repo arrives
@@ -18,7 +18,7 @@ Template: [`templates/foundation_ui_compliance.workflow.mjs`](templates/foundati
 | Layer | Owns | Lives where |
 |---|---|---|
 | **Rules** | What correct UI means: tokens, type ramp, density canon, component canon, proportion numbers | Your design-system ("foundation") repo, **vendored into each app** (e.g. `third_party/<foundation>/`), updated only via visible resync PRs |
-| **Logic** | The loop shape: diagnose → scoped fix → gate every round → frontier judge → run receipt | This engine (one template; orgs keep a pinned copy in their foundation repo as template of record) |
+| **Logic** | The loop shape: diagnose → scoped fix → gate every round → frontier judge → trace-assert | This engine (one template; orgs keep a pinned copy in their foundation repo as template of record) |
 | **Params** | This app's source dir, build command, served URLs, edit scope, baseline ledger | Per-repo harness JSON / `args` — config only, never logic |
 
 Why this split works: workflows never re-encode design rules, so when the
@@ -82,12 +82,12 @@ JSON shape.
 4. **Legacy trees:** generate a ledger once with `--write-baseline`, commit
    it, and pass `--baseline` so the gate ratchets instead of blocking.
 
-## Hard rules the engine follows
+## Hard rules the engine enforces (and trace-asserts)
 
-- **Frontier judge** — gate-diagnose and visual verification run on big/frontier-tier models, never cheap ones (set via `tier` on those agents).
-- **Scoped fixers (prompt guidance, not runtime-enforced edit scope)** — fix agents are *instructed* to edit only `editAllow` paths and never the vendored foundation (`third_party/**` is always in `editDeny`). The pi-dynamic-workflows runtime has **no path-glob tool policy for `agent()`**, so edit scope is prompt-level guidance, not a runtime-enforced fence. Re-gating checks resulting UI compliance — it does **not** prove which paths were or were not edited. A denied-path edit that does not break the gate will not be caught by re-gating; add a gate that covers the denied path if you need that enforcement. Do not rely on this engine to block the edit.
-- **Structured gates every round** — every fix round is followed by a re-gate through the single entrypoint; no self-certification. Diagnose and re-gate clear only on `{passed:true, findings:[]}`. A failed verdict with no actionable findings—or a malformed/null re-gate—stops without granting another fixer edit pass. Visual verification clears only on `{passed:true, defects:[]}`; null, malformed, failed, or contradictory verdicts block delivery.
-- **Run receipt (not a trace-assert)** — the workflow runtime does **not** expose subagent transcripts or a trace API to scripts, so this engine does **not** claim a transcript-backed trace-assert. Instead the final `Receipt` phase emits a `RUN RECEIPT` from in-workflow state: exact rounds, gate state, whether visual verification ran and passed, delivery eligibility/result, actual tier routes, and the declared `editAllow`/`editDeny` guidance. The receipt records execution state; it does not prove path compliance. If you need a transcript audit, run the host's `/code-review` or `/adversarial-review` separately.
+- **Frontier judge** — gate-diagnose and visual verification run on big/frontier-tier models, never cheap ones.
+- **Scoped fixers** — fix agents edit only `editAllow` paths; the vendored foundation (`third_party/**`) is always deny.
+- **Gates every round** — every fix round is followed by a re-gate through the single entrypoint; no self-certification.
+- **Trace-assert** — a final auditor reads the run's subagent transcripts and asserts all of the above with evidence.
 
 ## Privacy / universality note
 

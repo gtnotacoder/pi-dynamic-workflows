@@ -100,7 +100,7 @@ A harness selects a posture for its agents via the context/inheritance fields. C
 
 Model routing lives in the **machine-local** `~/.pi/workflows/model-tiers.json`, not the descriptor — descriptors stay portable. The config shape today is `tiers: Record<string, string>` (one model id per tier: `small`, `medium`, `big`); **per-tier fallback chains are not yet supported**. The workflow script assigns `tier: "small"|"medium"|"big"` per role — fanout workers on a cheap/local `small`/`medium` tier, judges/verifiers on a `big` (frontier) tier — and the run resolves each tier to its configured model. (Multi-model fallback pools are a planned addition; track via an engine issue, not the descriptor.)
 
-### Gates and receipts
+### Gates incl. trace-assert
 
 Use `gate(workerThunk, validator, { attempts })` for the repair loop (worker → host `stageCheck` → feedback). `stageCheck` runs **host-side mechanical checks with zero LLM tokens**: auto-detected defaults are `tsc --noEmit` (if `tsconfig.json` AND `package.json` exist) + `biome check` (if `biome.json` AND `package.json` exist and `targetFile` is null or has a supported extension); a repo `build` script is **NOT auto-added** — supply it explicitly via `stageCheck.commands`. Defaults otherwise come from the descriptor's `stageCheck` block (package `cwd`, `targetFile`). For a per-step harness, pass the step's `harness_config` to `stageCheck` so checks run in the step's package, not the run-level default.
 
@@ -157,7 +157,7 @@ After bumping the engine across dependent repos, run `validate-harness` over eac
 
 ## Worked examples
 
-- ✅ **`kneutral-admin-portal`** — `portal-visual-refine` UI harness (kneutral-admin-portal#195). The sophisticated first case: a frontend harness with a shadcn directory-module guardrail, package-local `stageCheck.cwd`, and prompt-level edit-scope guardrails (trace-assert is planned, not yet shipped). This guide is the generalization of that setup.
+- ✅ **`kneutral-admin-portal`** — `portal-visual-refine` UI harness (kneutral-admin-portal#195). The sophisticated first case: a frontend harness with a shadcn directory-module guardrail, package-local `stageCheck.cwd`, and a trace-assert gate. This guide is the generalization of that setup.
 - ⏳ **`desktop-app`** — the next consumer; onboarded via this guide to confirm the standard generalizes. Tracked as the second proof.
 
 ## Reference

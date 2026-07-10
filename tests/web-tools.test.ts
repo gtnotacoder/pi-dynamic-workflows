@@ -6,7 +6,6 @@ import {
   createWebTools,
   htmlToText,
   parseBingResults,
-  verifyWebCitation,
 } from "../src/web-tools.js";
 
 // ─── createWebSearchTool ─────────────────────────────────────────────────────
@@ -63,60 +62,6 @@ test("createWebFetchTool has parameters with url field", () => {
   const tool = createWebFetchTool();
   const params = tool.parameters;
   assert.ok(params, "should have parameters");
-});
-
-test("verifyWebCitation accepts only successful non-empty pinned public fetches", async () => {
-  const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
-  let response = { status: 200, body: "source body" };
-  const pinnedAddresses: string[] = [];
-  const requester = async (_url: URL, address: string) => {
-    pinnedAddresses.push(address);
-    return response;
-  };
-
-  assert.equal(await verifyWebCitation("https://example.com/source", publicResolver, requester), true);
-  assert.deepEqual(pinnedAddresses, ["93.184.216.34"], "request must use the validated address");
-
-  response = { status: 200, body: "" };
-  assert.equal(await verifyWebCitation("https://example.com/empty", publicResolver, requester), false);
-
-  response = { status: 404, body: "missing" };
-  assert.equal(await verifyWebCitation("https://example.com/missing", publicResolver, requester), false);
-
-  const offlineRequester = async () => {
-    throw new Error("offline");
-  };
-  assert.equal(await verifyWebCitation("https://example.com/error", publicResolver, offlineRequester), false);
-});
-
-test("verifyWebCitation rejects private addresses, private DNS, and private redirects", async () => {
-  let requestCalls = 0;
-  const requester = async () => {
-    requestCalls++;
-    return { status: 200, body: "private" };
-  };
-  const resolverMustNotRun = async () => {
-    throw new Error("literal IP should be rejected before DNS");
-  };
-  assert.equal(await verifyWebCitation("http://127.0.0.1/secret", resolverMustNotRun, requester), false);
-  assert.equal(
-    await verifyWebCitation("http://169.254.169.254/latest/meta-data", resolverMustNotRun, requester),
-    false,
-  );
-  assert.equal(await verifyWebCitation("http://[::1]/secret", resolverMustNotRun, requester), false);
-  assert.equal(requestCalls, 0, "literal private targets must be rejected before request");
-
-  const privateResolver = async () => [{ address: "10.0.0.5", family: 4 }];
-  assert.equal(await verifyWebCitation("https://internal.example/secret", privateResolver, requester), false);
-  assert.equal(requestCalls, 0, "private DNS answers must be rejected before request");
-
-  const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
-  const redirectRequester = async () => {
-    requestCalls++;
-    return { status: 302, body: "", location: "http://127.0.0.1/secret" };
-  };
-  assert.equal(await verifyWebCitation("https://example.com/redirect", publicResolver, redirectRequester), false);
-  assert.equal(requestCalls, 1, "private redirect target must be rejected before a second request");
 });
 
 // ─── createWebTools ────────────────────────────────────────────────────────────

@@ -9,28 +9,32 @@ See [PROVENANCE.md](./PROVENANCE.md) for the derivation history and upstream rel
 
 ## [0.2.2] — 2026-07-09
 
-Prompt-authoring hardening, artifact-first `/deep-research`, foundation-ui-compliance honesty fixes, model-tier routing, and concrete drift corrections.
+Model-tier routing hardening plus bounded workflow-authoring and Issue Delivery quick wins.
 
 ### Added
 
-- 4 new prompt-guidance principles in `docs/prompt-guidance-style.md`: **Separate Facts from Decisions**, **Human-in-the-Loop is AFK-Safe**, **Expand-Contract Only for Wide Mechanical Refactors**, **Avoid Tautological Tests**. Four corresponding model-facing guidelines injected via `buildPromptGuidelines()` in `src/workflow-tool.ts` (`checkpoint()` and signature listed in available globals).
-- `checkpoint()` guidance requires explicit conservative defaults (`default: false` or `headless: 'abort'`) — forbids silent headless approval.
-- Artifact-first `/deep-research`: primary-source-first policy; bounded question, angles, `minSupport`, fan-in, recursively strict schemas, at most 3 supported claims, and a 120-character summary keep every prompt/result below 10KB. Agents use explicit phase-local read-only/web-only fences, clear inherited harness descriptors, and never receive `write`. Verifier citations use opaque Gather source IDs rather than model-rewritten URLs; empty pages do not consume slots, and overlong URLs are rejected rather than truncated. The host rejects private/non-public targets, pins validated DNS addresses, and then re-fetches each retained HTTP(S) citation before rendering a report into a fresh private OS temporary directory and delivering a compact acknowledgement.
-- `foundation_ui_compliance` template: replaced the unenforceable Trace-assert with structured gate/visual verdicts and a Receipt phase. Failed, null, malformed, or contradictory verdicts block delivery; a failure without actionable findings never grants fixer authority. The receipt records actual rounds, gate/visual state, delivery eligibility/result, and tier routes.
-- New tests: `tests/foundation-ui-compliance.test.ts` (parse/static + execution), `tests/checkpoint.test.ts` (AFK safety contract).
+- Add optional machine-local `routingNotes` to `model-tiers.json`; the workflow tool injects them alongside the concrete tier mapping so model-authored workflows can apply operator-specific specialization.
+- Add non-blocking tier diagnostics for missing or duplicate `small`/`medium`/`big` mappings. `/workflows-models` surfaces duplicate mappings that would make an escalation retry the same model.
+- Add four prompt-guidance principles: separate facts from decisions, make human checkpoints AFK-safe, reserve expand-contract for wide mechanical refactors, and avoid tautological test oracles.
+- Document `checkpoint(promptText, options?)` as a workflow global and require an explicit conservative default (`default: false` or `headless: 'abort'`) for consequential background decisions.
 
 ### Changed
 
-- Issue Delivery plans wide mechanical migrations as expand → independently green caller batches → contract. A detected tautological test oracle is a blocking verifier result, even if the model also returns `passed=true`.
-- `/deep-research` rejects overlong questions, bounds aggregate evidence before verification, and returns only bounded cited claims plus a short summary. The host drops empty or invalidly cited claims, flattens and Markdown-escapes retained claims, derives the chat summary from retained cited evidence, renders Markdown via an injectable writer, and reports the temporary artifact path; it does not semantically fact-check model claims.
-- `foundation_ui_compliance` no longer claims unenforceable capabilities — the runtime has no trace API; edit scope is prompt guidance only and re-gating validates resulting UI compliance but does not enforce or attest which paths were edited.
+- Issue Delivery plans wide mechanical migrations as expand → independently green caller batches → contract.
+- A detected tautological test oracle is a blocking Issue Delivery verifier result, even if the model also returns `passed=true`.
 
 ### Fixed
 
-- AGENTS.md: `.fugu/` is fully retired — leftover debris blocks finalization.
-- `.codex/agents/pr-reviewer.toml`: finalization-ignore mentions only `.issue-delivery/`.
-- `.release-notes/fastcontext.md`: `.fastcontext/` retained in `.gitignore` as defensive hygiene.
-- `docs/prompt-guidance-style.md`: duplicate principle copies removed; tautological-test oracle example corrected.
+- Preserve pre-0.2.2 tier/default-medium resume entries only when their recorded concrete model still matches; normalize blank tier values to the real session-model fallback; share the parent's tier snapshot with nested workflows; and preserve `routingNotes` when `/workflows-models` resets tiers.
+- Distinguish GPT-5.6 public-API context (`1.05M`) from the ChatGPT Codex route (`372k`). Near-boundary probes with compaction disabled confirmed exact retrieval around 370k and `context_length_exceeded` around 375k for Sol, Terra, and Luna; Codex registry entries remain at 372k so compaction and occupancy telemetry do not overrun the provider.
+- Snapshot model-tier configuration once per run and include the concrete routed model in journal identities. Changing a tier mapping or main-model route now invalidates the affected resume suffix instead of replaying output from the previous model.
+- Correct retired-path guidance: `.fugu/` debris is visible to git and blocks finalization, while `.fastcontext/` remains ignored only as defensive third-party-output hygiene.
+
+### Documentation
+
+- Replace the stale GPT-5.5-era routing research note with current local-first guidance for GPT-5.6 Sol/Terra/Luna, GLM-5.2, Claude Fable 5/Opus 4.8, Gemini 3.5 Flash, and local Qwen. GPT-5.5 is retained only as a temporary benchmark/control route.
+- Add concrete anti-patterns and corrected examples for the four workflow-authoring principles.
+- Remove the stale README table of initial derivation patches; the changelog and provenance document remain authoritative.
 
 ### Acknowledgements
 
