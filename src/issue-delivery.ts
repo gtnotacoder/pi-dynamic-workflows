@@ -512,7 +512,7 @@ while (Object.keys(completed).length < selectedSteps.length) {
           'Host-side LocalChecks summary (mechanical checks already passed):\\n' +
           JSON.stringify({ summary: localChecks.summary, checks: localChecks.checks.map(c => ({ name: c.name, ok: c.ok, exitCode: c.exitCode, durationMs: c.durationMs })) }) + '\\n\\n' +
           'Inspect the file and perform a strict semantic evaluation. Is the code robust, correct, and matching the plan?\\n\\n' +
-          'Tautological-test detection: if a test uses the same logic as the code under test (e.g. expect(add(a,b)).toBe(a+b)), set tautologicalTestDetected=true and MUST return passed=false — the expected value needs an independent literal, worked example, or task/spec oracle, not recomputation by implementation logic. Set tautologicalTestDetected=false only when no such oracle exists.\\n' +
+          'Tautological-test detection: if a test uses the same logic as the code under test (e.g. expect(add(a,b)).toBe(a+b)), set tautologicalTestDetected=true and MUST return passed=false — the expected value needs an independent literal, worked example, or task/spec oracle, not recomputation by implementation logic. Set tautologicalTestDetected=false whenever no tautological oracle is detected.\\n' +
           'Return passed=true or passed=false with concise, forward-looking feedback. Do not paste raw chronological logs.',
           {
             label: 'issue-verifier:' + step.id,

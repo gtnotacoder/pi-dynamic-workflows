@@ -24,9 +24,9 @@ Bounded quick wins for Issue Delivery: prompt-guidance hardening and
 - **src/deep-research.ts**: Primary-source-first Gather/Verify prompts and
   recursively strict schemas. Questions, angles, `minSupport`, aggregate
   evidence, claims, URLs, and summaries are bounded for worst-case four-byte
-  Unicode; at most 3 supported claims reach the final result, whose UTF-8
-  payload remains below 10KB. No
-  agent receives `write`.
+  Unicode. Empty pages do not consume source slots, and only gathered URLs may
+  survive verification. At most 3 supported claims reach the final result,
+  whose UTF-8 payload remains below 10KB. No agent receives `write`.
 
 - **src/builtin-commands.ts**: `/deep-research` uses read-only coding tools plus
   `web_search`/`web_fetch`. The host drops empty claims and citations that are

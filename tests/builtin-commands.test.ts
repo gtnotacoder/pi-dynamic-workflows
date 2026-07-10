@@ -699,6 +699,33 @@ test("deliverDeepResearchResult: acknowledgement summary derives from retained c
   assert.doesNotMatch(outcome.message, /model summary/);
 });
 
+test("deliverDeepResearchResult: invalid early entries cannot starve later cited evidence", () => {
+  const rec = recordingWriter();
+  const outcome = deliverDeepResearchResult(
+    "q",
+    {
+      runId: "r",
+      result: {
+        ok: true,
+        supported: [
+          { claim: "invalid 1", sources: [] },
+          { claim: "invalid 2", sources: ["not a URL"] },
+          { claim: "invalid 3", sources: ["file:///tmp/no"] },
+          { claim: "later valid", sources: ["https://valid.example/source"] },
+        ],
+        summary: "later valid",
+      },
+    },
+    rec.writer,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok) return;
+  assert.equal(outcome.count, 1);
+  assert.equal(outcome.summary, "later valid");
+  assert.match(rec.report, /later valid/);
+});
+
 test("deliverDeepResearchResult: supported array is re-clamped to the UTF-8-safe limit", () => {
   const rec = recordingWriter();
   const many = Array.from({ length: 12 }, (_, i) => ({

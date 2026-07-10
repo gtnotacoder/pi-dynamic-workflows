@@ -13,7 +13,7 @@
       "command": "/issue-delivery",
       "kind": "builtin-command",
       "source": "src/issue-delivery.ts",
-      "sha256": "4bd279a9c84ad3ddaf71dbdcfef4c49523de958ed6892dc42f3bfb0b4e3785ea",
+      "sha256": "bea5167455aff4e7559505d1a16aab34e3c10dc6ce46bea8d9bec2f947ba824f",
       "aliases": ["/fugu"],
       "replaces": ["fugu"],
       "channel": "active",
@@ -26,10 +26,10 @@
       "command": "/deep-research",
       "kind": "builtin-command",
       "source": "src/deep-research.ts",
-      "sha256": "b7acd4d397bb4c5056310baaa9f0e90f9d88ba0745c151246fa8252379a40a66",
+      "sha256": "2960ae6cc22e34a96c836d3add7fc836d1a074631c3be5ee4846105843947cf2",
       "aliases": [],
       "channel": "active",
-      "notes": "Research a question across the web with cross-checked sources. Read-only + web-only: every agent runs against read-only repo tools plus web_search/web_fetch and no agent receives write. Verify returns bounded supported claims (max 3 claims, each claim max 140 chars, max 2 source URLs each max 200 chars) through its structured result; worst-case four-byte Unicode payloads remain below 10KB. Report returns one bounded candidate summary, but the host acknowledgement derives its summary from retained cited evidence. The host flattens/escapes claims, deterministically renders cited Markdown into a fresh private tmpdir directory via an injectable writer, and returns the absolute path; no cwd/.pi/.research writes and no model-controlled path. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
+      "notes": "Research a question across the web with cross-checked sources. Read-only + web-only: every agent runs against read-only repo tools plus web_search/web_fetch and no agent receives write. Verify returns bounded supported claims (max 3 claims, each claim max 140 chars, max 2 source URLs each max 200 chars), discards citations not present in gathered/fetched evidence, and does not count empty pages toward source slots; worst-case four-byte Unicode payloads remain below 10KB. Report returns one bounded candidate summary, but the host acknowledgement derives its summary from retained cited evidence. The host flattens/escapes claims, deterministically renders cited Markdown into a fresh private tmpdir directory via an injectable writer, and returns the absolute path; no cwd/.pi/.research writes and no model-controlled path. Registered as a builtin command alongside issue-delivery, adversarial-review, and code-review."
     },
     {
       "canonicalName": "adversarial-review",

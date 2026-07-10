@@ -205,11 +205,13 @@ for (const g of gathered) {
   if (!g || !Array.isArray(g.sources)) continue
   for (const src of g.sources) {
     if (!src || typeof src.url !== 'string' || !src.url) continue
-    if (seenSourceUrls.has(src.url)) continue
+    const url = src.url.slice(0, ${MAX_RESEARCH_URL_CHARS})
+    const claims = Array.isArray(src.claims) ? src.claims.filter((c) => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim().slice(0, ${MAX_RESEARCH_CLAIM_CHARS})).slice(0, ${MAX_CLAIMS_PER_SOURCE}) : []
+    // Empty pages are not evidence and must not consume a bounded source slot.
+    if (!claims.length || seenSourceUrls.has(url)) continue
     if (allSources.length >= ${MAX_GATHER_SOURCES}) break
-    seenSourceUrls.add(src.url)
-    const claims = Array.isArray(src.claims) ? src.claims.filter((c) => typeof c === 'string').map((c) => c.slice(0, ${MAX_RESEARCH_CLAIM_CHARS})).slice(0, ${MAX_CLAIMS_PER_SOURCE}) : []
-    allSources.push({ url: src.url.slice(0, ${MAX_RESEARCH_URL_CHARS}), claims })
+    seenSourceUrls.add(url)
+    allSources.push({ url, claims })
   }
   if (allSources.length >= ${MAX_GATHER_SOURCES}) break
 }
@@ -247,21 +249,21 @@ const verdict = await agent(
     },
   }
 )
-// Defensive normalization: the Verify schema already bounds supported, but a
-// direct/lax runtime must not let an oversized array/claim/url reach Report or
-// the final return. Re-slice every bounded field with the same UTF-8 byte budget.
-const supported = (Array.isArray(verdict && verdict.supported) ? verdict.supported : [])
-  .slice(0, ${MAX_SUPPORTED_CLAIMS})
-  .map((entry) => {
-    if (!entry || typeof entry !== 'object') return null
-    const claim = typeof entry.claim === 'string' ? entry.claim.slice(0, ${MAX_RESEARCH_CLAIM_CHARS}) : ''
-    const sources = Array.isArray(entry.sources)
-      ? entry.sources.filter((s) => typeof s === 'string').map((s) => s.slice(0, ${MAX_RESEARCH_URL_CHARS})).slice(0, 2)
-      : []
-    if (!claim || !sources.length) return null
-    return { claim, sources }
-  })
-  .filter(Boolean)
+// Defensive normalization: only URLs actually gathered/fetched may survive as
+// citations. Filter invalid entries and provenance first, then apply the claim
+// cap so early bad entries cannot starve later valid evidence in a lax runtime.
+const gatheredSourceUrls = new Set(allSources.map((source) => source.url))
+const supported = []
+for (const entry of Array.isArray(verdict && verdict.supported) ? verdict.supported : []) {
+  if (supported.length >= ${MAX_SUPPORTED_CLAIMS}) break
+  if (!entry || typeof entry !== 'object') continue
+  const claim = typeof entry.claim === 'string' ? entry.claim.slice(0, ${MAX_RESEARCH_CLAIM_CHARS}) : ''
+  const sources = Array.isArray(entry.sources)
+    ? [...new Set(entry.sources.filter((source) => typeof source === 'string').map((source) => source.slice(0, ${MAX_RESEARCH_URL_CHARS})).filter((source) => gatheredSourceUrls.has(source)))].slice(0, 2)
+    : []
+  if (!claim || !sources.length) continue
+  supported.push({ claim, sources })
+}
 if (!supported.length) {
   return { ok: false, supported: [], summary: 'Verification produced no supported evidence.' }
 }
@@ -375,7 +377,8 @@ export function deliverDeepResearchResult(
   }
   const supportedRaw = Array.isArray(res.supported) ? res.supported : [];
   const supported: SupportedClaim[] = [];
-  for (const entry of supportedRaw.slice(0, MAX_SUPPORTED_CLAIMS)) {
+  for (const entry of supportedRaw) {
+    if (supported.length >= MAX_SUPPORTED_CLAIMS) break;
     if (entry === null || typeof entry !== "object") continue;
     const raw = entry as Partial<SupportedClaim>;
     const claim = normalizeSingleLine(raw.claim, MAX_RESEARCH_CLAIM_CHARS);

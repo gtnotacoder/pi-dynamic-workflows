@@ -154,6 +154,8 @@ if (gatesCleared) {
   log("Skipping: gates are green from initial diagnose — no fix rounds needed.");
 } else if (diagnoseVerdict === null) {
   log("Skipping: diagnose verdict was null/malformed — no actionable findings to fix.");
+} else if (diagnoseVerdict.findings.length === 0) {
+  log("Skipping: diagnose failed without actionable findings — fixer authority not granted.");
 } else {
   // Seed the fix agent with the JSON findings from the diagnose verdict so it has
   // a concrete, bounded list to resolve each round.
@@ -211,6 +213,9 @@ if (gatesCleared) {
     if (regateVerdict === null) {
       log(`re-gate round ${round}: verdict null/malformed — treating as failure.`);
       outstanding = String(regate);
+    } else if (regateVerdict.findings.length === 0) {
+      log(`re-gate round ${round}: failed without actionable findings — stopping fixer loop.`);
+      break;
     } else {
       outstanding = JSON.stringify(regateVerdict.findings);
     }

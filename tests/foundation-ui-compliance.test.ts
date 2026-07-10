@@ -415,6 +415,44 @@ test("execution: passed:true with visual defects is contradictory and blocks del
   assert.equal(receipt.delivered, null);
 });
 
+test("execution: failed diagnose without findings never grants fixer authority", async () => {
+  let fixCalls = 0;
+  const stubAgent = async (prompt: string) => {
+    if (/GATE-DIAGNOSE/.test(prompt)) return { passed: false, findings: [] };
+    if (/FIX agent/.test(prompt)) fixCalls++;
+    return "ok";
+  };
+  const { receipt, logs } = await runWith(stubAgent, baseArgs({ deliver: true }));
+
+  assert.equal(fixCalls, 0, "no actionable findings means no mutating fixer");
+  assert.equal(receipt.roundsRun, 0);
+  assert.equal(receipt.gatesCleared, false);
+  assert.equal(receipt.deliveryEligible, false);
+  assert.equal(receipt.delivered, null);
+  assert.ok(logs.some((line) => line.includes("fixer authority not granted")));
+});
+
+test("execution: failed re-gate without findings stops before another fixer round", async () => {
+  let fixCalls = 0;
+  const stubAgent = async (prompt: string) => {
+    if (/GATE-DIAGNOSE/.test(prompt)) return RED_VERDICT;
+    if (/FIX agent/.test(prompt)) {
+      fixCalls++;
+      return "attempted fix";
+    }
+    if (/RE-GATE runner/.test(prompt)) return { passed: false, findings: [] };
+    return "ok";
+  };
+  const { receipt, logs } = await runWith(stubAgent, baseArgs({ maxRounds: 2, deliver: true }));
+
+  assert.equal(fixCalls, 1, "empty re-gate findings stop before a second fixer");
+  assert.equal(receipt.roundsRun, 1);
+  assert.equal(receipt.gatesCleared, false);
+  assert.equal(receipt.deliveryEligible, false);
+  assert.equal(receipt.delivered, null);
+  assert.ok(logs.some((line) => line.includes("stopping fixer loop")));
+});
+
 test("execution: null diagnose verdict is a failure — no fix round, no delivery", async () => {
   const stubAgent = async (prompt: string) => {
     if (/GATE-DIAGNOSE/.test(prompt)) return null;
